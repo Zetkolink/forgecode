@@ -125,7 +125,6 @@ pub enum AgentSource {
     ProjectCwd,
 }
 
-
 /// Runtime agent representation with required model and provider
 #[derive(Debug, Clone, PartialEq, Setters, Serialize, Deserialize, JsonSchema)]
 #[setters(strip_option, into)]

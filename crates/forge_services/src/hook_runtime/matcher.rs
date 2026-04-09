@@ -45,9 +45,10 @@ pub fn matches_pattern(pattern: &str, tool_name: &str) -> bool {
     //    regex. This must run before the pipe-split branch so that `^(Read|Write)$`
     //    is handled as a regex rather than split into two alternatives.
     if contains_regex_metachars(trimmed)
-        && let Ok(re) = Regex::new(trimmed) {
-            return re.is_match(tool_name);
-        }
+        && let Ok(re) = Regex::new(trimmed)
+    {
+        return re.is_match(tool_name);
+    }
 
     // 3. Pipe list — any exact alternative matches.
     if trimmed.contains('|') {

@@ -514,8 +514,7 @@ pub enum SlashCommand {
 /// Mirrors the Phase 9 plan: `list`, `enable <name>`, `disable <name>`,
 /// `info <name>`, and `reload`. `install` is intentionally deferred — see
 /// the Phase 9 plan document for the `install` flow specification.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PluginSubcommand {
     /// `:plugin list` — show all discovered plugins.
     #[default]
@@ -529,7 +528,6 @@ pub enum PluginSubcommand {
     /// `:plugin reload` — invalidate plugin cache and reload components.
     Reload,
 }
-
 
 impl SlashCommand {
     pub fn name(&self) -> &str {

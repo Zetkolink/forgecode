@@ -183,20 +183,23 @@ where
     while i < bytes.len() {
         if bytes[i] == b'$' {
             // Try ${VAR}
-            if i + 1 < bytes.len() && bytes[i + 1] == b'{'
-                && let Some(end) = value[i + 2..].find('}') {
-                    let name = &value[i + 2..i + 2 + end];
-                    if allowed.contains(&name)
-                        && let Some(val) = env_lookup(name) {
-                            result.push_str(&val);
-                            i += 2 + end + 1;
-                            continue;
-                        }
-                    // Not allowed or lookup failed — leave literal.
-                    result.push_str(&value[i..i + 2 + end + 1]);
+            if i + 1 < bytes.len()
+                && bytes[i + 1] == b'{'
+                && let Some(end) = value[i + 2..].find('}')
+            {
+                let name = &value[i + 2..i + 2 + end];
+                if allowed.contains(&name)
+                    && let Some(val) = env_lookup(name)
+                {
+                    result.push_str(&val);
                     i += 2 + end + 1;
                     continue;
                 }
+                // Not allowed or lookup failed — leave literal.
+                result.push_str(&value[i..i + 2 + end + 1]);
+                i += 2 + end + 1;
+                continue;
+            }
 
             // Try $VAR (alnum + underscore).
             let name_start = i + 1;
@@ -209,11 +212,12 @@ where
             if name_end > name_start {
                 let name = &value[name_start..name_end];
                 if allowed.contains(&name)
-                    && let Some(val) = env_lookup(name) {
-                        result.push_str(&val);
-                        i = name_end;
-                        continue;
-                    }
+                    && let Some(val) = env_lookup(name)
+                {
+                    result.push_str(&val);
+                    i = name_end;
+                    continue;
+                }
                 // Not allowed — leave literal.
                 result.push_str(&value[i..name_end]);
                 i = name_end;

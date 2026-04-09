@@ -24,7 +24,6 @@ pub enum CommandSource {
     ProjectCwd,
 }
 
-
 /// A user-defined command loaded from a Markdown file with YAML frontmatter.
 ///
 /// Commands are discovered from `.md` files in the forge commands directories

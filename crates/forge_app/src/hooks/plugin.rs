@@ -131,9 +131,10 @@ impl<S: Services> PluginHookHandler<S> {
 
                 for (hook_index, hook_cmd) in matcher_with_source.matcher.hooks.iter().enumerate() {
                     if let Some(cond) = condition_for(hook_cmd)
-                        && !matches_condition(cond, effective_tool_name, effective_tool_input) {
-                            continue;
-                        }
+                        && !matches_condition(cond, effective_tool_name, effective_tool_input)
+                    {
+                        continue;
+                    }
 
                     if is_once(hook_cmd) {
                         let id = HookId {
@@ -1025,9 +1026,10 @@ mod tests {
                     }
                     for (hi, cmd) in matcher_with_source.matcher.hooks.iter().enumerate() {
                         if let Some(c) = condition_for(cmd)
-                            && !matches_condition(c, tn, ti) {
-                                continue;
-                            }
+                            && !matches_condition(c, tn, ti)
+                        {
+                            continue;
+                        }
                         if is_once(cmd) {
                             let id = HookId {
                                 event: event.clone(),

@@ -27,7 +27,6 @@ pub enum SkillSource {
     ProjectCwd,
 }
 
-
 /// Represents a reusable skill with a name, file path, and prompt content
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Setters, JsonSchema)]
 #[setters(strip_option, into)]
