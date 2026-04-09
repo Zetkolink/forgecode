@@ -18,7 +18,7 @@ use url::Url;
 use crate::hook_runtime::HookConfigLoaderService;
 use crate::infra::HookExecutorInfra;
 use crate::user::{User, UserUsage};
-use crate::{EnvironmentInfra, Walker};
+use crate::{ElicitationDispatcher, EnvironmentInfra, Walker};
 
 #[derive(Debug, Clone)]
 pub struct ShellOutput {
@@ -758,6 +758,11 @@ pub trait Services: Send + Sync + 'static + Clone + EnvironmentInfra {
     type PluginLoader: PluginLoader;
     type HookConfigLoader: HookConfigLoaderService;
     type HookExecutor: HookExecutorInfra;
+    /// The elicitation dispatcher used by the MCP client handler to
+    /// route server-initiated elicitation requests. Wave F-1
+    /// establishes the accessor; Wave F-2 wires it into the rmcp
+    /// `ClientHandler` in `forge_infra/src/mcp_client.rs`.
+    type ElicitationDispatcher: ElicitationDispatcher;
 
     fn provider_service(&self) -> &Self::ProviderService;
     fn config_service(&self) -> &Self::AppConfigService;
@@ -789,6 +794,10 @@ pub trait Services: Send + Sync + 'static + Clone + EnvironmentInfra {
     fn plugin_loader(&self) -> &Self::PluginLoader;
     fn hook_config_loader(&self) -> &Self::HookConfigLoader;
     fn hook_executor(&self) -> &Self::HookExecutor;
+    /// Returns the process-wide elicitation dispatcher. Wave F-2 will
+    /// invoke `elicit` on the return value from
+    /// `forge_infra::mcp_client::ForgeMcpHandler::create_elicitation`.
+    fn elicitation_dispatcher(&self) -> &Self::ElicitationDispatcher;
 }
 
 #[async_trait::async_trait]

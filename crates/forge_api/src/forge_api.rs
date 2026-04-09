@@ -99,6 +99,19 @@ impl ForgeAPI<ForgeServices<ForgeRepo<ForgeInfra>>, ForgeRepo<ForgeInfra>> {
         let repo = Arc::new(ForgeRepo::new(infra.clone()));
         let app = Arc::new(ForgeServices::new(repo.clone()));
 
+        // Phase 8 Wave F-1: populate the elicitation dispatcher's
+        // late-init `Arc<Self>` slot now that the services aggregate
+        // exists. The dispatcher needs a handle back to `app` to fire
+        // the `Elicitation` plugin hook, but storing `Arc<Self>`
+        // inside `ForgeServices::new` would create a chicken-and-egg
+        // cycle (the `Arc` doesn't exist until `Arc::new` returns).
+        // This `init_elicitation_dispatcher` call closes that cycle
+        // exactly once; until it runs, the dispatcher declines every
+        // request with a warn log. Wave F-2 will start invoking the
+        // dispatcher from the rmcp `ClientHandler::create_elicitation`
+        // impl in `forge_infra/src/mcp_client.rs`.
+        app.init_elicitation_dispatcher();
+
         // Wave C Part 2: spin up the `ConfigWatcher` that feeds the
         // `ConfigChange` lifecycle hook. The watch paths are derived
         // from the live `Environment`:

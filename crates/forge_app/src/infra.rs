@@ -21,6 +21,12 @@ use url::Url;
 
 use crate::{WalkedFile, Walker};
 
+mod elicitation;
+
+pub use elicitation::{
+    ElicitationAction, ElicitationDispatcher, ElicitationRequest, ElicitationResponse,
+};
+
 /// Infrastructure trait for accessing environment configuration, system
 /// variables, and persisted application configuration.
 pub trait EnvironmentInfra: Send + Sync {

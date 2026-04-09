@@ -19,6 +19,7 @@ use crate::auth::ForgeAuthService;
 use crate::command::CommandLoaderService as ForgeCommandLoaderService;
 use crate::conversation::ForgeConversationService;
 use crate::discovery::ForgeDiscoveryService;
+use crate::elicitation_dispatcher::ForgeElicitationDispatcher;
 use crate::fd::FdDefault;
 use crate::hook_runtime::{ForgeHookConfigLoader, ForgeHookExecutor};
 use crate::instructions::ForgeCustomInstructionsService;
@@ -112,6 +113,12 @@ pub struct ForgeServices<
     plugin_loader_service: Arc<ForgePluginLoader<F>>,
     hook_config_loader_service: Arc<ForgeHookConfigLoader<F>>,
     hook_executor_service: Arc<ForgeHookExecutor<F>>,
+    /// Phase 8 elicitation dispatcher. Owns a `OnceLock<Arc<Self>>`
+    /// populated after construction via
+    /// [`ForgeServices::init_elicitation_dispatcher`]; see the
+    /// module-level doc on [`ForgeElicitationDispatcher`] for the
+    /// cycle rationale.
+    elicitation_dispatcher: Arc<ForgeElicitationDispatcher<ForgeServices<F>>>,
     infra: Arc<F>,
 }
 
@@ -199,6 +206,13 @@ impl<
             Arc::new(ForgeHookConfigLoader::new(infra.clone(), hook_plugin_repo));
         let hook_executor_service = Arc::new(ForgeHookExecutor::new(infra.clone()));
 
+        // Phase 8 elicitation dispatcher. Created with an empty
+        // services slot; populated by
+        // `init_elicitation_dispatcher` once `Arc<ForgeServices<F>>`
+        // exists. See the module-level doc on
+        // `ForgeElicitationDispatcher` for the cycle rationale.
+        let elicitation_dispatcher = Arc::new(ForgeElicitationDispatcher::new());
+
         Self {
             conversation_service,
             attachment_service,
@@ -229,9 +243,24 @@ impl<
             plugin_loader_service,
             hook_config_loader_service,
             hook_executor_service,
+            elicitation_dispatcher,
             chat_service,
             infra,
         }
+    }
+
+    /// Populate the elicitation dispatcher's services slot. Must be
+    /// called from the `forge_api` layer immediately after
+    /// `Arc::new(ForgeServices::new(...))` returns so the dispatcher
+    /// can fire hooks against the fully-constructed aggregate. First
+    /// call wins; subsequent calls are silent no-ops per the
+    /// underlying [`std::sync::OnceLock`] contract.
+    ///
+    /// Until this method runs the dispatcher declines every request
+    /// with a warn log — see
+    /// [`ForgeElicitationDispatcher::elicit`].
+    pub fn init_elicitation_dispatcher(self: &Arc<Self>) {
+        self.elicitation_dispatcher.init(self.clone());
     }
 }
 
@@ -299,6 +328,7 @@ impl<
     type PluginLoader = ForgePluginLoader<F>;
     type HookConfigLoader = ForgeHookConfigLoader<F>;
     type HookExecutor = ForgeHookExecutor<F>;
+    type ElicitationDispatcher = ForgeElicitationDispatcher<ForgeServices<F>>;
 
     fn config_service(&self) -> &Self::AppConfigService {
         &self.config_service
@@ -409,6 +439,10 @@ impl<
 
     fn hook_executor(&self) -> &Self::HookExecutor {
         &self.hook_executor_service
+    }
+
+    fn elicitation_dispatcher(&self) -> &Self::ElicitationDispatcher {
+        &self.elicitation_dispatcher
     }
 
     fn provider_service(&self) -> &Self::ProviderService {

@@ -34,9 +34,9 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use forge_domain::{
     Agent, AggregatedHookResult, ConfigChangePayload, ConfigSource, Conversation, ConversationId,
-    EventData, EventHandle, FileChangeEvent, FileChangedPayload, InstructionsLoadedPayload,
-    LoadedInstructions, ModelId, NotificationPayload, SetupPayload, SetupTrigger,
-    WorktreeCreatePayload,
+    ElicitationPayload, ElicitationResultPayload, EventData, EventHandle, FileChangeEvent,
+    FileChangedPayload, InstructionsLoadedPayload, LoadedInstructions, ModelId, NotificationPayload,
+    SetupPayload, SetupTrigger, WorktreeCreatePayload,
 };
 use notify_debouncer_full::notify::RecursiveMode;
 use tracing::{debug, warn};
@@ -756,6 +756,186 @@ pub async fn fire_worktree_create_hook<S: Services>(
     // scratch conversation itself is dropped at the end of the
     // function scope.
     std::mem::take(&mut scratch.hook_result)
+}
+
+/// Fires the `Elicitation` plugin hook with the given payload data.
+///
+/// Returns the [`AggregatedHookResult`] so the caller (the MCP
+/// `ElicitationDispatcher`) can consume:
+///
+/// - `blocking_error` → cancel the elicitation with an error message.
+/// - `permission_behavior == Allow` + `updated_input` → auto-accept
+///   with the plugin-provided form data (the `updated_input` value is
+///   the `content` field of the MCP response).
+/// - `permission_behavior == Deny` → decline without prompting the
+///   user.
+///
+/// Fail-open on dispatch errors: logs via `tracing::warn` and returns
+/// [`AggregatedHookResult::default`] so the dispatcher falls through to
+/// the interactive UI fallback.
+pub async fn fire_elicitation_hook<S: Services>(
+    services: Arc<S>,
+    server_name: String,
+    message: String,
+    requested_schema: Option<serde_json::Value>,
+    mode: Option<String>,
+    url: Option<String>,
+) -> AggregatedHookResult {
+    use crate::services::AgentRegistry;
+
+    // Resolve an agent for the event context. Elicitation fires from
+    // the MCP client handler, which may run before a live
+    // conversation has been established, so we use the active agent
+    // if set, otherwise the first registered agent. If the registry
+    // is empty, skip the fire entirely — without an agent tag the
+    // hook infrastructure cannot build an `EventData`.
+    let agent = if let Ok(Some(active_id)) = services.get_active_agent_id().await {
+        match services.get_agent(&active_id).await {
+            Ok(Some(agent)) => Some(agent),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let agent = match agent {
+        Some(a) => a,
+        None => match services
+            .get_agents()
+            .await
+            .ok()
+            .and_then(|a| a.into_iter().next())
+        {
+            Some(a) => a,
+            None => {
+                debug!("no agent available — skipping Elicitation hook fire");
+                return AggregatedHookResult::default();
+            }
+        },
+    };
+    let model_id: ModelId = agent.model.clone();
+
+    let environment = services.get_environment();
+    // Scratch conversation — Elicitation fires from the MCP client
+    // handler, which is not guaranteed to have a live conversation
+    // handy. The scratch conversation is dropped as soon as we drain
+    // its `hook_result` below.
+    let mut scratch = Conversation::new(ConversationId::generate());
+    let session_id = scratch.id.into_string();
+    let transcript_path = environment.transcript_path(&session_id);
+    let cwd = environment.cwd.clone();
+
+    let payload = ElicitationPayload {
+        server_name: server_name.clone(),
+        message,
+        requested_schema,
+        mode,
+        url,
+    };
+    let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+
+    let plugin_handler = PluginHookHandler::new(services.clone());
+    if let Err(err) = <PluginHookHandler<S> as EventHandle<EventData<ElicitationPayload>>>::handle(
+        &plugin_handler,
+        &event,
+        &mut scratch,
+    )
+    .await
+    {
+        warn!(
+            server_name = %server_name,
+            error = %err,
+            "failed to dispatch Elicitation hook; falling back to interactive UI path"
+        );
+        return AggregatedHookResult::default();
+    }
+
+    // Drain the aggregated result so the caller can inspect
+    // blocking_error / permission_behavior / updated_input. The
+    // scratch conversation itself is dropped at the end of the
+    // function scope.
+    std::mem::take(&mut scratch.hook_result)
+}
+
+/// Fires the `ElicitationResult` plugin hook after the user (or an
+/// auto-responding plugin hook) has completed an elicitation request.
+///
+/// This is fire-and-forget — the aggregated result is drained and
+/// discarded per the observability-only contract. Plugins use this
+/// event for audit logging, analytics, or follow-up actions after an
+/// elicitation completes.
+///
+/// Fail-open on dispatch errors: logs via `tracing::warn` and returns
+/// without propagating so the MCP response path is never blocked by a
+/// misbehaving plugin.
+pub async fn fire_elicitation_result_hook<S: Services>(
+    services: Arc<S>,
+    server_name: String,
+    action: String,
+    content: Option<serde_json::Value>,
+) {
+    use crate::services::AgentRegistry;
+
+    // Same agent-resolution fallback as `fire_elicitation_hook` — if
+    // no agent is registered, skip the fire entirely.
+    let agent = if let Ok(Some(active_id)) = services.get_active_agent_id().await {
+        match services.get_agent(&active_id).await {
+            Ok(Some(agent)) => Some(agent),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let agent = match agent {
+        Some(a) => a,
+        None => match services
+            .get_agents()
+            .await
+            .ok()
+            .and_then(|a| a.into_iter().next())
+        {
+            Some(a) => a,
+            None => {
+                debug!("no agent available — skipping ElicitationResult hook fire");
+                return;
+            }
+        },
+    };
+    let model_id: ModelId = agent.model.clone();
+
+    let environment = services.get_environment();
+    let mut scratch = Conversation::new(ConversationId::generate());
+    let session_id = scratch.id.into_string();
+    let transcript_path = environment.transcript_path(&session_id);
+    let cwd = environment.cwd.clone();
+
+    let payload = ElicitationResultPayload {
+        server_name: server_name.clone(),
+        action,
+        content,
+    };
+    let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+
+    let plugin_handler = PluginHookHandler::new(services.clone());
+    if let Err(err) =
+        <PluginHookHandler<S> as EventHandle<EventData<ElicitationResultPayload>>>::handle(
+            &plugin_handler,
+            &event,
+            &mut scratch,
+        )
+        .await
+    {
+        warn!(
+            server_name = %server_name,
+            error = %err,
+            "failed to dispatch ElicitationResult hook (observability-only, ignoring)"
+        );
+        return;
+    }
+
+    // ElicitationResult is observability-only; drain the aggregated
+    // result and discard it. Plugins cannot block or modify the
+    // response via this event.
+    let _ = std::mem::take(&mut scratch.hook_result);
 }
 
 #[cfg(test)]

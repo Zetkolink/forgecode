@@ -52,8 +52,9 @@ pub use hook_matcher::{matches_condition, matches_pattern};
 pub use infra::*;
 pub use lifecycle_fires::{
     FileChangedWatcherOps, ForgeNotificationService, add_file_changed_watch_paths,
-    fire_config_change_hook, fire_file_changed_hook, fire_instructions_loaded_hook,
-    fire_setup_hook, fire_worktree_create_hook, install_file_changed_watcher_ops,
+    fire_config_change_hook, fire_elicitation_hook, fire_elicitation_result_hook,
+    fire_file_changed_hook, fire_instructions_loaded_hook, fire_setup_hook,
+    fire_worktree_create_hook, install_file_changed_watcher_ops,
 };
 pub use services::*;
 pub use template_engine::*;
