@@ -76,7 +76,30 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
 
         let files = services.list_current_directory().await?;
 
-        let custom_instructions = services.get_custom_instructions().await;
+        // Wave D Pass 1: load instructions with full classification
+        // metadata so we can fire one `InstructionsLoaded` hook per
+        // discovered AGENTS.md file. The system prompt builder still
+        // only needs the raw text, so we project the `content` field
+        // back into a `Vec<String>` for `custom_instructions`. Pass 2
+        // will extend this with nested / conditional / @include /
+        // post-compact reasons.
+        let loaded_instructions = services.get_custom_instructions_detailed().await;
+        let custom_instructions: Vec<String> = loaded_instructions
+            .iter()
+            .map(|loaded| loaded.content.clone())
+            .collect();
+
+        // Fire the InstructionsLoaded hook once per loaded file. Each
+        // fire is observability-only — hook dispatch errors are
+        // logged inside `fire_instructions_loaded_hook` and never
+        // propagated to the chat pipeline.
+        for loaded in &loaded_instructions {
+            crate::lifecycle_fires::fire_instructions_loaded_hook(
+                services.clone(),
+                loaded.clone(),
+            )
+            .await;
+        }
 
         // Prepare agents with user configuration
         let agent_provider_resolver = AgentProviderResolver::new(services.clone());

@@ -578,53 +578,16 @@ pub struct WorktreeRemovePayload {
 }
 
 // ---------- InstructionsLoaded event (Phase 6D) ----------
+//
+// The [`MemoryType`] and [`InstructionsLoadReason`] enums referenced by
+// the payload below used to live inline in this file. Wave D Pass 1
+// moved them into `crate::memory` so the in-process
+// [`crate::LoadedInstructions`] struct can share the same classification
+// vocabulary without a circular dependency. They are re-exported at the
+// crate root so the payload continues to reference them via plain
+// `MemoryType` / `InstructionsLoadReason` below.
 
-/// Memory layer that owns a loaded instruction file. Mirrors Claude
-/// Code's memoryType field (`user` / `project` / `local` / `managed`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MemoryType {
-    User,
-    Project,
-    Local,
-    Managed,
-}
-
-impl MemoryType {
-    pub fn as_wire_str(self) -> &'static str {
-        match self {
-            Self::User => "user",
-            Self::Project => "project",
-            Self::Local => "local",
-            Self::Managed => "managed",
-        }
-    }
-}
-
-/// Reason an instruction file was loaded. Phase 6D minimal only fires
-/// `SessionStart`; the remaining variants are reserved for the full
-/// memory system in the Phase 6 expansion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InstructionsLoadReason {
-    SessionStart,
-    NestedTraversal,
-    PathGlobMatch,
-    Include,
-    Compact,
-}
-
-impl InstructionsLoadReason {
-    pub fn as_wire_str(self) -> &'static str {
-        match self {
-            Self::SessionStart => "session_start",
-            Self::NestedTraversal => "nested_traversal",
-            Self::PathGlobMatch => "path_glob_match",
-            Self::Include => "include",
-            Self::Compact => "compact",
-        }
-    }
-}
+use crate::{InstructionsLoadReason, MemoryType};
 
 /// Payload for the `InstructionsLoaded` event — fired whenever
 /// Forge loads an instructions / memory file (`AGENTS.md` etc).
@@ -1459,32 +1422,11 @@ mod tests {
     }
 
     // ---- Phase 6D: InstructionsLoaded payload tests ----
-
-    #[test]
-    fn test_memory_type_wire_str_all_variants() {
-        assert_eq!(MemoryType::User.as_wire_str(), "user");
-        assert_eq!(MemoryType::Project.as_wire_str(), "project");
-        assert_eq!(MemoryType::Local.as_wire_str(), "local");
-        assert_eq!(MemoryType::Managed.as_wire_str(), "managed");
-    }
-
-    #[test]
-    fn test_instructions_load_reason_wire_str_all_variants() {
-        assert_eq!(
-            InstructionsLoadReason::SessionStart.as_wire_str(),
-            "session_start"
-        );
-        assert_eq!(
-            InstructionsLoadReason::NestedTraversal.as_wire_str(),
-            "nested_traversal"
-        );
-        assert_eq!(
-            InstructionsLoadReason::PathGlobMatch.as_wire_str(),
-            "path_glob_match"
-        );
-        assert_eq!(InstructionsLoadReason::Include.as_wire_str(), "include");
-        assert_eq!(InstructionsLoadReason::Compact.as_wire_str(), "compact");
-    }
+    //
+    // Wire-string coverage for [`MemoryType`] and [`InstructionsLoadReason`]
+    // lives next to the type definitions in `crate::memory`; here we
+    // only exercise the payload-to-wire conversion that is unique to
+    // this file.
 
     #[test]
     fn test_instructions_loaded_payload_into_hook_input_payload() {

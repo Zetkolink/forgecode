@@ -6,9 +6,10 @@ use derive_setters::Setters;
 use forge_domain::{
     AgentId, AnyProvider, Attachment, AuthContextRequest, AuthContextResponse, AuthMethod,
     ChatCompletionMessage, CommandOutput, Context, Conversation, ConversationId, File, FileInfo,
-    FileStatus, Image, InvocableCommand, McpConfig, McpServers, Model, ModelId, Node,
-    NotificationKind, Provider, ProviderId, ResultStream, Scope, SearchParams, SyncProgress,
-    SyntaxError, Template, ToolCallFull, ToolOutput, WorkspaceAuth, WorkspaceId, WorkspaceInfo,
+    FileStatus, Image, InvocableCommand, LoadedInstructions, McpConfig, McpServers, Model,
+    ModelId, Node, NotificationKind, Provider, ProviderId, ResultStream, Scope, SearchParams,
+    SyncProgress, SyntaxError, Template, ToolCallFull, ToolOutput, WorkspaceAuth, WorkspaceId,
+    WorkspaceInfo,
 };
 use reqwest::Response;
 use reqwest::header::HeaderMap;
@@ -279,7 +280,25 @@ pub trait AttachmentService {
 
 #[async_trait::async_trait]
 pub trait CustomInstructionsService: Send + Sync {
-    async fn get_custom_instructions(&self) -> Vec<String>;
+    /// Returns raw instructions text strings. Kept for backwards
+    /// compatibility with the system prompt builder which only needs
+    /// the rendered content, not the classification metadata.
+    async fn get_custom_instructions(&self) -> Vec<String> {
+        self.get_custom_instructions_detailed()
+            .await
+            .into_iter()
+            .map(|loaded| loaded.content)
+            .collect()
+    }
+
+    /// Returns instructions files with full classification metadata.
+    /// Used by the `InstructionsLoaded` hook fire site so it can
+    /// populate the payload without re-reading the filesystem.
+    ///
+    /// Pass 1 of Wave D always returns entries with
+    /// [`forge_domain::InstructionsLoadReason::SessionStart`]; nested
+    /// traversal, conditional rules, and `@include` are Pass 2.
+    async fn get_custom_instructions_detailed(&self) -> Vec<LoadedInstructions>;
 }
 
 /// Service for indexing workspaces for semantic search
@@ -1051,6 +1070,12 @@ impl<I: Services> CustomInstructionsService for I {
     async fn get_custom_instructions(&self) -> Vec<String> {
         self.custom_instructions_service()
             .get_custom_instructions()
+            .await
+    }
+
+    async fn get_custom_instructions_detailed(&self) -> Vec<LoadedInstructions> {
+        self.custom_instructions_service()
+            .get_custom_instructions_detailed()
             .await
     }
 }

@@ -34,7 +34,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use forge_domain::{
     Agent, ConfigChangePayload, ConfigSource, Conversation, ConversationId, EventData, EventHandle,
-    ModelId, NotificationPayload, SetupPayload, SetupTrigger,
+    InstructionsLoadedPayload, LoadedInstructions, ModelId, NotificationPayload, SetupPayload,
+    SetupTrigger,
 };
 use tracing::{debug, warn};
 
@@ -353,6 +354,109 @@ pub async fn fire_config_change_hook<S: Services>(
             source = ?source,
             error = %err.message,
             "ConfigChange hook returned blocking_error; ignoring (observability only)"
+        );
+    }
+}
+
+/// Fire the `InstructionsLoaded` lifecycle event for a single
+/// instructions file that was just loaded into the agent's context.
+///
+/// Used by `ForgeApp::chat` to dispatch one hook event per AGENTS.md
+/// file returned by [`crate::CustomInstructionsService::get_custom_instructions_detailed`].
+/// Pass 1 of Wave D only fires with
+/// [`forge_domain::InstructionsLoadReason::SessionStart`]; the nested
+/// traversal, conditional-rule, `@include` and post-compact reasons
+/// are deferred to Pass 2.
+///
+/// Per Claude Code semantics, `InstructionsLoaded` is an
+/// **observability-only** event — any `blocking_error` returned by a
+/// plugin hook is drained and discarded, and dispatch failures are
+/// logged at `warn!` but never propagated to the caller. The memory
+/// layer cannot veto a load of its own source files.
+///
+/// This function is safe to call even when no plugins are configured:
+/// the hook dispatcher returns an empty result which is then drained.
+pub async fn fire_instructions_loaded_hook<S: Services>(
+    services: Arc<S>,
+    loaded: LoadedInstructions,
+) {
+    use crate::services::AgentRegistry;
+
+    // Resolve an agent for the event context. InstructionsLoaded fires
+    // at session start from the chat pipeline, so we use the active
+    // agent if set, otherwise the first registered agent. If the
+    // registry is empty, skip the fire entirely — without an agent
+    // tag the hook infrastructure cannot build an `EventData`.
+    let agent = if let Ok(Some(active_id)) = services.get_active_agent_id().await {
+        match services.get_agent(&active_id).await {
+            Ok(Some(agent)) => Some(agent),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let agent = match agent {
+        Some(a) => a,
+        None => match services
+            .get_agents()
+            .await
+            .ok()
+            .and_then(|a| a.into_iter().next())
+        {
+            Some(a) => a,
+            None => {
+                debug!("no agent available — skipping InstructionsLoaded hook fire");
+                return;
+            }
+        },
+    };
+    let model_id: ModelId = agent.model.clone();
+
+    let environment = services.get_environment();
+    // Scratch conversation — InstructionsLoaded fires from the chat
+    // pipeline *before* the live conversation's orchestrator is
+    // running, so we dispatch against a throwaway conversation that
+    // gets dropped as soon as the hook call returns.
+    let mut scratch = Conversation::new(ConversationId::generate());
+    let session_id = scratch.id.into_string();
+    let transcript_path = environment.transcript_path(&session_id);
+    let cwd = environment.cwd.clone();
+
+    // Project the LoadedInstructions into the wire payload. The
+    // payload struct uses the typed enums directly (not strings), so
+    // we pass `memory_type` / `load_reason` verbatim.
+    let payload = InstructionsLoadedPayload {
+        file_path: loaded.file_path,
+        memory_type: loaded.memory_type,
+        load_reason: loaded.load_reason,
+        globs: loaded.globs,
+        trigger_file_path: loaded.trigger_file_path,
+        parent_file_path: loaded.parent_file_path,
+    };
+
+    let event =
+        EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+
+    let plugin_handler = PluginHookHandler::new(services.clone());
+    if let Err(err) = <PluginHookHandler<S> as EventHandle<
+        EventData<InstructionsLoadedPayload>,
+    >>::handle(&plugin_handler, &event, &mut scratch)
+    .await
+    {
+        warn!(
+            error = %err,
+            "failed to dispatch InstructionsLoaded hook; ignoring per Claude Code semantics"
+        );
+    }
+
+    // Drain and explicitly ignore the blocking_error — InstructionsLoaded
+    // is observability-only. The memory layer cannot be vetoed by a
+    // plugin.
+    let aggregated = std::mem::take(&mut scratch.hook_result);
+    if let Some(err) = aggregated.blocking_error {
+        debug!(
+            error = %err.message,
+            "InstructionsLoaded hook returned blocking_error; ignoring (observability only)"
         );
     }
 }
