@@ -1449,6 +1449,124 @@ mod tests {
         assert_eq!(result.additional_contexts, vec!["canned".to_string()]);
     }
 
+    // Wave E-1a: Verify multiple matched SubagentStart hooks accumulate their
+    // additional_contexts in execution order. `AgentExecutor::execute` drains
+    // this vector and injects each entry into the subagent's initial prompt.
+    #[tokio::test]
+    async fn test_dispatch_subagent_start_accumulates_additional_contexts_across_hooks() {
+        use forge_domain::{HookMatcher, ShellHookCommand};
+        let mut merged = MergedHooksConfig::default();
+        merged.entries.insert(
+            HookEventName::SubagentStart,
+            vec![
+                HookMatcherWithSource {
+                    matcher: HookMatcher {
+                        matcher: Some("sage".to_string()),
+                        hooks: vec![HookCommand::Command(ShellHookCommand {
+                            command: "echo first".to_string(),
+                            condition: None,
+                            shell: None,
+                            timeout: None,
+                            status_message: None,
+                            once: false,
+                            async_mode: false,
+                            async_rewake: false,
+                        })],
+                    },
+                    source: crate::hook_runtime::HookConfigSource::UserGlobal,
+                    plugin_root: None,
+                    plugin_name: None,
+                },
+                HookMatcherWithSource {
+                    matcher: HookMatcher {
+                        matcher: Some("sage".to_string()),
+                        hooks: vec![HookCommand::Command(ShellHookCommand {
+                            command: "echo second".to_string(),
+                            condition: None,
+                            shell: None,
+                            timeout: None,
+                            status_message: None,
+                            once: false,
+                            async_mode: false,
+                            async_rewake: false,
+                        })],
+                    },
+                    source: crate::hook_runtime::HookConfigSource::UserGlobal,
+                    plugin_root: None,
+                    plugin_name: None,
+                },
+            ],
+        );
+
+        let dispatcher = ExplicitDispatcher::new(merged);
+        let result = dispatcher
+            .dispatch(
+                HookEventName::SubagentStart,
+                Some("sage"),
+                None,
+                sample_input("SubagentStart"),
+            )
+            .await;
+        // Both hooks match and produce a context entry each (canned stdout).
+        assert_eq!(
+            result.additional_contexts,
+            vec!["canned".to_string(), "canned".to_string()]
+        );
+    }
+
+    // Wave E-1a: Verify `once: true` semantics for SubagentStart. A once hook
+    // should fire on the first matching subagent launch but be skipped on
+    // subsequent launches of the same agent type.
+    #[tokio::test]
+    async fn test_dispatch_subagent_start_respects_once_semantics() {
+        use forge_domain::{HookMatcher, ShellHookCommand};
+        let mut merged = MergedHooksConfig::default();
+        merged.entries.insert(
+            HookEventName::SubagentStart,
+            vec![HookMatcherWithSource {
+                matcher: HookMatcher {
+                    matcher: Some("muse".to_string()),
+                    hooks: vec![HookCommand::Command(ShellHookCommand {
+                        command: "echo once".to_string(),
+                        condition: None,
+                        shell: None,
+                        timeout: None,
+                        status_message: None,
+                        once: true,
+                        async_mode: false,
+                        async_rewake: false,
+                    })],
+                },
+                source: crate::hook_runtime::HookConfigSource::UserGlobal,
+                plugin_root: None,
+                plugin_name: None,
+            }],
+        );
+
+        let dispatcher = ExplicitDispatcher::new(merged);
+        // First dispatch — hook fires.
+        let first = dispatcher
+            .dispatch(
+                HookEventName::SubagentStart,
+                Some("muse"),
+                None,
+                sample_input("SubagentStart"),
+            )
+            .await;
+        assert_eq!(first.additional_contexts, vec!["canned".to_string()]);
+
+        // Second dispatch — hook has already fired and should be skipped.
+        let second = dispatcher
+            .dispatch(
+                HookEventName::SubagentStart,
+                Some("muse"),
+                None,
+                sample_input("SubagentStart"),
+            )
+            .await;
+        assert!(second.additional_contexts.is_empty());
+    }
+
     // ---- Phase 7B: Permission dispatcher tests ----
 
     #[tokio::test]

@@ -63,6 +63,27 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
     /// Resolve the plugin-hook context tuple (session_id, transcript_path,
     /// cwd) for the current conversation. Used by every fire site to
     /// build [`EventData::with_context`] without duplicating the lookup.
+    ///
+    /// TODO(wave-e-1a-task-7-subagent-threading): Phase 7A.4 requires
+    /// that when the Orchestrator runs inside a subagent, every
+    /// event it fires should carry the subagent's UUID in the
+    /// wire-level `HookInputBase.agent_id` instead of the main
+    /// conversation's agent id. Implementing this cleanly is
+    /// invasive — it requires adding `current_subagent_id:
+    /// Option<String>` to `Orchestrator`, threading it via either
+    /// `ChatRequest` or `Conversation`, plumbing a new
+    /// `subagent_id: Option<String>` field through `EventData` and
+    /// `PluginHookHandler::build_hook_input`, and updating every
+    /// fire site in `orch.rs` that currently destructures the
+    /// 3-tuple from this helper. See
+    /// `plans/2026-04-09-claude-code-plugins-v4/08-phase-7-t3-intermediate.md:97-102`
+    /// for the original design note. Wave E-1a Pass 1 ships the
+    /// explicit `SubagentStart` / `SubagentStop` fire sites at the
+    /// executor boundary — those carry the subagent UUID directly
+    /// inside the payload so plugins that need to distinguish
+    /// main-vs-subagent context can still filter on them today.
+    /// Wave G can revisit the full inner-orchestrator threading if a
+    /// use case materializes.
     fn plugin_hook_context(&self) -> (String, PathBuf, PathBuf) {
         let session_id = self.conversation.id.into_string();
         let environment = self.services.get_environment();

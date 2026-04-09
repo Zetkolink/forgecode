@@ -47,12 +47,31 @@ pub(crate) fn build_template_config(config: &ForgeConfig) -> forge_domain::Templ
 pub struct ForgeApp<S> {
     services: Arc<S>,
     tool_registry: ToolRegistry<S>,
+    /// Phase 7A: shared plugin hook dispatcher. Created once in
+    /// [`ForgeApp::new`] and reused by both the `ToolRegistry`
+    /// (`AgentExecutor::execute` fire sites) and
+    /// [`ForgeApp::chat`] (main Hook chain builder). Reusing the
+    /// same handle keeps `once_fired` tracking and any future
+    /// per-handler state consistent across the whole pipeline.
+    plugin_handler: PluginHookHandler<S>,
 }
 
 impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeApp<S> {
     /// Creates a new ForgeApp instance with the provided services.
     pub fn new(services: Arc<S>) -> Self {
-        Self { tool_registry: ToolRegistry::new(services.clone()), services }
+        // Shared plugin hook dispatcher — passed into both `ToolRegistry`
+        // (so `AgentExecutor` can fire `SubagentStart` / `SubagentStop`
+        // from inside `execute`) and later reused verbatim by
+        // `ForgeApp::chat` when building the `Hook` chain. Constructing
+        // the handler at `ForgeApp::new` time matches the Phase 4
+        // wiring and keeps the once-fired tracking anchored to a single
+        // instance per chat pipeline.
+        let plugin_handler = PluginHookHandler::new(services.clone());
+        Self {
+            tool_registry: ToolRegistry::new(services.clone(), plugin_handler.clone()),
+            plugin_handler,
+            services,
+        }
     }
 
     /// Executes a chat request and returns a stream of responses.
@@ -200,7 +219,12 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         // Shared plugin hook dispatcher used for every Claude-Code-compatible
         // T1 lifecycle event. Part 2a wires the handler into the Hook builder;
         // Part 2b will add the matching fire sites in `Orchestrator::run`.
-        let plugin_handler = PluginHookHandler::new(services.clone());
+        //
+        // Phase 7A: reuse the handle constructed in `ForgeApp::new` so
+        // the `AgentExecutor` fire sites for `SubagentStart` /
+        // `SubagentStop` share the same `once_fired` tracking with the
+        // rest of the Hook chain.
+        let plugin_handler = self.plugin_handler.clone();
 
         // Build the on_stop hook chain, conditionally adding
         // `PendingTodosHandler` based on config. Phase 5 migrated

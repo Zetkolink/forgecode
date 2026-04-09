@@ -18,6 +18,7 @@ use crate::agent_executor::AgentExecutor;
 use crate::dto::ToolsOverview;
 use crate::error::Error;
 use crate::fmt::content::FormatContent;
+use crate::hooks::PluginHookHandler;
 use crate::mcp_executor::McpExecutor;
 use crate::tool_executor::ToolExecutor;
 use crate::{
@@ -33,11 +34,11 @@ pub struct ToolRegistry<S> {
 }
 
 impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolRegistry<S> {
-    pub fn new(services: Arc<S>) -> Self {
+    pub fn new(services: Arc<S>, plugin_handler: PluginHookHandler<S>) -> Self {
         Self {
             services: services.clone(),
             tool_executor: ToolExecutor::new(services.clone()),
-            agent_executor: AgentExecutor::new(services.clone()),
+            agent_executor: AgentExecutor::new(services.clone(), plugin_handler),
             mcp_executor: McpExecutor::new(services.clone()),
         }
     }
