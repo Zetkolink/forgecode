@@ -11,15 +11,15 @@
 //! 1. [`ForgeNotificationService`] — concrete [`NotificationService`]
 //!    implementation. Calling [`NotificationService::emit`] fires the
 //!    `Notification` lifecycle event through the plugin hook dispatcher
-//!    (observability only — hook errors never propagate) and, when the
-//!    current stderr is a non-VS-Code TTY, emits a best-effort terminal
-//!    bell so REPL users get a passive nudge.
+//!    (observability only — hook errors never propagate) and, when the current
+//!    stderr is a non-VS-Code TTY, emits a best-effort terminal bell so REPL
+//!    users get a passive nudge.
 //!
 //! 2. [`fire_setup_hook`] — free function used by `ForgeAPI` to fire the
-//!    `Setup` lifecycle event when the user invokes
-//!    `forge --init` / `forge --maintenance`. Per Claude Code semantics
-//!    (`hooksConfigManager.ts:175`) blocking errors from Setup hooks are
-//!    intentionally discarded; the fire is observability-only.
+//!    `Setup` lifecycle event when the user invokes `forge --init` / `forge
+//!    --maintenance`. Per Claude Code semantics (`hooksConfigManager.ts:175`)
+//!    blocking errors from Setup hooks are intentionally discarded; the fire is
+//!    observability-only.
 //!
 //! Both helpers construct a scratch [`Conversation`] because neither is
 //! scoped to a live session — the orchestrator lifecycle isn't running
@@ -122,8 +122,8 @@ impl<S: Services> NotificationService for ForgeNotificationService<S> {
             "emit notification"
         );
 
-        // 1. Fire the Notification hook. Per the trait docs, hook
-        //    dispatcher errors are soft failures: log and continue.
+        // 1. Fire the Notification hook. Per the trait docs, hook dispatcher errors are
+        //    soft failures: log and continue.
         if let Err(err) = self.fire_hook(&notification).await {
             warn!(error = %err, "failed to fire Notification hook");
         }
@@ -212,7 +212,12 @@ pub async fn fire_setup_hook<S: Services>(
     };
     let agent = match agent {
         Some(a) => a,
-        None => match services.get_agents().await.ok().and_then(|a| a.into_iter().next()) {
+        None => match services
+            .get_agents()
+            .await
+            .ok()
+            .and_then(|a| a.into_iter().next())
+        {
             Some(a) => a,
             None => {
                 debug!("no agent available — skipping Setup hook fire");
@@ -229,8 +234,7 @@ pub async fn fire_setup_hook<S: Services>(
     let cwd = environment.cwd.clone();
 
     let payload = SetupPayload { trigger };
-    let event =
-        EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+    let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
 
     let plugin_handler = PluginHookHandler::new(services.clone());
     <PluginHookHandler<S> as EventHandle<EventData<SetupPayload>>>::handle(
