@@ -145,16 +145,15 @@ fn format_plugin_components(plugin: &forge_domain::LoadedPlugin) -> String {
 /// file/directory **basename** only — nested `node_modules` inside
 /// packaged vendor directories is still excluded because the check runs
 /// at every recursion step.
-const PLUGIN_INSTALL_EXCLUDED_DIRS: &[&str] =
-    &[".git", "node_modules", "target", ".DS_Store"];
+const PLUGIN_INSTALL_EXCLUDED_DIRS: &[&str] = &[".git", "node_modules", "target", ".DS_Store"];
 
 /// Find the canonical `plugin.json` inside `root`, mirroring the Phase 1
 /// loader's probe order.
 ///
 /// The three accepted locations are (in precedence order):
 /// 1. `<root>/.forge-plugin/plugin.json` — Forge-native marker.
-/// 2. `<root>/.claude-plugin/plugin.json` — Claude Code compatibility
-///    marker, accepted verbatim so unmodified CC plugins install cleanly.
+/// 2. `<root>/.claude-plugin/plugin.json` — Claude Code compatibility marker,
+///    accepted verbatim so unmodified CC plugins install cleanly.
 /// 3. `<root>/plugin.json` — bare manifest at the plugin root.
 ///
 /// Returns `Ok(Some(path))` when a manifest is located, `Ok(None)` when
@@ -202,9 +201,8 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
     for entry in std::fs::read_dir(src)
         .with_context(|| format!("Failed to read source directory: {}", src.display()))?
     {
-        let entry = entry.with_context(|| {
-            format!("Failed to read directory entry in {}", src.display())
-        })?;
+        let entry = entry
+            .with_context(|| format!("Failed to read directory entry in {}", src.display()))?;
         let file_name = entry.file_name();
         let name_str = file_name.to_string_lossy();
 
@@ -219,9 +217,9 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
 
         let src_path = entry.path();
         let dst_path = dst.join(&file_name);
-        let file_type = entry.file_type().with_context(|| {
-            format!("Failed to read file type for {}", src_path.display())
-        })?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("Failed to read file type for {}", src_path.display()))?;
 
         if file_type.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
@@ -238,12 +236,10 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
             // deliberately do *not* recreate the symlink because its
             // target may be outside the plugin tree and therefore won't
             // survive the install.
-            let resolved = std::fs::canonicalize(&src_path).with_context(|| {
-                format!("Failed to resolve symlink {}", src_path.display())
-            })?;
-            let resolved_meta = std::fs::metadata(&resolved).with_context(|| {
-                format!("Failed to stat symlink target {}", resolved.display())
-            })?;
+            let resolved = std::fs::canonicalize(&src_path)
+                .with_context(|| format!("Failed to resolve symlink {}", src_path.display()))?;
+            let resolved_meta = std::fs::metadata(&resolved)
+                .with_context(|| format!("Failed to stat symlink target {}", resolved.display()))?;
             if resolved_meta.is_dir() {
                 copy_dir_recursive(&resolved, &dst_path)?;
             } else {
@@ -4652,17 +4648,15 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
     ///
     /// 1. Canonicalize and validate the source path (must be an existing
     ///    directory containing a recognised manifest).
-    /// 2. Parse the manifest via [`forge_domain::PluginManifest`] and
-    ///    require `manifest.name` (the install target directory uses it).
-    /// 3. Compute the target path `<env.plugin_path>/<name>/` and, when
-    ///    the target already exists, prompt the user to confirm
-    ///    overwrite.
-    /// 4. Summarise the plugin's components + manifest metadata and
-    ///    display a trust prompt before executing any filesystem
-    ///    mutations. Declining leaves the filesystem unchanged.
-    /// 5. Copy the source tree recursively via
-    ///    [`copy_dir_recursive`], skipping the entries in
-    ///    [`PLUGIN_INSTALL_EXCLUDED_DIRS`].
+    /// 2. Parse the manifest via [`forge_domain::PluginManifest`] and require
+    ///    `manifest.name` (the install target directory uses it).
+    /// 3. Compute the target path `<env.plugin_path>/<name>/` and, when the
+    ///    target already exists, prompt the user to confirm overwrite.
+    /// 4. Summarise the plugin's components + manifest metadata and display a
+    ///    trust prompt before executing any filesystem mutations. Declining
+    ///    leaves the filesystem unchanged.
+    /// 5. Copy the source tree recursively via [`copy_dir_recursive`], skipping
+    ///    the entries in [`PLUGIN_INSTALL_EXCLUDED_DIRS`].
     /// 6. Register the plugin in `.forge.toml` as **disabled by default**
     ///    (`set_plugin_enabled(name, false)`). The user must opt in via
     ///    `:plugin enable <name>` — mirroring Claude Code's trust model.
@@ -4675,12 +4669,10 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
     /// hint pointing at the path).
     async fn on_plugin_install(&mut self, source: &std::path::Path) -> Result<()> {
         // --- 1. Validate source path ---
-        let source = std::fs::canonicalize(source).with_context(|| {
-            format!("Source path does not exist: {}", source.display())
-        })?;
-        let source_meta = std::fs::metadata(&source).with_context(|| {
-            format!("Failed to stat source path: {}", source.display())
-        })?;
+        let source = std::fs::canonicalize(source)
+            .with_context(|| format!("Source path does not exist: {}", source.display()))?;
+        let source_meta = std::fs::metadata(&source)
+            .with_context(|| format!("Failed to stat source path: {}", source.display()))?;
         if !source_meta.is_dir() {
             return Err(anyhow::anyhow!(
                 "Source path is not a directory: {}",
@@ -4697,13 +4689,10 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             )
         })?;
 
-        let manifest_raw = std::fs::read_to_string(&manifest_path).with_context(|| {
-            format!("Failed to read manifest: {}", manifest_path.display())
-        })?;
+        let manifest_raw = std::fs::read_to_string(&manifest_path)
+            .with_context(|| format!("Failed to read manifest: {}", manifest_path.display()))?;
         let manifest: forge_domain::PluginManifest = serde_json::from_str(&manifest_raw)
-            .with_context(|| {
-                format!("Failed to parse manifest: {}", manifest_path.display())
-            })?;
+            .with_context(|| format!("Failed to parse manifest: {}", manifest_path.display()))?;
 
         let name = manifest.name.clone().ok_or_else(|| {
             anyhow::anyhow!(
@@ -4751,11 +4740,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         let has_hooks = source.join("hooks/hooks.json").exists()
             || source.join("hooks.json").exists()
             || manifest.hooks.is_some();
-        let mcp_count = manifest
-            .mcp_servers
-            .as_ref()
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let mcp_count = manifest.mcp_servers.as_ref().map(|m| m.len()).unwrap_or(0);
 
         let mut trust = Info::new()
             .add_title("PLUGIN INSTALLATION")
@@ -4774,10 +4759,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             .add_key_value("Skills", skills_count.to_string())
             .add_key_value("Commands", commands_count.to_string())
             .add_key_value("Agents", agents_count.to_string())
-            .add_key_value(
-                "Hooks",
-                if has_hooks { "present" } else { "none" },
-            )
+            .add_key_value("Hooks", if has_hooks { "present" } else { "none" })
             .add_key_value("MCP Servers", mcp_count.to_string());
 
         self.writeln(trust)?;
@@ -4800,10 +4782,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             // (e.g. a deleted command that's no longer in the source)
             // don't survive the upgrade.
             std::fs::remove_dir_all(&target).with_context(|| {
-                format!(
-                    "Failed to remove existing target {}",
-                    target.display()
-                )
+                format!("Failed to remove existing target {}", target.display())
             })?;
         }
         copy_dir_recursive(&source, &target).with_context(|| {

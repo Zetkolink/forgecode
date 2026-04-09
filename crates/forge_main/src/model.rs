@@ -530,7 +530,8 @@ pub enum SlashCommand {
 ///
 /// Mirrors the Phase 9 plan: `list`, `enable <name>`, `disable <name>`,
 /// `info <name>`, `reload`, and `install <path>`. The `install` flow is
-/// specified in `plans/2026-04-09-claude-code-plugins-v4/10-phase-9-plugin-cli.md`.
+/// specified in
+/// `plans/2026-04-09-claude-code-plugins-v4/10-phase-9-plugin-cli.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PluginSubcommand {
     /// `:plugin list` — show all discovered plugins.
@@ -1521,7 +1522,9 @@ mod tests {
     #[test]
     fn test_parse_plugin_install_with_path() {
         let fixture = ForgeCommandManager::default();
-        let actual = fixture.parse("/plugin install /tmp/prettier-format").unwrap();
+        let actual = fixture
+            .parse("/plugin install /tmp/prettier-format")
+            .unwrap();
         assert_eq!(
             actual,
             SlashCommand::Plugin(PluginSubcommand::Install {
