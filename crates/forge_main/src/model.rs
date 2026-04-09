@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use forge_api::{Agent, Model, Template};
@@ -286,9 +287,11 @@ impl ForgeCommandManager {
             }
             "/index" => Ok(SlashCommand::Index),
             "/plugin" => {
-                // /plugin <subcommand> [name]
+                // /plugin <subcommand> [args...]
                 let sub = parameters.first().copied().ok_or_else(|| {
-                    anyhow::anyhow!("Usage: /plugin <list|enable|disable|info|reload> [name]")
+                    anyhow::anyhow!(
+                        "Usage: /plugin <list|enable|disable|info|reload|install> [args]"
+                    )
                 })?;
 
                 let rest = &parameters[1..];
@@ -322,10 +325,24 @@ impl ForgeCommandManager {
                         }
                         PluginSubcommand::Info { name }
                     }
+                    "install" => {
+                        // `install` takes a single path argument. We join
+                        // the remaining tokens with a single space so paths
+                        // containing spaces (e.g. `"/tmp/My Plugins/demo"`)
+                        // still work when quoted at the shell level and
+                        // arrive as multiple tokens here.
+                        let raw = rest.join(" ").trim().to_string();
+                        if raw.is_empty() {
+                            return Err(anyhow::anyhow!(
+                                "Usage: /plugin install <path>. Please provide a directory path."
+                            ));
+                        }
+                        PluginSubcommand::Install { path: PathBuf::from(raw) }
+                    }
                     other => {
                         return Err(anyhow::anyhow!(
                             "Unknown /plugin subcommand '{other}'. Expected one of: \
-                             list, enable, disable, info, reload."
+                             list, enable, disable, info, reload, install."
                         ));
                     }
                 };
@@ -495,7 +512,7 @@ pub enum SlashCommand {
     #[strum(props(usage = "Index the current workspace for semantic search"))]
     Index,
 
-    /// Manage Forge plugins: list/enable/disable/info/reload.
+    /// Manage Forge plugins: list/enable/disable/info/reload/install.
     ///
     /// This carries a [`PluginSubcommand`] describing which plugin
     /// operation the user requested. Iteration over [`SlashCommand`]
@@ -504,7 +521,7 @@ pub enum SlashCommand {
     /// `plugin` entry; the parser routes the individual subcommands
     /// based on the remaining tokens.
     #[strum(props(
-        usage = "Manage plugins. Usage: /plugin <list|enable|disable|info|reload> [name]"
+        usage = "Manage plugins. Usage: /plugin <list|enable|disable|info|reload|install> [args]"
     ))]
     Plugin(PluginSubcommand),
 }
@@ -512,8 +529,8 @@ pub enum SlashCommand {
 /// Sub-command carried by [`SlashCommand::Plugin`].
 ///
 /// Mirrors the Phase 9 plan: `list`, `enable <name>`, `disable <name>`,
-/// `info <name>`, and `reload`. `install` is intentionally deferred — see
-/// the Phase 9 plan document for the `install` flow specification.
+/// `info <name>`, `reload`, and `install <path>`. The `install` flow is
+/// specified in `plans/2026-04-09-claude-code-plugins-v4/10-phase-9-plugin-cli.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PluginSubcommand {
     /// `:plugin list` — show all discovered plugins.
@@ -527,6 +544,9 @@ pub enum PluginSubcommand {
     Info { name: String },
     /// `:plugin reload` — invalidate plugin cache and reload components.
     Reload,
+    /// `:plugin install <path>` — copy a plugin directory into the user
+    /// plugins folder, prompt for trust, and register it as disabled.
+    Install { path: PathBuf },
 }
 
 impl SlashCommand {
@@ -1496,6 +1516,72 @@ mod tests {
         let fixture = ForgeCommandManager::default();
         let result = fixture.parse("/plugin info");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_plugin_install_with_path() {
+        let fixture = ForgeCommandManager::default();
+        let actual = fixture.parse("/plugin install /tmp/prettier-format").unwrap();
+        assert_eq!(
+            actual,
+            SlashCommand::Plugin(PluginSubcommand::Install {
+                path: PathBuf::from("/tmp/prettier-format")
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_plugin_install_with_relative_path() {
+        let fixture = ForgeCommandManager::default();
+        let actual = fixture.parse("/plugin install ./local-plugin").unwrap();
+        assert_eq!(
+            actual,
+            SlashCommand::Plugin(PluginSubcommand::Install {
+                path: PathBuf::from("./local-plugin")
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_plugin_install_with_path_containing_spaces() {
+        // Users can quote the path at the shell level; here the parser
+        // joins tokens with single spaces so "/tmp/My Plugins/demo" is
+        // reconstructed from three input tokens.
+        let fixture = ForgeCommandManager::default();
+        let actual = fixture
+            .parse("/plugin install /tmp/My Plugins/demo")
+            .unwrap();
+        assert_eq!(
+            actual,
+            SlashCommand::Plugin(PluginSubcommand::Install {
+                path: PathBuf::from("/tmp/My Plugins/demo")
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_plugin_install_without_path_errors() {
+        let fixture = ForgeCommandManager::default();
+        let result = fixture.parse("/plugin install");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("plugin install <path>"),
+            "expected usage hint for install, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_plugin_unknown_subcommand_lists_install() {
+        // Regression guard: the error message must advertise install as
+        // a valid subcommand so users discover it via typos.
+        let fixture = ForgeCommandManager::default();
+        let result = fixture.parse("/plugin foo");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("install"),
+            "expected install in error message, got: {msg}"
+        );
     }
 
     #[test]
