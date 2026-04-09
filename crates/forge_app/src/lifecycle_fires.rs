@@ -35,8 +35,8 @@ use async_trait::async_trait;
 use forge_domain::{
     Agent, AggregatedHookResult, ConfigChangePayload, ConfigSource, Conversation, ConversationId,
     ElicitationPayload, ElicitationResultPayload, EventData, EventHandle, FileChangeEvent,
-    FileChangedPayload, InstructionsLoadedPayload, LoadedInstructions, ModelId, NotificationPayload,
-    SetupPayload, SetupTrigger, WorktreeCreatePayload,
+    FileChangedPayload, InstructionsLoadedPayload, LoadedInstructions, ModelId,
+    NotificationPayload, SetupPayload, SetupTrigger, WorktreeCreatePayload,
 };
 use notify_debouncer_full::notify::RecursiveMode;
 use tracing::{debug, warn};
@@ -764,11 +764,10 @@ pub async fn fire_worktree_create_hook<S: Services>(
 /// `ElicitationDispatcher`) can consume:
 ///
 /// - `blocking_error` → cancel the elicitation with an error message.
-/// - `permission_behavior == Allow` + `updated_input` → auto-accept
-///   with the plugin-provided form data (the `updated_input` value is
-///   the `content` field of the MCP response).
-/// - `permission_behavior == Deny` → decline without prompting the
-///   user.
+/// - `permission_behavior == Allow` + `updated_input` → auto-accept with the
+///   plugin-provided form data (the `updated_input` value is the `content`
+///   field of the MCP response).
+/// - `permission_behavior == Deny` → decline without prompting the user.
 ///
 /// Fail-open on dispatch errors: logs via `tracing::warn` and returns
 /// [`AggregatedHookResult::default`] so the dispatcher falls through to
@@ -908,11 +907,7 @@ pub async fn fire_elicitation_result_hook<S: Services>(
     let transcript_path = environment.transcript_path(&session_id);
     let cwd = environment.cwd.clone();
 
-    let payload = ElicitationResultPayload {
-        server_name: server_name.clone(),
-        action,
-        content,
-    };
+    let payload = ElicitationResultPayload { server_name: server_name.clone(), action, content };
     let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
 
     let plugin_handler = PluginHookHandler::new(services.clone());

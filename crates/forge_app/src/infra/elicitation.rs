@@ -80,11 +80,11 @@ impl ElicitationAction {
 /// 2. Inspect the resulting `AggregatedHookResult` for auto-response:
 ///    - `blocking_error` → return Cancel
 ///    - `permission_behavior == Deny` → return Decline
-///    - `permission_behavior == Allow` + `updated_input` → return
-///      Accept with the plugin-provided form data
+///    - `permission_behavior == Allow` + `updated_input` → return Accept with
+///      the plugin-provided form data
 /// 3. Fall back to interactive UI when no hook handles the request.
-/// 4. Fire `ElicitationResult` hook after the user responds (or the
-///    plugin short-circuit path).
+/// 4. Fire `ElicitationResult` hook after the user responds (or the plugin
+///    short-circuit path).
 #[async_trait]
 pub trait ElicitationDispatcher: Send + Sync {
     /// Dispatch an elicitation request and return the user/plugin

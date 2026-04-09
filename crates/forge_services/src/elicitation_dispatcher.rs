@@ -90,10 +90,7 @@ impl<S: Services + 'static> ElicitationDispatcher for ForgeElicitationDispatcher
                 server = %request.server_name,
                 "ForgeElicitationDispatcher::elicit called before init; declining"
             );
-            return ElicitationResponse {
-                action: ElicitationAction::Decline,
-                content: None,
-            };
+            return ElicitationResponse { action: ElicitationAction::Decline, content: None };
         };
 
         let mode = if request.url.is_some() {
@@ -158,10 +155,7 @@ impl<S: Services + 'static> ElicitationDispatcher for ForgeElicitationDispatcher
             "no plugin hook handled elicitation and interactive UI fallback is not yet implemented (Wave F-2); declining"
         );
 
-        let response = ElicitationResponse {
-            action: ElicitationAction::Decline,
-            content: None,
-        };
+        let response = ElicitationResponse { action: ElicitationAction::Decline, content: None };
         fire_elicitation_result_hook(
             services.clone(),
             request.server_name,
@@ -180,14 +174,14 @@ impl<S: Services + 'static> ElicitationDispatcher for ForgeElicitationDispatcher
 ///
 /// Precedence mirrors Claude Code's `hooksConfigManager.ts` semantics:
 ///
-/// 1. `blocking_error` → `Cancel` (highest priority — a blocked event
-///    must never progress to an auto-accept path).
+/// 1. `blocking_error` → `Cancel` (highest priority — a blocked event must
+///    never progress to an auto-accept path).
 /// 2. `permission_behavior == Deny` → `Decline`.
-/// 3. `permission_behavior == Allow` + `updated_input` present →
-///    `Accept` with the plugin-provided content.
-/// 4. `permission_behavior == Allow` without `updated_input` → no
-///    short-circuit (plugin said "allow" but provided no form data, so
-///    the dispatcher should still prompt the user).
+/// 3. `permission_behavior == Allow` + `updated_input` present → `Accept` with
+///    the plugin-provided content.
+/// 4. `permission_behavior == Allow` without `updated_input` → no short-circuit
+///    (plugin said "allow" but provided no form data, so the dispatcher should
+///    still prompt the user).
 /// 5. `permission_behavior == Ask` → no short-circuit.
 /// 6. No permission behavior set → no short-circuit.
 ///
@@ -196,17 +190,13 @@ impl<S: Services + 'static> ElicitationDispatcher for ForgeElicitationDispatcher
 /// mock.
 fn resolve_hook_response(hook_result: &AggregatedHookResult) -> Option<ElicitationResponse> {
     if hook_result.blocking_error.is_some() {
-        return Some(ElicitationResponse {
-            action: ElicitationAction::Cancel,
-            content: None,
-        });
+        return Some(ElicitationResponse { action: ElicitationAction::Cancel, content: None });
     }
 
     match hook_result.permission_behavior {
-        Some(PermissionBehavior::Deny) => Some(ElicitationResponse {
-            action: ElicitationAction::Decline,
-            content: None,
-        }),
+        Some(PermissionBehavior::Deny) => {
+            Some(ElicitationResponse { action: ElicitationAction::Decline, content: None })
+        }
         Some(PermissionBehavior::Allow) => {
             hook_result
                 .updated_input
@@ -304,7 +294,10 @@ mod tests {
         fixture.updated_input = Some(json!({"user": "alice", "role": "admin"}));
         let actual = resolve_hook_response(&fixture).expect("expected short-circuit");
         assert_eq!(actual.action, ElicitationAction::Accept);
-        assert_eq!(actual.content, Some(json!({"user": "alice", "role": "admin"})));
+        assert_eq!(
+            actual.content,
+            Some(json!({"user": "alice", "role": "admin"}))
+        );
     }
 
     #[test]
@@ -315,7 +308,10 @@ mod tests {
         let mut fixture = AggregatedHookResult::default();
         fixture.permission_behavior = Some(PermissionBehavior::Allow);
         let actual = resolve_hook_response(&fixture);
-        assert!(actual.is_none(), "Allow without content should fall through");
+        assert!(
+            actual.is_none(),
+            "Allow without content should fall through"
+        );
     }
 
     #[test]
@@ -323,7 +319,10 @@ mod tests {
         let mut fixture = AggregatedHookResult::default();
         fixture.permission_behavior = Some(PermissionBehavior::Ask);
         let actual = resolve_hook_response(&fixture);
-        assert!(actual.is_none(), "Ask should fall through to interactive UI");
+        assert!(
+            actual.is_none(),
+            "Ask should fall through to interactive UI"
+        );
     }
 
     #[test]
