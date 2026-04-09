@@ -6,13 +6,13 @@
 //! [`crate::config_watcher_handle`] and lives in `forge_api` for the
 //! same reason:
 //!
-//! - `forge_app` is a dependency of `forge_services`, so `forge_app`
-//!   *cannot* import `forge_services::FileChangedWatcher` without creating
-//!   a dependency cycle.
-//! - The hook dispatcher itself ([`forge_app::hooks::PluginHookHandler`])
-//!   is crate-private to `forge_app`, so callers outside `forge_app`
-//!   cannot build the callback directly — they must go through the
-//!   `fire_file_changed_hook` free function.
+//! - `forge_app` is a dependency of `forge_services`, so `forge_app` *cannot*
+//!   import `forge_services::FileChangedWatcher` without creating a dependency
+//!   cycle.
+//! - The hook dispatcher itself ([`forge_app::hooks::PluginHookHandler`]) is
+//!   crate-private to `forge_app`, so callers outside `forge_app` cannot build
+//!   the callback directly — they must go through the `fire_file_changed_hook`
+//!   free function.
 //!
 //! `forge_api` already depends on both `forge_app` and `forge_services`,
 //! so the callback we build here can call `fire_file_changed_hook` and

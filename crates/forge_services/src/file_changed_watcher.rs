@@ -12,14 +12,13 @@
 //! The runtime semantics are identical to [`ConfigWatcher`]:
 //!
 //! - a 1-second debounce window (`notify-debouncer-full`),
-//! - 5-second internal-write suppression so Forge's own writes never
-//!   round-trip through the hook system,
-//! - a 1.7-second atomic-save grace period that collapses the
-//!   `Remove → Create` pair editors emit during an atomic save into a
-//!   single `Change` event,
-//! - per-path dispatch cooldown (1.5 s) so multi-event batches (the
-//!   `[Remove, Create, Modify, Modify]` storm macOS FSEvents emits for
-//!   one atomic save) collapse to a single user-visible callback.
+//! - 5-second internal-write suppression so Forge's own writes never round-trip
+//!   through the hook system,
+//! - a 1.7-second atomic-save grace period that collapses the `Remove → Create`
+//!   pair editors emit during an atomic save into a single `Change` event,
+//! - per-path dispatch cooldown (1.5 s) so multi-event batches (the `[Remove,
+//!   Create, Modify, Modify]` storm macOS FSEvents emits for one atomic save)
+//!   collapse to a single user-visible callback.
 //!
 //! All timing constants live in [`crate::fs_watcher_core`] and are shared
 //! byte-for-byte with [`ConfigWatcher`].
@@ -121,14 +120,14 @@ impl FileChangedWatcher {
     ///
     /// - `watch_paths` — `(path, recursive_mode)` pairs to install watchers
     ///   over. Missing or unreadable paths are logged at `debug` level and
-    ///   skipped — this mirrors [`ConfigWatcher`] so e.g. a `.envrc`
-    ///   matcher on a fresh clone that has not yet been created does not
-    ///   abort the whole watcher. An empty list is valid and produces a
-    ///   watcher that simply never fires.
+    ///   skipped — this mirrors [`ConfigWatcher`] so e.g. a `.envrc` matcher on
+    ///   a fresh clone that has not yet been created does not abort the whole
+    ///   watcher. An empty list is valid and produces a watcher that simply
+    ///   never fires.
     /// - `callback` — user-supplied closure invoked once per debounced
-    ///   [`FileChange`] event. Runs on the debouncer's background thread (or
-    ///   on a short-lived `std::thread` for delayed deletes), so it must be
-    ///   `Send + Sync + 'static`.
+    ///   [`FileChange`] event. Runs on the debouncer's background thread (or on
+    ///   a short-lived `std::thread` for delayed deletes), so it must be `Send
+    ///   + Sync + 'static`.
     ///
     /// # Errors
     ///
@@ -292,14 +291,14 @@ fn fire_change(
 ///   nothing.
 /// - `Create(_)` — if a matching `pending_unlinks` entry exists within the
 ///   grace window, remove it and fire ONE `FileChange` with
-///   [`FileChangeEvent::Change`] (the atomic-save collapse treats the
-///   `unlink → add` pair as a single modification). Otherwise fire
+///   [`FileChangeEvent::Change`] (the atomic-save collapse treats the `unlink →
+///   add` pair as a single modification). Otherwise fire
 ///   `FileChangeEvent::Add`.
 /// - `Modify(_)` — if the path still exists on disk, fire directly with
-///   [`FileChangeEvent::Change`]. If the path has vanished, reclassify
-///   as `Remove` and route through the delayed-unlink path; this handles
-///   macOS FSEvents, which often reports a plain `fs::remove_file` as a
-///   single `Modify` event on the vanished path.
+///   [`FileChangeEvent::Change`]. If the path has vanished, reclassify as
+///   `Remove` and route through the delayed-unlink path; this handles macOS
+///   FSEvents, which often reports a plain `fs::remove_file` as a single
+///   `Modify` event on the vanished path.
 /// - `Access(_)`, `Any`, `Other` — ignored (not mutations).
 fn handle_event(state: &Arc<FileChangedWatcherState>, event: &notify::Event) {
     for path in &event.paths {
@@ -548,8 +547,7 @@ mod tests {
         // delete actually fires.
         let ok = wait_until(&captured, |events| {
             events.iter().any(|e| {
-                e.file_path.file_name() == target.file_name()
-                    && e.event == FileChangeEvent::Unlink
+                e.file_path.file_name() == target.file_name() && e.event == FileChangeEvent::Unlink
             })
         });
         assert!(
