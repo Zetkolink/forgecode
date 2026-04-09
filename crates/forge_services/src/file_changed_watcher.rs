@@ -105,11 +105,18 @@ pub struct FileChangedWatcher {
     /// the debouncer callback via [`FileChangedWatcherState`].
     recent_internal_writes: Arc<Mutex<HashMap<PathBuf, Instant>>>,
 
-    /// Holds the live debouncer instance. Dropping the watcher drops
-    /// the debouncer, which in turn stops the background thread and
-    /// drops all installed watchers (see
+    /// Holds the live debouncer instance behind a shared `Mutex` so
+    /// [`Self::add_paths`] can install additional watchers at runtime
+    /// (Phase 7C Wave E-2b dynamic `watch_paths`). Dropping the
+    /// watcher drops the `Arc`, which — once the last clone is gone
+    /// — drops the debouncer, stopping the background thread and
+    /// tearing down all installed watchers (see
     /// `notify_debouncer_full::Debouncer`'s `Drop` impl).
-    _debouncer: Option<Debouncer<RecommendedWatcher, RecommendedCache>>,
+    ///
+    /// The inner `Option` exists purely so a future shutdown path
+    /// could `take()` the debouncer explicitly; today it is always
+    /// `Some` after construction.
+    debouncer: Arc<Mutex<Option<Debouncer<RecommendedWatcher, RecommendedCache>>>>,
 }
 
 impl FileChangedWatcher {
@@ -196,7 +203,59 @@ impl FileChangedWatcher {
             }
         }
 
-        Ok(Self { recent_internal_writes, _debouncer: Some(debouncer) })
+        Ok(Self {
+            recent_internal_writes,
+            debouncer: Arc::new(Mutex::new(Some(debouncer))),
+        })
+    }
+
+    /// Install additional watchers over the given paths at runtime.
+    ///
+    /// Used by Phase 7C Wave E-2b dynamic `watch_paths` wiring: when
+    /// a `SessionStart` hook returns `watch_paths` in its
+    /// [`forge_domain::AggregatedHookResult`], the orchestrator
+    /// forwards them to this method so subsequent filesystem changes
+    /// under those paths fire `FileChanged` hooks.
+    ///
+    /// Missing or unreadable paths are logged at `debug` level and
+    /// skipped — this mirrors the constructor. Errors are **never**
+    /// propagated: the caller has no sensible recovery path for a
+    /// runtime watch install failure, and `FileChanged` is an
+    /// observability event.
+    ///
+    /// # Thread safety
+    ///
+    /// Briefly locks the internal debouncer mutex to call
+    /// [`Debouncer::watch`]. Does not block on the debouncer's event
+    /// loop — `notify_debouncer_full`'s `watch()` is non-blocking and
+    /// returns as soon as the platform-specific watcher has installed
+    /// its kernel-level hook.
+    pub fn add_paths(&self, watch_paths: Vec<(PathBuf, RecursiveMode)>) {
+        let mut guard = self
+            .debouncer
+            .lock()
+            .expect("file changed watcher debouncer mutex poisoned");
+        if let Some(debouncer) = guard.as_mut() {
+            for (path, mode) in watch_paths {
+                match debouncer.watch(&path, mode) {
+                    Ok(()) => {
+                        tracing::debug!(
+                            path = %path.display(),
+                            ?mode,
+                            "file changed watcher add_paths installed"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            path = %path.display(),
+                            ?mode,
+                            error = %err,
+                            "file changed watcher add_paths skipped path (not watching)"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Record that Forge itself is about to write `path`, so any
@@ -711,6 +770,111 @@ mod tests {
 
         // Drop the watcher explicitly so the debouncer thread exits
         // before the tempdir is cleaned up.
+        drop(watcher);
+    }
+
+    /// Phase 7C Wave E-2b: construct a watcher with an empty initial
+    /// path list, then install a runtime watch path via `add_paths`
+    /// and prove a fresh write under that path fires a dispatch.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_file_changed_watcher_add_paths_installs_runtime_watcher() {
+        let dir = TempDir::new().unwrap();
+
+        let captured: Arc<Mutex<Vec<FileChange>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = captured.clone();
+
+        // Empty initial watch set — the watcher is live but
+        // observing nothing.
+        let watcher = FileChangedWatcher::new(Vec::new(), move |change| {
+            captured_clone
+                .lock()
+                .expect("captured mutex poisoned")
+                .push(change);
+        })
+        .expect("watcher must construct with empty paths");
+
+        // Give the debouncer thread a tick to spin up.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Install a runtime watch over the tempdir.
+        watcher.add_paths(vec![(
+            dir.path().to_path_buf(),
+            RecursiveMode::NonRecursive,
+        )]);
+
+        // Let the runtime-installed watcher settle.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Prove the runtime-added watch observes new files.
+        let target = dir.path().join("dynamic.txt");
+        fs::write(&target, "hello from runtime\n").unwrap();
+
+        let ok = wait_until(&captured, |events| {
+            events
+                .iter()
+                .any(|e| e.file_path.file_name() == target.file_name())
+        });
+        assert!(
+            ok,
+            "expected a FileChange event for file under runtime-added path, got: {:?}",
+            captured.lock().unwrap()
+        );
+
+        drop(watcher);
+    }
+
+    /// Phase 7C Wave E-2b: calling `add_paths` with a path that does
+    /// not exist must neither panic nor error, and must leave the
+    /// watcher in a usable state for subsequent valid-path calls.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_file_changed_watcher_add_paths_tolerates_missing_paths() {
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("never_created");
+
+        let captured: Arc<Mutex<Vec<FileChange>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = captured.clone();
+
+        let watcher = FileChangedWatcher::new(Vec::new(), move |change| {
+            captured_clone
+                .lock()
+                .expect("captured mutex poisoned")
+                .push(change);
+        })
+        .expect("watcher must construct with empty paths");
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Install a runtime watch over a path that does not exist —
+        // the per-path install fails inside notify, but the error
+        // must be swallowed so the rest of the operation proceeds.
+        watcher.add_paths(vec![(missing.clone(), RecursiveMode::NonRecursive)]);
+
+        // Follow up with a valid runtime install. If the earlier
+        // failure had poisoned any internal state, this call would
+        // propagate the failure — instead, it should succeed.
+        watcher.add_paths(vec![(
+            dir.path().to_path_buf(),
+            RecursiveMode::NonRecursive,
+        )]);
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Prove the valid path still dispatches events after the
+        // missing-path call.
+        let target = dir.path().join("post_tolerate.txt");
+        fs::write(&target, "still works\n").unwrap();
+
+        let ok = wait_until(&captured, |events| {
+            events
+                .iter()
+                .any(|e| e.file_path.file_name() == target.file_name())
+        });
+        assert!(
+            ok,
+            "expected a FileChange event on the valid path after a missing-path add_paths call, got: {:?}",
+            captured.lock().unwrap()
+        );
+
         drop(watcher);
     }
 }

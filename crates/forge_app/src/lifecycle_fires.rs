@@ -29,7 +29,7 @@
 
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use forge_domain::{
@@ -37,10 +37,107 @@ use forge_domain::{
     FileChangeEvent, FileChangedPayload, InstructionsLoadedPayload, LoadedInstructions, ModelId,
     NotificationPayload, SetupPayload, SetupTrigger,
 };
+use notify_debouncer_full::notify::RecursiveMode;
 use tracing::{debug, warn};
 
 use crate::hooks::PluginHookHandler;
 use crate::services::{Notification, NotificationService, Services};
+
+/// Runtime-settable accessor for the background
+/// `FileChangedWatcher` used by the Phase 7C Wave E-2b dynamic
+/// `watch_paths` wiring.
+///
+/// The orchestrator's `SessionStart` fire site needs to push
+/// watch-path additions from a hook's
+/// [`forge_domain::AggregatedHookResult::watch_paths`] back into the
+/// running watcher, but `forge_app` cannot name the concrete
+/// `FileChangedWatcherHandle` without creating a dependency cycle
+/// (the handle lives in `forge_api`, which already depends on
+/// `forge_app`). This trait gives `forge_app` a minimal, concrete-
+/// handle-agnostic interface so the two crates fit together.
+///
+/// Implementations live in `forge_api::file_changed_watcher_handle`
+/// and are registered with [`install_file_changed_watcher_ops`]
+/// during `ForgeAPI::init`. The orchestrator later calls
+/// [`add_file_changed_watch_paths`] from its `SessionStart`
+/// aggregator — if no ops have been installed yet (e.g. in a unit
+/// test that bypasses `ForgeAPI::init`), the call is a silent no-op.
+pub trait FileChangedWatcherOps: Send + Sync {
+    /// Install additional runtime watchers over the given paths.
+    ///
+    /// Implementations are responsible for splitting any pipe-
+    /// separated hook matcher strings (e.g. `.envrc|.env`) into
+    /// individual entries before calling this method — `watch_paths`
+    /// here is expected to already be a flat list of absolute /
+    /// cwd-resolved `(PathBuf, RecursiveMode)` pairs.
+    fn add_paths(&self, watch_paths: Vec<(PathBuf, RecursiveMode)>);
+}
+
+/// Process-wide slot holding the runtime `FileChangedWatcher`
+/// accessor. Populated exactly once by `ForgeAPI::init` via
+/// [`install_file_changed_watcher_ops`]; read by the orchestrator's
+/// `SessionStart` fire site via [`add_file_changed_watch_paths`].
+///
+/// This deliberately uses [`OnceLock`] rather than plumbing the
+/// handle through every layer of the services stack: the watcher is
+/// conceptually process-wide (there is one `ForgeAPI` per process),
+/// it is installed before any orchestrator run, and the alternative —
+/// adding a setter to the `Services` trait — would touch more than
+/// a dozen crates for what is essentially a late-binding hook.
+/// Mirrors the same pattern used by `ConfigWatcherHandle` in its own
+/// `ForgeAPI::init` wiring.
+static FILE_CHANGED_WATCHER_OPS: OnceLock<Arc<dyn FileChangedWatcherOps>> = OnceLock::new();
+
+/// Register the live [`FileChangedWatcherOps`] implementation so the
+/// orchestrator's `SessionStart` fire site can call
+/// [`add_file_changed_watch_paths`] at runtime.
+///
+/// Called exactly once from `ForgeAPI::init` after
+/// [`crate::file_changed_watcher_handle::FileChangedWatcherHandle::spawn`]
+/// (in `forge_api`) succeeds. Subsequent calls are a silent no-op
+/// because [`OnceLock::set`] returns `Err` on a second write — the
+/// process-wide singleton is intentionally immutable.
+///
+/// # Test-harness behaviour
+///
+/// Unit tests that construct a `ForgeAPI` without a multi-threaded
+/// tokio runtime never reach this installer, which is fine:
+/// [`add_file_changed_watch_paths`] is a no-op when nothing has been
+/// installed, so tests continue to run without needing to mock the
+/// watcher.
+pub fn install_file_changed_watcher_ops(ops: Arc<dyn FileChangedWatcherOps>) {
+    if FILE_CHANGED_WATCHER_OPS.set(ops).is_err() {
+        debug!(
+            "install_file_changed_watcher_ops called twice; \
+             ignoring the second install (OnceLock is already populated)"
+        );
+    }
+}
+
+/// Push runtime watch-path additions into the installed
+/// [`FileChangedWatcherOps`] implementation.
+///
+/// Called by the orchestrator after a `SessionStart` hook returns
+/// `watch_paths` in its [`forge_domain::AggregatedHookResult`]. If
+/// no ops have been installed yet (e.g. in unit tests, or when
+/// `ForgeAPI::init` degraded to a no-op watcher because no
+/// multi-thread tokio runtime was active), this is a silent no-op —
+/// dynamic watch_paths are observability-only and losing them is
+/// never a correctness bug.
+pub fn add_file_changed_watch_paths(watch_paths: Vec<(PathBuf, RecursiveMode)>) {
+    if watch_paths.is_empty() {
+        return;
+    }
+    if let Some(ops) = FILE_CHANGED_WATCHER_OPS.get() {
+        ops.add_paths(watch_paths);
+    } else {
+        debug!(
+            "add_file_changed_watch_paths called before \
+             install_file_changed_watcher_ops — dropping runtime watch paths \
+             (expected in unit tests that bypass ForgeAPI::init)"
+        );
+    }
+}
 
 /// Production implementation of [`NotificationService`].
 ///

@@ -142,4 +142,149 @@ impl FileChangedWatcherHandle {
             });
         }
     }
+
+    /// Install additional runtime watchers over the given paths.
+    ///
+    /// Proxies directly to [`FileChangedWatcher::add_paths`]. Callers
+    /// are responsible for expanding any pipe-separated hook matcher
+    /// strings (e.g. `.envrc|.env`) into individual `(PathBuf,
+    /// RecursiveMode)` pairs before calling — [`parse_file_changed_matcher`]
+    /// is the shared helper both the startup resolver and the runtime
+    /// consumer use for that step.
+    ///
+    /// No-op if the handle was constructed with `inner: None` (e.g.
+    /// [`Self::spawn`] degraded to a no-op because no tokio runtime
+    /// was active).
+    ///
+    /// # Errors
+    ///
+    /// This method cannot fail: per-path install failures are logged
+    /// inside [`FileChangedWatcher::add_paths`] at `debug` level and
+    /// silently dropped, matching the observability-only nature of
+    /// the `FileChanged` lifecycle event.
+    pub fn add_paths(&self, watch_paths: Vec<(PathBuf, RecursiveMode)>) {
+        if let Some(ref watcher) = self.inner {
+            watcher.add_paths(watch_paths);
+        }
+    }
+}
+
+/// Implement [`FileChangedWatcherOps`] so the orchestrator can receive
+/// a late-bound, concrete accessor via the
+/// [`forge_app::install_file_changed_watcher_ops`] hand-off (see
+/// `ForgeAPI::init`). The trait lives in `forge_app` to avoid
+/// coupling the orchestrator to `forge_api`'s concrete handle type —
+/// this impl is the bridge that makes the two crates fit together
+/// without creating a dependency cycle.
+impl forge_app::FileChangedWatcherOps for FileChangedWatcherHandle {
+    fn add_paths(&self, watch_paths: Vec<(PathBuf, RecursiveMode)>) {
+        FileChangedWatcherHandle::add_paths(self, watch_paths);
+    }
+}
+
+/// Parse a hook-config `FileChanged` matcher string into
+/// `(PathBuf, RecursiveMode)` pairs, splitting on `|` to support
+/// alternatives (e.g. `".envrc|.env"`) and resolving relative
+/// entries against `base_cwd`.
+///
+/// Returns every parsed pair verbatim — existence filtering is the
+/// caller's responsibility. The startup resolver
+/// (`resolve_file_changed_watch_paths`) filters out paths that do
+/// not exist on disk to keep the install log quiet; the runtime
+/// consumer (Wave E-2b orchestrator dispatch) deliberately does
+/// **not** filter, because a freshly-returned `watch_paths` entry
+/// from a `SessionStart` hook may intentionally point at a file the
+/// hook is about to create.
+///
+/// Entries with empty/whitespace-only alternatives are silently
+/// dropped. All entries are assigned
+/// [`RecursiveMode::NonRecursive`] because Claude Code's wire
+/// semantics treat each matcher as a single file, not a directory
+/// tree.
+pub(crate) fn parse_file_changed_matcher(
+    matcher: &str,
+    base_cwd: &Path,
+) -> Vec<(PathBuf, RecursiveMode)> {
+    matcher
+        .split('|')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|alternative| {
+            let candidate = Path::new(alternative);
+            let resolved = if candidate.is_absolute() {
+                candidate.to_path_buf()
+            } else {
+                base_cwd.join(candidate)
+            };
+            (resolved, RecursiveMode::NonRecursive)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_file_changed_matcher_single_path_relative_resolves_to_cwd() {
+        let base = PathBuf::from("/workspace/project");
+        let fixture = parse_file_changed_matcher(".envrc", &base);
+        let expected = vec![(
+            PathBuf::from("/workspace/project/.envrc"),
+            RecursiveMode::NonRecursive,
+        )];
+        assert_eq!(fixture, expected);
+    }
+
+    #[test]
+    fn test_parse_file_changed_matcher_pipe_separated_splits_all_alternatives() {
+        let base = PathBuf::from("/workspace/project");
+        let fixture = parse_file_changed_matcher(".envrc|.env| .env.local ", &base);
+        let expected = vec![
+            (
+                PathBuf::from("/workspace/project/.envrc"),
+                RecursiveMode::NonRecursive,
+            ),
+            (
+                PathBuf::from("/workspace/project/.env"),
+                RecursiveMode::NonRecursive,
+            ),
+            (
+                PathBuf::from("/workspace/project/.env.local"),
+                RecursiveMode::NonRecursive,
+            ),
+        ];
+        assert_eq!(fixture, expected);
+    }
+
+    #[test]
+    fn test_parse_file_changed_matcher_absolute_path_not_resolved() {
+        let base = PathBuf::from("/workspace/project");
+        let fixture = parse_file_changed_matcher("/etc/hosts|relative.txt", &base);
+        let expected = vec![
+            (PathBuf::from("/etc/hosts"), RecursiveMode::NonRecursive),
+            (
+                PathBuf::from("/workspace/project/relative.txt"),
+                RecursiveMode::NonRecursive,
+            ),
+        ];
+        assert_eq!(fixture, expected);
+    }
+
+    #[test]
+    fn test_parse_file_changed_matcher_empty_and_whitespace_alternatives_dropped() {
+        let base = PathBuf::from("/workspace/project");
+        let fixture = parse_file_changed_matcher("|.envrc||   |.env|", &base);
+        let expected = vec![
+            (
+                PathBuf::from("/workspace/project/.envrc"),
+                RecursiveMode::NonRecursive,
+            ),
+            (
+                PathBuf::from("/workspace/project/.env"),
+                RecursiveMode::NonRecursive,
+            ),
+        ];
+        assert_eq!(fixture, expected);
+    }
 }

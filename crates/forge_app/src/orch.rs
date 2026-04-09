@@ -8,10 +8,12 @@ use derive_setters::Setters;
 use forge_domain::{Agent, *};
 use forge_template::Element;
 use futures::future::join_all;
+use notify_debouncer_full::notify::RecursiveMode;
 use tokio::sync::Notify;
 use tracing::warn;
 
 use crate::agent::AgentService;
+use crate::lifecycle_fires::add_file_changed_watch_paths;
 use crate::{EnvironmentInfra, TemplateEngine};
 
 #[derive(Clone, Setters)]
@@ -508,6 +510,8 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
         // Consume SessionStart hook_result:
         //  - initial_user_message → push as a User ContextMessage
         //  - additional_contexts → push as <system_reminder> messages
+        //  - watch_paths → install runtime FileChanged watchers
+        //    (Phase 7C Wave E-2b)
         let session_start_hook_result = std::mem::take(&mut self.conversation.hook_result);
 
         if let Some(init_msg) = session_start_hook_result.initial_user_message {
@@ -523,6 +527,46 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                     .messages
                     .push(ContextMessage::system_reminder(wrapped, Some(model_id.clone())).into());
             }
+        }
+
+        // Phase 7C Wave E-2b: forward any dynamic watch_paths returned by
+        // the `SessionStart` hook into the running `FileChangedWatcher`.
+        //
+        // Wire semantics: per Claude Code, a
+        // `hookSpecificOutput.SessionStart.watch_paths` entry is a
+        // single-file path (not a glob) that the watcher should observe
+        // from that point forward. We assume the hook returned absolute
+        // paths (the `HookSpecificOutput::SessionStart` serde shape is
+        // `Vec<PathBuf>`), but guard against a relative entry by
+        // resolving it against the current cwd — the alternative of
+        // silently dropping relative entries would be harder to debug.
+        //
+        // All entries are installed as `NonRecursive` to match the
+        // startup resolver's treatment of `FileChanged` matchers as
+        // single-file targets. The dispatcher itself is a no-op if
+        // `ForgeAPI::init` did not install a watcher (e.g. unit tests
+        // or single-thread runtimes), so this call is safe to make
+        // unconditionally.
+        if !session_start_hook_result.watch_paths.is_empty() {
+            let resolved: Vec<(PathBuf, RecursiveMode)> = session_start_hook_result
+                .watch_paths
+                .iter()
+                .map(|p| {
+                    let path = if p.is_absolute() {
+                        p.clone()
+                    } else {
+                        cwd.join(p)
+                    };
+                    (path, RecursiveMode::NonRecursive)
+                })
+                .collect();
+
+            tracing::debug!(
+                count = resolved.len(),
+                "SessionStart: adding runtime watch paths from hook output"
+            );
+
+            add_file_changed_watch_paths(resolved);
         }
 
         // Sync updated context back to the conversation so the legacy

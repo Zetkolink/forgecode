@@ -1962,6 +1962,7 @@ dependencies = [
  "insta",
  "lazy_static",
  "merge",
+ "notify-debouncer-full",
  "pretty_assertions",
  "regex",
  "reqwest 0.12.28",

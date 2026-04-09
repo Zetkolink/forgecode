@@ -146,18 +146,32 @@ impl ForgeAPI<ForgeServices<ForgeRepo<ForgeInfra>>, ForgeRepo<ForgeInfra>> {
                     runtime.block_on(resolve_file_changed_watch_paths(services_for_load))
                 });
 
-                if watch_paths.is_empty() {
-                    None
-                } else {
-                    match FileChangedWatcherHandle::spawn(app.clone(), watch_paths) {
-                        Ok(handle) => Some(handle),
-                        Err(err) => {
-                            warn!(
-                                error = %err,
-                                "failed to start FileChangedWatcher; FileChanged hooks will be disabled"
-                            );
-                            None
-                        }
+                // Phase 7C Wave E-2b: we spawn the watcher even when
+                // the startup resolver returned no matchers so that
+                // runtime `watch_paths` from `SessionStart` hooks
+                // still have a live watcher to install against. An
+                // empty-paths `FileChangedWatcher` just sits idle
+                // until `add_paths` is called later.
+                match FileChangedWatcherHandle::spawn(app.clone(), watch_paths) {
+                    Ok(handle) => {
+                        // Register the handle so the orchestrator's
+                        // `SessionStart` fire site can push dynamic
+                        // `watch_paths` into it via
+                        // `forge_app::add_file_changed_watch_paths`.
+                        // `install_file_changed_watcher_ops` is a
+                        // `OnceLock::set` under the hood, so a second
+                        // `ForgeAPI::init` call (rare — only in tests
+                        // that spin up multiple APIs in the same
+                        // process) is a silent no-op.
+                        forge_app::install_file_changed_watcher_ops(Arc::new(handle.clone()));
+                        Some(handle)
+                    }
+                    Err(err) => {
+                        warn!(
+                            error = %err,
+                            "failed to start FileChangedWatcher; FileChanged hooks will be disabled"
+                        );
+                        None
                     }
                 }
             }
@@ -204,6 +218,8 @@ impl ForgeAPI<ForgeServices<ForgeRepo<ForgeInfra>>, ForgeRepo<ForgeInfra>> {
 async fn resolve_file_changed_watch_paths<S: Services + 'static>(
     services: Arc<S>,
 ) -> Vec<(PathBuf, RecursiveMode)> {
+    use crate::file_changed_watcher_handle::parse_file_changed_matcher;
+
     let merged = match services.hook_config_loader().load().await {
         Ok(config) => config,
         Err(err) => {
@@ -228,18 +244,13 @@ async fn resolve_file_changed_watch_paths<S: Services + 'static>(
             continue;
         };
 
-        for alternative in pattern.split('|') {
-            let trimmed = alternative.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let candidate = PathBuf::from(trimmed);
-            let resolved = if candidate.is_absolute() {
-                candidate
-            } else {
-                cwd.join(candidate)
-            };
-
+        // Delegate the split-on-pipe / cwd-resolve logic to the shared
+        // helper so the runtime consumer in `orch.rs` uses the same
+        // parser. The helper does NOT filter by existence — the
+        // startup resolver additionally drops paths that do not exist
+        // on disk (to keep the install log quiet) and deduplicates
+        // against previously-resolved entries from earlier matchers.
+        for (resolved, mode) in parse_file_changed_matcher(pattern, &cwd) {
             if !resolved.exists() {
                 tracing::debug!(
                     path = %resolved.display(),
@@ -251,7 +262,7 @@ async fn resolve_file_changed_watch_paths<S: Services + 'static>(
             if result.iter().any(|(p, _)| p == &resolved) {
                 continue;
             }
-            result.push((resolved, RecursiveMode::NonRecursive));
+            result.push((resolved, mode));
         }
     }
 
