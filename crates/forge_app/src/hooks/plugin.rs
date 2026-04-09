@@ -2021,13 +2021,11 @@ mod tests {
         // TODO(wave-e-1b): Gate the `HookSpecificOutput::PermissionRequest`
         // merge branch so it is a no-op when the dispatching event is
         // `HookEventName::PermissionDenied`. Implementation options:
-        //   1. Teach `AggregatedHookResult::merge` to take an optional
-        //      event hint and skip the permission branch for
-        //      PermissionDenied.
-        //   2. Make the `EventHandle<EventData<PermissionDeniedPayload>>`
-        //      impl in `plugin.rs` (around the Phase 7B T1 section)
-        //      discard the merged result's `permission_behavior` /
-        //      `updated_input` fields after dispatch.
+        //   1. Teach `AggregatedHookResult::merge` to take an optional event hint and
+        //      skip the permission branch for PermissionDenied.
+        //   2. Make the `EventHandle<EventData<PermissionDeniedPayload>>` impl in
+        //      `plugin.rs` (around the Phase 7B T1 section) discard the merged result's
+        //      `permission_behavior` / `updated_input` fields after dispatch.
         // Once either lands, remove the `#[ignore]` below.
         #[tokio::test]
         #[ignore = "observability-only gating for PermissionDenied is pending; see TODO above"]

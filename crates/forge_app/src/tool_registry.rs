@@ -83,7 +83,8 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
     ///
     /// Returns `Ok(true)` when the tool call is blocked (either by a plugin
     /// hook's `Deny` decision, a plugin blocking_error, or the user /
-    /// policy layer denying via [`crate::PolicyService::check_operation_permission`]).
+    /// policy layer denying via
+    /// [`crate::PolicyService::check_operation_permission`]).
     /// Returns `Ok(false)` when the call is allowed.
     ///
     /// Errors are returned when the plugin dispatcher signals an `interrupt`,
@@ -214,12 +215,8 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
         if !decision.allowed {
             // TODO: richer reason extraction — policy denials currently
             // carry no structured reason; we forward a placeholder.
-            self.fire_permission_denied(
-                &tool_name,
-                &tool_input_value,
-                "policy denied".to_string(),
-            )
-            .await?;
+            self.fire_permission_denied(&tool_name, &tool_input_value, "policy denied".to_string())
+                .await?;
             return Ok(true);
         }
         Ok(false)
@@ -265,7 +262,8 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
     /// Fire a `PermissionDenied` lifecycle event through the plugin
     /// dispatcher on a scratch conversation. Observability-only — the
     /// aggregated result is drained and discarded per the plan at
-    /// `plans/2026-04-09-claude-code-plugins-v4/08-phase-7-t3-intermediate.md:175`.
+    /// `plans/2026-04-09-claude-code-plugins-v4/08-phase-7-t3-intermediate.md:
+    /// 175`.
     async fn fire_permission_denied(
         &self,
         tool_name: &ToolName,
@@ -291,13 +289,10 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
         let event =
             EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
 
-        if let Err(err) =
-            <PluginHookHandler<S> as EventHandle<EventData<PermissionDeniedPayload>>>::handle(
-                &self.plugin_handler,
-                &event,
-                &mut scratch,
-            )
-            .await
+        if let Err(err) = <PluginHookHandler<S> as EventHandle<
+            EventData<PermissionDeniedPayload>,
+        >>::handle(&self.plugin_handler, &event, &mut scratch)
+        .await
         {
             tracing::warn!(
                 tool_name = %tool_name,
@@ -318,8 +313,15 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
     /// resolved — the caller must skip the fire in that case.
     async fn build_hook_dispatch_base(
         &self,
-    ) -> anyhow::Result<Option<(Agent, Conversation, String, std::path::PathBuf, std::path::PathBuf)>>
-    {
+    ) -> anyhow::Result<
+        Option<(
+            Agent,
+            Conversation,
+            String,
+            std::path::PathBuf,
+            std::path::PathBuf,
+        )>,
+    > {
         let agent_opt = match self.services.get_active_agent_id().await {
             Ok(Some(active_id)) => self.services.get_agent(&active_id).await.ok().flatten(),
             _ => None,

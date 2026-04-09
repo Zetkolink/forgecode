@@ -13,12 +13,12 @@
 //!   relax a `Deny` or override an `Ask`.
 //! - **`updated_input`**: last-write-wins. Later hooks see the aggregate of
 //!   earlier ones, but the last one to set a value overwrites prior values.
-//! - **`updated_permissions`**: last-write-wins, mirrors `updated_input`.
-//!   Set by `PermissionRequest` hooks that want to mutate the persisted
-//!   permission scopes for a tool / file path tuple.
-//! - **`interrupt`** / **`retry`**: latch to `true` (OR across all hooks).
-//!   Once any `PermissionRequest` hook asks to interrupt or retry, the
-//!   flag stays on for the rest of the merge.
+//! - **`updated_permissions`**: last-write-wins, mirrors `updated_input`. Set
+//!   by `PermissionRequest` hooks that want to mutate the persisted permission
+//!   scopes for a tool / file path tuple.
+//! - **`interrupt`** / **`retry`**: latch to `true` (OR across all hooks). Once
+//!   any `PermissionRequest` hook asks to interrupt or retry, the flag stays on
+//!   for the rest of the merge.
 //! - **`additional_contexts`** / **`system_messages`**: accumulated in
 //!   execution order.
 //! - **`watch_paths`**: accumulated; deduplication happens downstream.
@@ -73,7 +73,8 @@ pub struct AggregatedHookResult {
     /// contents here; the permission fire site in
     /// `ToolRegistry::check_tool_permission` currently logs it and
     /// defers the actual persistence step (see the TODO referenced in
-    /// `plans/2026-04-09-claude-code-plugins-v4/08-phase-7-t3-intermediate.md`).
+    /// `plans/2026-04-09-claude-code-plugins-v4/08-phase-7-t3-intermediate.
+    /// md`).
     pub updated_permissions: Option<serde_json::Value>,
     /// Set to `true` when any `PermissionRequest` hook requested an
     /// interactive session interrupt. Triggers the orchestrator's
@@ -610,10 +611,7 @@ mod tests {
             ..Default::default()
         }));
 
-        assert_eq!(
-            agg.updated_permissions,
-            Some(json!({"rules": ["second"]}))
-        );
+        assert_eq!(agg.updated_permissions, Some(json!({"rules": ["second"]})));
     }
 
     /// One hook sets `interrupt: true`, another `false`. Latch wins.
