@@ -140,6 +140,18 @@ impl Environment {
         self.base_path.join("plugins")
     }
 
+    /// Returns the transcript file path for a given session id.
+    ///
+    /// Transcripts live at `<base>/transcripts/<session_id>.jsonl`. This
+    /// method only computes the path — callers are responsible for
+    /// creating the parent directory and writing transcript events
+    /// (Phase 4 Part 2 wires the actual writer).
+    pub fn transcript_path(&self, session_id: &str) -> PathBuf {
+        self.base_path
+            .join("transcripts")
+            .join(format!("{session_id}.jsonl"))
+    }
+
     /// Returns the project-local plugins directory path (.forge/plugins)
     ///
     /// Plugins discovered here are scoped to the current workspace and take
@@ -437,5 +449,29 @@ mod tests {
         assert_eq!(global_path, expected_global);
         assert_eq!(local_path, expected_local);
         assert_ne!(global_path, local_path);
+    }
+
+    #[test]
+    fn test_transcript_path_uses_base_path_and_session_id() {
+        let fixture: Environment = Faker.fake();
+        let fixture = fixture.base_path(PathBuf::from("/home/user/forge"));
+
+        let actual = fixture.transcript_path("sess-abc");
+        let expected = PathBuf::from("/home/user/forge/transcripts/sess-abc.jsonl");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_transcript_path_distinct_sessions_produce_distinct_paths() {
+        let fixture: Environment = Faker.fake();
+        let fixture = fixture.base_path(PathBuf::from("/home/user/forge"));
+
+        let a = fixture.transcript_path("sess-a");
+        let b = fixture.transcript_path("sess-b");
+
+        assert_ne!(a, b);
+        assert!(a.ends_with("sess-a.jsonl"));
+        assert!(b.ends_with("sess-b.jsonl"));
     }
 }

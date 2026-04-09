@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use forge_app::domain::{
-    LoadedPlugin, McpServerConfig, PluginComponentPath, PluginHooksConfig,
-    PluginHooksManifestField, PluginManifest, PluginRepository, PluginSource,
+    LoadedPlugin, McpServerConfig, PluginComponentPath, PluginHooksConfig, PluginHooksManifestField,
+    PluginLoadError, PluginLoadResult, PluginManifest, PluginRepository, PluginSource,
 };
 use forge_app::{DirectoryReaderInfra, EnvironmentInfra, FileInfoInfra, FileReaderInfra};
 use forge_config::PluginSetting;
@@ -75,6 +75,12 @@ where
         + DirectoryReaderInfra,
 {
     async fn load_plugins(&self) -> anyhow::Result<Vec<LoadedPlugin>> {
+        // Delegate to the error-surfacing variant and discard the diagnostic
+        // tail so existing call sites keep their old signature.
+        self.load_plugins_with_errors().await.map(|r| r.plugins)
+    }
+
+    async fn load_plugins_with_errors(&self) -> anyhow::Result<PluginLoadResult> {
         let env = self.infra.get_environment();
         let config = self.infra.get_config().ok();
         let plugin_settings: BTreeMap<String, PluginSetting> =
@@ -90,9 +96,16 @@ where
         )
         .await;
 
-        let mut plugins: Vec<LoadedPlugin> = Vec::new();
-        plugins.extend(global?);
-        plugins.extend(project?);
+        let (mut plugins, mut errors): (Vec<LoadedPlugin>, Vec<PluginLoadError>) =
+            (Vec::new(), Vec::new());
+
+        let (global_plugins, global_errors) = global?;
+        plugins.extend(global_plugins);
+        errors.extend(global_errors);
+
+        let (project_plugins, project_errors) = project?;
+        plugins.extend(project_plugins);
+        errors.extend(project_errors);
 
         // Apply Project > Global precedence: a later (project) entry with the
         // same name replaces the earlier (global) one.
@@ -109,7 +122,7 @@ where
             })
             .collect();
 
-        Ok(plugins)
+        Ok(PluginLoadResult { plugins, errors })
     }
 }
 
@@ -118,15 +131,20 @@ where
     I: FileReaderInfra + FileInfoInfra + DirectoryReaderInfra,
 {
     /// Scans a single root directory and returns all plugins discovered
-    /// underneath. Subdirectories without a recognised manifest file are
-    /// silently skipped.
+    /// underneath along with any per-plugin load errors.
+    ///
+    /// Subdirectories without a recognised manifest file are silently
+    /// skipped. Malformed manifests (unreadable, bad JSON, missing fields)
+    /// are logged via `tracing::warn` for immediate operator visibility
+    /// and also accumulated into the returned error vector so the Phase 9
+    /// `:plugin list` command can surface them to the user.
     async fn scan_root(
         &self,
         root: &Path,
         source: PluginSource,
-    ) -> anyhow::Result<Vec<LoadedPlugin>> {
+    ) -> anyhow::Result<(Vec<LoadedPlugin>, Vec<PluginLoadError>)> {
         if !self.infra.exists(root).await? {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
         let entries = self
@@ -141,23 +159,38 @@ where
             .map(|(path, _)| {
                 let infra = Arc::clone(&self.infra);
                 let source_copy = source;
-                async move { load_one_plugin(infra, path, source_copy).await }
+                async move {
+                    let result = load_one_plugin(infra, path.clone(), source_copy).await;
+                    (path, result)
+                }
             });
 
         let results = join_all(load_futs).await;
-        let plugins = results
-            .into_iter()
-            .filter_map(|res| match res {
-                Ok(Some(plugin)) => Some(plugin),
-                Ok(None) => None,
+        let mut plugins = Vec::new();
+        let mut errors = Vec::new();
+        for (path, res) in results {
+            match res {
+                Ok(Some(plugin)) => plugins.push(plugin),
+                Ok(None) => {}
                 Err(e) => {
                     tracing::warn!("Failed to load plugin: {e:#}");
-                    None
+                    // Capture the directory name (if any) as a best-effort
+                    // plugin identifier; callers render this alongside the
+                    // error message in `:plugin list`.
+                    let plugin_name = path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .map(String::from);
+                    errors.push(PluginLoadError {
+                        plugin_name,
+                        path,
+                        error: format!("{e:#}"),
+                    });
                 }
-            })
-            .collect();
+            }
+        }
 
-        Ok(plugins)
+        Ok((plugins, errors))
     }
 }
 
@@ -446,6 +479,8 @@ fn resolve_plugin_conflicts(plugins: Vec<LoadedPlugin>) -> Vec<LoadedPlugin> {
 #[cfg(test)]
 mod tests {
     use forge_app::domain::PluginSource;
+    use forge_config::ForgeConfig;
+    use forge_infra::ForgeInfra;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -464,6 +499,23 @@ mod tests {
             hooks_config: None,
             mcp_servers: None,
         }
+    }
+
+    /// Builds a real [`ForgePluginRepository`] backed by [`ForgeInfra`].
+    ///
+    /// Mirrors the `fixture_skill_repo` helper in `src/skill.rs`: we use the
+    /// production infra (real filesystem I/O) because `scan_root` probes
+    /// nested directories, checks manifest markers and reads JSON, and
+    /// replicating that semantics in a fake is tedious and error-prone.
+    fn fixture_plugin_repo() -> ForgePluginRepository<ForgeInfra> {
+        let config = ForgeConfig::read().unwrap_or_default();
+        let services_url = config.services_url.parse().unwrap();
+        let infra = Arc::new(ForgeInfra::new(
+            std::env::current_dir().unwrap(),
+            config,
+            services_url,
+        ));
+        ForgePluginRepository::new(infra)
     }
 
     #[test]
@@ -493,5 +545,98 @@ mod tests {
         let actual = resolve_plugin_conflicts(plugins);
 
         assert_eq!(actual.len(), 2);
+    }
+
+    /// Integration-style test exercising the full Claude Code
+    /// (`.claude-plugin/plugin.json`) discovery path against a fixture
+    /// directory checked in under `src/fixtures/plugins/`.
+    ///
+    /// Verifies that:
+    /// - the `.claude-plugin/plugin.json` marker (not the Forge-native
+    ///   `.forge-plugin/plugin.json`) is detected,
+    /// - `manifest` fields (name, version, description, author, hooks) are
+    ///   parsed correctly,
+    /// - declared component paths (commands, skills, agents) resolve to
+    ///   absolute paths rooted at the plugin directory, and
+    /// - `PluginSource` reflects the value supplied by the caller.
+    #[tokio::test]
+    async fn test_scan_root_loads_claude_code_plugin_fixture() {
+        // Fixture: a real on-disk Claude Code-style plugin layout.
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/plugins");
+
+        let repo = fixture_plugin_repo();
+        let (plugins, errors) = repo
+            .scan_root(&fixture_root, PluginSource::Project)
+            .await
+            .expect("scan_root should succeed for a healthy fixture");
+
+        assert!(
+            errors.is_empty(),
+            "Claude Code fixture must load cleanly, but got errors: {errors:?}"
+        );
+        assert_eq!(
+            plugins.len(),
+            1,
+            "Expected exactly one plugin under the fixture root"
+        );
+
+        let plugin = &plugins[0];
+        assert_eq!(plugin.name, "claude-code-demo");
+        assert_eq!(plugin.manifest.version.as_deref(), Some("0.1.0"));
+        assert_eq!(
+            plugin.manifest.description.as_deref(),
+            Some(
+                "Claude Code 1:1 compatibility fixture used to verify ForgePluginRepository discovery."
+            )
+        );
+        assert_eq!(plugin.source, PluginSource::Project);
+        assert!(plugin.enabled, "plugins default to enabled before config overrides");
+        assert!(!plugin.is_builtin);
+
+        // Author should come through the detailed form.
+        match &plugin.manifest.author {
+            Some(forge_domain::PluginAuthor::Detailed { name, email, url }) => {
+                assert_eq!(name, "Forge Test Harness");
+                assert_eq!(email.as_deref(), Some("test@forgecode.dev"));
+                assert!(url.is_none());
+            }
+            other => panic!("expected detailed author, got {other:?}"),
+        }
+
+        // Component paths must be resolved relative to the plugin root.
+        let expected_root = fixture_root.join("claude_code_plugin");
+        assert_eq!(plugin.path, expected_root);
+
+        assert_eq!(plugin.commands_paths.len(), 1);
+        assert!(
+            plugin.commands_paths[0].ends_with("claude_code_plugin/commands"),
+            "commands path should resolve to <plugin>/commands, got {:?}",
+            plugin.commands_paths[0]
+        );
+
+        assert_eq!(plugin.skills_paths.len(), 1);
+        assert!(
+            plugin.skills_paths[0].ends_with("claude_code_plugin/skills"),
+            "skills path should resolve to <plugin>/skills, got {:?}",
+            plugin.skills_paths[0]
+        );
+
+        assert_eq!(plugin.agents_paths.len(), 1);
+        assert!(
+            plugin.agents_paths[0].ends_with("claude_code_plugin/agents"),
+            "agents path should resolve to <plugin>/agents, got {:?}",
+            plugin.agents_paths[0]
+        );
+
+        // Hooks must be parsed from the referenced JSON file even though
+        // Phase 1 keeps them opaque.
+        assert!(
+            plugin.hooks_config.is_some(),
+            "hooks_config should be populated from hooks/hooks.json"
+        );
+
+        // No MCP servers were declared.
+        assert!(plugin.mcp_servers.is_none());
     }
 }

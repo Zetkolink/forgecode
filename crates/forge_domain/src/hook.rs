@@ -1,27 +1,114 @@
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use derive_more::From;
 use derive_setters::Setters;
 
-use crate::{Agent, ChatCompletionMessageFull, Conversation, ModelId, ToolCallFull, ToolResult};
+use crate::{
+    Agent, ChatCompletionMessageFull, ConfigChangePayload, Conversation, CwdChangedPayload,
+    ElicitationPayload, ElicitationResultPayload, FileChangedPayload, InstructionsLoadedPayload,
+    ModelId, NotificationPayload, PermissionDeniedPayload, PermissionRequestPayload,
+    PostCompactPayload, PostToolUseFailurePayload, PostToolUsePayload, PreCompactPayload,
+    PreToolUsePayload, SessionEndPayload, SessionStartPayload, SetupPayload, StopFailurePayload,
+    StopPayload, SubagentStartPayload, SubagentStopPayload, ToolCallFull, ToolResult,
+    UserPromptSubmitPayload, WorktreeCreatePayload, WorktreeRemovePayload,
+};
 
-/// A container for lifecycle events with agent and model ID context
+/// Sentinel session id attached to legacy [`EventData::new`] callers that
+/// pre-date the Phase 4 plugin-hook fields. Phase 4 Part 2 replaces these
+/// sentinels with real session ids sourced from the orchestrator.
+pub const LEGACY_SESSION_ID: &str = "legacy";
+
+/// Sentinel transcript path used by the legacy [`EventData::new`] ctor.
+///
+/// Kept as a `&'static str` so the constructor can build a `PathBuf` on
+/// demand without requiring a const fn over `PathBuf`.
+pub const LEGACY_TRANSCRIPT_PATH: &str = "/tmp/forge-legacy-transcript";
+
+/// A container for lifecycle events with agent, model, and plugin-hook
+/// context.
 ///
 /// This struct provides a consistent structure for all lifecycle events,
-/// containing the agent and model ID along with event-specific payload data.
+/// containing the agent, model ID, and the base fields every T1 Claude
+/// Code plugin hook expects (`session_id`, `transcript_path`, `cwd`,
+/// `permission_mode`) along with the event-specific payload data.
+///
+/// The Phase 3 legacy constructor [`EventData::new`] keeps existing call
+/// sites working by filling the new fields with sentinel values; Phase 4
+/// Part 2 migrates firing sites to [`EventData::with_context`], which
+/// accepts the real values.
 #[derive(Debug, PartialEq, Clone)]
 pub struct EventData<P: Send + Sync> {
     /// The agent associated with this event
     pub agent: Agent,
     /// The model ID being used
     pub model_id: ModelId,
+    /// Current session ID. For legacy callers this is
+    /// [`LEGACY_SESSION_ID`]; Phase 4 firing sites pass the real id.
+    pub session_id: String,
+    /// Absolute path to the transcript file for this session.
+    pub transcript_path: PathBuf,
+    /// Current working directory at the time the event fired.
+    pub cwd: PathBuf,
+    /// Optional permission mode (`"default"`, `"acceptEdits"`, ...).
+    pub permission_mode: Option<String>,
     /// Event-specific payload data
     pub payload: P,
 }
 
 impl<P: Send + Sync> EventData<P> {
-    /// Creates a new event with the given agent, model ID, and payload
+    /// Creates a new event with the given agent, model ID, and payload.
+    ///
+    /// **Legacy constructor** — kept as a thin wrapper so Phase 3 call
+    /// sites that didn't know about plugin hooks still compile. The new
+    /// base fields are filled with sentinels:
+    ///
+    /// - `session_id` → [`LEGACY_SESSION_ID`]
+    /// - `transcript_path` → [`LEGACY_TRANSCRIPT_PATH`]
+    /// - `cwd` → `std::env::current_dir()` or the empty path on error
+    /// - `permission_mode` → `None`
+    ///
+    /// Phase 4 Part 2 replaces these with proper values sourced from the
+    /// orchestrator via [`EventData::with_context`].
     pub fn new(agent: Agent, model_id: ModelId, payload: P) -> Self {
-        Self { agent, model_id, payload }
+        Self {
+            agent,
+            model_id,
+            session_id: LEGACY_SESSION_ID.to_string(),
+            transcript_path: PathBuf::from(LEGACY_TRANSCRIPT_PATH),
+            cwd: std::env::current_dir().unwrap_or_default(),
+            permission_mode: None,
+            payload,
+        }
+    }
+
+    /// Creates a new event with fully-populated plugin-hook context.
+    ///
+    /// Used by Phase 4 firing sites that know the real session id,
+    /// transcript path, cwd, and (optional) permission mode.
+    pub fn with_context(
+        agent: Agent,
+        model_id: ModelId,
+        session_id: impl Into<String>,
+        transcript_path: impl Into<PathBuf>,
+        cwd: impl Into<PathBuf>,
+        payload: P,
+    ) -> Self {
+        Self {
+            agent,
+            model_id,
+            session_id: session_id.into(),
+            transcript_path: transcript_path.into(),
+            cwd: cwd.into(),
+            permission_mode: None,
+            payload,
+        }
+    }
+
+    /// Attach a permission mode to an already-built `EventData`.
+    pub fn with_permission_mode(mut self, mode: impl Into<String>) -> Self {
+        self.permission_mode = Some(mode.into());
+        self
     }
 }
 
@@ -95,26 +182,160 @@ impl ToolcallEndPayload {
     }
 }
 
-/// Lifecycle events that can occur during conversation processing
+/// Lifecycle events that can occur during conversation processing.
+///
+/// The first block of variants is the legacy set established in Phase 2 —
+/// they drive Forge's internal handlers (tracing, title generation, etc.).
+/// The second block is the T1 Claude-Code plugin-hook set introduced in
+/// Phase 4: these variants exist today so [`Hook`] can hold slots for
+/// them, but the orchestrator only starts firing them in Phase 4 Part 2.
+///
+/// Marked `#[non_exhaustive]` so downstream consumers are nudged into
+/// matching with a wildcard arm — future phases will add more variants.
 #[derive(Debug, PartialEq, Clone, From)]
+#[non_exhaustive]
 pub enum LifecycleEvent {
-    /// Event fired when conversation processing starts
+    // ---- Legacy (Phase 2) ----
+    /// INTERNAL: Used by tracing and title generation only. External
+    /// plugins should use `SessionStart`.
+    #[doc(hidden)]
     Start(EventData<StartPayload>),
 
-    /// Event fired when conversation processing ends
+    /// INTERNAL: Used by tracing and title generation only. External
+    /// plugins should use `SessionEnd` or `Stop`.
+    #[doc(hidden)]
     End(EventData<EndPayload>),
 
-    /// Event fired when a request is made to the LLM
+    /// INTERNAL: Used by doom-loop detection and skill listing. No
+    /// external plugin equivalent.
+    #[doc(hidden)]
     Request(EventData<RequestPayload>),
 
-    /// Event fired when a response is received from the LLM
+    /// INTERNAL: Used by tracing and compaction trigger. External
+    /// plugins should use `PreCompact`/`PostCompact`.
+    #[doc(hidden)]
     Response(EventData<ResponsePayload>),
 
-    /// Event fired when a tool call starts
+    /// INTERNAL: Used by tracing only. External plugins should use
+    /// `PreToolUse`.
+    #[doc(hidden)]
     ToolcallStart(EventData<ToolcallStartPayload>),
 
-    /// Event fired when a tool call ends
+    /// INTERNAL: Used by tracing only. External plugins should use
+    /// `PostToolUse`/`PostToolUseFailure`.
+    #[doc(hidden)]
     ToolcallEnd(EventData<ToolcallEndPayload>),
+
+    // ---- Claude Code T1 plugin-hook events (Phase 4) ----
+    /// Fired before a tool call executes. Hooks can approve, deny, or
+    /// rewrite the tool input.
+    PreToolUse(EventData<PreToolUsePayload>),
+
+    /// Fired after a tool call completes successfully.
+    PostToolUse(EventData<PostToolUsePayload>),
+
+    /// Fired after a tool call errors out (including user interrupts).
+    PostToolUseFailure(EventData<PostToolUseFailurePayload>),
+
+    /// Fired when the user submits a new prompt.
+    UserPromptSubmit(EventData<UserPromptSubmitPayload>),
+
+    /// Fired at the start of a session (startup / resume / clear / compact).
+    SessionStart(EventData<SessionStartPayload>),
+
+    /// Fired when a session ends (clear / logout / exit / ...).
+    SessionEnd(EventData<SessionEndPayload>),
+
+    /// Fired when the agent loop finishes a turn naturally.
+    Stop(EventData<StopPayload>),
+
+    /// Fired when the agent loop halts due to an error.
+    StopFailure(EventData<StopFailurePayload>),
+
+    /// Fired just before a compaction cycle starts.
+    PreCompact(EventData<PreCompactPayload>),
+
+    /// Fired after a compaction cycle finishes.
+    PostCompact(EventData<PostCompactPayload>),
+
+    // ---- Claude Code T2 plugin-hook events (Phase 6) ----
+    /// Fired when Forge wants to surface a user-facing notification
+    /// (idle prompt, OAuth success, elicitation update, …).
+    Notification(EventData<NotificationPayload>),
+
+    /// Fired once per `forge --init` / `forge --maintenance` invocation.
+    /// Phase 6B only ships the infrastructure slot — the CLI flags and
+    /// real fire site land in a later phase.
+    Setup(EventData<SetupPayload>),
+
+    /// Fired when a configuration file watched by `ConfigWatcher`
+    /// changes on disk (debounced, with internal-write suppression).
+    /// Phase 6C ships only the hook slot + payload plumbing; the
+    /// `ConfigWatcher` fire loop that actually raises this event is
+    /// still a gap tracked in the phase-6 report.
+    ConfigChange(EventData<ConfigChangePayload>),
+
+    /// Fired whenever Forge loads an instructions / memory file
+    /// (`AGENTS.md` etc). Phase 6D minimal ships only the hook slot +
+    /// payload plumbing; the actual fire sites inside
+    /// `CustomInstructionsService` are deferred to the Phase 6D
+    /// expansion that adds the full multi-layer memory system.
+    InstructionsLoaded(EventData<InstructionsLoadedPayload>),
+
+    // ---- Claude Code T3 plugin-hook events (Phase 7) ----
+    /// Fired when a sub-agent starts running inside the orchestrator.
+    /// Phase 7 ships only the hook slot + payload plumbing; the real
+    /// fire sites in `agent_executor.rs` are deferred to the Phase 7
+    /// expansion that threads `agent_id` through the orchestrator.
+    SubagentStart(EventData<SubagentStartPayload>),
+
+    /// Fired when a sub-agent finishes its turn.
+    SubagentStop(EventData<SubagentStopPayload>),
+
+    /// Fired when a tool call needs permission that hasn't been granted
+    /// yet. Phase 7B ships only the hook slot + payload plumbing; the
+    /// real fire site in `policy.rs` is deferred to the Phase 7
+    /// expansion.
+    PermissionRequest(EventData<PermissionRequestPayload>),
+
+    /// Fired when a permission request is rejected.
+    PermissionDenied(EventData<PermissionDeniedPayload>),
+
+    /// Fired when the orchestrator's current working directory changes.
+    /// Phase 7C ships only the hook slot + payload plumbing; the real
+    /// fire site in Shell tool / tracker is deferred to the Phase 7
+    /// expansion.
+    CwdChanged(EventData<CwdChangedPayload>),
+
+    /// Fired when a tracked file is added, modified, or removed.
+    /// Phase 7C ships only the hook slot + payload plumbing; the
+    /// `FileChangedWatcher` service is deferred to the Phase 7
+    /// expansion.
+    FileChanged(EventData<FileChangedPayload>),
+
+    /// Fired when the agent enters a new git worktree via
+    /// `EnterWorktreeTool` or a hook-driven VCS adapter. Phase 7D ships
+    /// only the hook slot + payload plumbing; the worktree tools and
+    /// sandbox fire sites are deferred to the Phase 7 expansion.
+    WorktreeCreate(EventData<WorktreeCreatePayload>),
+
+    /// Fired when the agent exits a git worktree via
+    /// `ExitWorktreeTool` or a hook-driven VCS adapter. Phase 7D ships
+    /// only the hook slot + payload plumbing; real fire sites are
+    /// deferred.
+    WorktreeRemove(EventData<WorktreeRemovePayload>),
+
+    // ---- Phase 8 — MCP elicitation hooks ----
+    /// Fired by the MCP client before it prompts the user for
+    /// additional input on behalf of an MCP server. Phase 8D minimal
+    /// ships only the hook slot + payload plumbing; the real MCP
+    /// client integration is deferred to Phase 8A/8B/8C.
+    Elicitation(EventData<ElicitationPayload>),
+
+    /// Fired after the user (or an auto-responding plugin hook)
+    /// completes the elicitation. Phase 8D minimal ships only the hook
+    /// slot + payload plumbing.
+    ElicitationResult(EventData<ElicitationResultPayload>),
 }
 
 /// Trait for handling lifecycle events
@@ -176,12 +397,45 @@ impl<T: Send + Sync> EventHandle<T> for Box<dyn EventHandle<T>> {
 /// Hooks allow you to attach custom behavior at specific points
 /// during conversation processing.
 pub struct Hook {
+    // ---- Legacy slots (Phase 2) ----
     on_start: Box<dyn EventHandle<EventData<StartPayload>>>,
     on_end: Box<dyn EventHandle<EventData<EndPayload>>>,
     on_request: Box<dyn EventHandle<EventData<RequestPayload>>>,
     on_response: Box<dyn EventHandle<EventData<ResponsePayload>>>,
     on_toolcall_start: Box<dyn EventHandle<EventData<ToolcallStartPayload>>>,
     on_toolcall_end: Box<dyn EventHandle<EventData<ToolcallEndPayload>>>,
+
+    // ---- Claude Code T1 plugin-hook slots (Phase 4) ----
+    on_pre_tool_use: Box<dyn EventHandle<EventData<PreToolUsePayload>>>,
+    on_post_tool_use: Box<dyn EventHandle<EventData<PostToolUsePayload>>>,
+    on_post_tool_use_failure: Box<dyn EventHandle<EventData<PostToolUseFailurePayload>>>,
+    on_user_prompt_submit: Box<dyn EventHandle<EventData<UserPromptSubmitPayload>>>,
+    on_session_start: Box<dyn EventHandle<EventData<SessionStartPayload>>>,
+    on_session_end: Box<dyn EventHandle<EventData<SessionEndPayload>>>,
+    on_stop: Box<dyn EventHandle<EventData<StopPayload>>>,
+    on_stop_failure: Box<dyn EventHandle<EventData<StopFailurePayload>>>,
+    on_pre_compact: Box<dyn EventHandle<EventData<PreCompactPayload>>>,
+    on_post_compact: Box<dyn EventHandle<EventData<PostCompactPayload>>>,
+
+    // ---- Claude Code T2 plugin-hook slots (Phase 6) ----
+    on_notification: Box<dyn EventHandle<EventData<NotificationPayload>>>,
+    on_setup: Box<dyn EventHandle<EventData<SetupPayload>>>,
+    on_config_change: Box<dyn EventHandle<EventData<ConfigChangePayload>>>,
+    on_instructions_loaded: Box<dyn EventHandle<EventData<InstructionsLoadedPayload>>>,
+
+    // ---- Claude Code T3 plugin-hook slots (Phase 7) ----
+    on_subagent_start: Box<dyn EventHandle<EventData<SubagentStartPayload>>>,
+    on_subagent_stop: Box<dyn EventHandle<EventData<SubagentStopPayload>>>,
+    on_permission_request: Box<dyn EventHandle<EventData<PermissionRequestPayload>>>,
+    on_permission_denied: Box<dyn EventHandle<EventData<PermissionDeniedPayload>>>,
+    on_cwd_changed: Box<dyn EventHandle<EventData<CwdChangedPayload>>>,
+    on_file_changed: Box<dyn EventHandle<EventData<FileChangedPayload>>>,
+    on_worktree_create: Box<dyn EventHandle<EventData<WorktreeCreatePayload>>>,
+    on_worktree_remove: Box<dyn EventHandle<EventData<WorktreeRemovePayload>>>,
+
+    // ---- Phase 8 MCP elicitation slots ----
+    on_elicitation: Box<dyn EventHandle<EventData<ElicitationPayload>>>,
+    on_elicitation_result: Box<dyn EventHandle<EventData<ElicitationResultPayload>>>,
 }
 
 impl Default for Hook {
@@ -193,6 +447,30 @@ impl Default for Hook {
             on_response: Box::new(NoOpHandler),
             on_toolcall_start: Box::new(NoOpHandler),
             on_toolcall_end: Box::new(NoOpHandler),
+            on_pre_tool_use: Box::new(NoOpHandler),
+            on_post_tool_use: Box::new(NoOpHandler),
+            on_post_tool_use_failure: Box::new(NoOpHandler),
+            on_user_prompt_submit: Box::new(NoOpHandler),
+            on_session_start: Box::new(NoOpHandler),
+            on_session_end: Box::new(NoOpHandler),
+            on_stop: Box::new(NoOpHandler),
+            on_stop_failure: Box::new(NoOpHandler),
+            on_pre_compact: Box::new(NoOpHandler),
+            on_post_compact: Box::new(NoOpHandler),
+            on_notification: Box::new(NoOpHandler),
+            on_setup: Box::new(NoOpHandler),
+            on_config_change: Box::new(NoOpHandler),
+            on_instructions_loaded: Box::new(NoOpHandler),
+            on_subagent_start: Box::new(NoOpHandler),
+            on_subagent_stop: Box::new(NoOpHandler),
+            on_permission_request: Box::new(NoOpHandler),
+            on_permission_denied: Box::new(NoOpHandler),
+            on_cwd_changed: Box::new(NoOpHandler),
+            on_file_changed: Box::new(NoOpHandler),
+            on_worktree_create: Box::new(NoOpHandler),
+            on_worktree_remove: Box::new(NoOpHandler),
+            on_elicitation: Box::new(NoOpHandler),
+            on_elicitation_result: Box::new(NoOpHandler),
         }
     }
 }
@@ -215,6 +493,9 @@ impl Hook {
         on_toolcall_start: impl Into<Box<dyn EventHandle<EventData<ToolcallStartPayload>>>>,
         on_toolcall_end: impl Into<Box<dyn EventHandle<EventData<ToolcallEndPayload>>>>,
     ) -> Self {
+        // Only the legacy slots are customizable via `new()`; plugin-hook
+        // slots default to `NoOpHandler` and are attached via the builder
+        // methods (`on_pre_tool_use`, ...).
         Self {
             on_start: on_start.into(),
             on_end: on_end.into(),
@@ -222,6 +503,30 @@ impl Hook {
             on_response: on_response.into(),
             on_toolcall_start: on_toolcall_start.into(),
             on_toolcall_end: on_toolcall_end.into(),
+            on_pre_tool_use: Box::new(NoOpHandler),
+            on_post_tool_use: Box::new(NoOpHandler),
+            on_post_tool_use_failure: Box::new(NoOpHandler),
+            on_user_prompt_submit: Box::new(NoOpHandler),
+            on_session_start: Box::new(NoOpHandler),
+            on_session_end: Box::new(NoOpHandler),
+            on_stop: Box::new(NoOpHandler),
+            on_stop_failure: Box::new(NoOpHandler),
+            on_pre_compact: Box::new(NoOpHandler),
+            on_post_compact: Box::new(NoOpHandler),
+            on_notification: Box::new(NoOpHandler),
+            on_setup: Box::new(NoOpHandler),
+            on_config_change: Box::new(NoOpHandler),
+            on_instructions_loaded: Box::new(NoOpHandler),
+            on_subagent_start: Box::new(NoOpHandler),
+            on_subagent_stop: Box::new(NoOpHandler),
+            on_permission_request: Box::new(NoOpHandler),
+            on_permission_denied: Box::new(NoOpHandler),
+            on_cwd_changed: Box::new(NoOpHandler),
+            on_file_changed: Box::new(NoOpHandler),
+            on_worktree_create: Box::new(NoOpHandler),
+            on_worktree_remove: Box::new(NoOpHandler),
+            on_elicitation: Box::new(NoOpHandler),
+            on_elicitation_result: Box::new(NoOpHandler),
         }
     }
 }
@@ -295,6 +600,265 @@ impl Hook {
         self.on_toolcall_end = Box::new(handler);
         self
     }
+
+    // ---- Claude Code T1 plugin-hook builder methods (Phase 4) ----
+
+    /// Sets the PreToolUse event handler.
+    pub fn on_pre_tool_use(
+        mut self,
+        handler: impl EventHandle<EventData<PreToolUsePayload>> + 'static,
+    ) -> Self {
+        self.on_pre_tool_use = Box::new(handler);
+        self
+    }
+
+    /// Sets the PostToolUse event handler.
+    pub fn on_post_tool_use(
+        mut self,
+        handler: impl EventHandle<EventData<PostToolUsePayload>> + 'static,
+    ) -> Self {
+        self.on_post_tool_use = Box::new(handler);
+        self
+    }
+
+    /// Sets the PostToolUseFailure event handler.
+    pub fn on_post_tool_use_failure(
+        mut self,
+        handler: impl EventHandle<EventData<PostToolUseFailurePayload>> + 'static,
+    ) -> Self {
+        self.on_post_tool_use_failure = Box::new(handler);
+        self
+    }
+
+    /// Sets the UserPromptSubmit event handler.
+    pub fn on_user_prompt_submit(
+        mut self,
+        handler: impl EventHandle<EventData<UserPromptSubmitPayload>> + 'static,
+    ) -> Self {
+        self.on_user_prompt_submit = Box::new(handler);
+        self
+    }
+
+    /// Sets the SessionStart event handler.
+    pub fn on_session_start(
+        mut self,
+        handler: impl EventHandle<EventData<SessionStartPayload>> + 'static,
+    ) -> Self {
+        self.on_session_start = Box::new(handler);
+        self
+    }
+
+    /// Sets the SessionEnd event handler.
+    pub fn on_session_end(
+        mut self,
+        handler: impl EventHandle<EventData<SessionEndPayload>> + 'static,
+    ) -> Self {
+        self.on_session_end = Box::new(handler);
+        self
+    }
+
+    /// Sets the Stop event handler.
+    pub fn on_stop(
+        mut self,
+        handler: impl EventHandle<EventData<StopPayload>> + 'static,
+    ) -> Self {
+        self.on_stop = Box::new(handler);
+        self
+    }
+
+    /// Sets the StopFailure event handler.
+    pub fn on_stop_failure(
+        mut self,
+        handler: impl EventHandle<EventData<StopFailurePayload>> + 'static,
+    ) -> Self {
+        self.on_stop_failure = Box::new(handler);
+        self
+    }
+
+    /// Sets the PreCompact event handler.
+    pub fn on_pre_compact(
+        mut self,
+        handler: impl EventHandle<EventData<PreCompactPayload>> + 'static,
+    ) -> Self {
+        self.on_pre_compact = Box::new(handler);
+        self
+    }
+
+    /// Sets the PostCompact event handler.
+    pub fn on_post_compact(
+        mut self,
+        handler: impl EventHandle<EventData<PostCompactPayload>> + 'static,
+    ) -> Self {
+        self.on_post_compact = Box::new(handler);
+        self
+    }
+
+    // ---- Claude Code T2 plugin-hook builder methods (Phase 6) ----
+
+    /// Sets the Notification event handler.
+    pub fn on_notification(
+        mut self,
+        handler: impl EventHandle<EventData<NotificationPayload>> + 'static,
+    ) -> Self {
+        self.on_notification = Box::new(handler);
+        self
+    }
+
+    /// Sets the Setup event handler.
+    pub fn on_setup(
+        mut self,
+        handler: impl EventHandle<EventData<SetupPayload>> + 'static,
+    ) -> Self {
+        self.on_setup = Box::new(handler);
+        self
+    }
+
+    /// Sets the ConfigChange event handler.
+    ///
+    /// Phase 6C wires this slot but does not yet fire the event — the
+    /// `ConfigWatcher` service that will emit `ConfigChangePayload`
+    /// values into this slot is still a gap tracked in the phase-6
+    /// report.
+    pub fn on_config_change(
+        mut self,
+        handler: impl EventHandle<EventData<ConfigChangePayload>> + 'static,
+    ) -> Self {
+        self.on_config_change = Box::new(handler);
+        self
+    }
+
+    /// Sets the InstructionsLoaded event handler.
+    ///
+    /// Phase 6D minimal wires this slot but does not yet fire the
+    /// event — the `CustomInstructionsService` fire sites that will
+    /// emit `InstructionsLoadedPayload` values are deferred to the
+    /// Phase 6D expansion.
+    pub fn on_instructions_loaded(
+        mut self,
+        handler: impl EventHandle<EventData<InstructionsLoadedPayload>> + 'static,
+    ) -> Self {
+        self.on_instructions_loaded = Box::new(handler);
+        self
+    }
+
+    // ---- Claude Code T3 plugin-hook builder methods (Phase 7) ----
+
+    /// Sets the SubagentStart event handler.
+    ///
+    /// Phase 7 ships this slot as infrastructure only — the real fire
+    /// sites in `agent_executor.rs` are added once `agent_id` threading
+    /// lands in the Phase 7 expansion.
+    pub fn on_subagent_start(
+        mut self,
+        handler: impl EventHandle<EventData<SubagentStartPayload>> + 'static,
+    ) -> Self {
+        self.on_subagent_start = Box::new(handler);
+        self
+    }
+
+    /// Sets the SubagentStop event handler.
+    pub fn on_subagent_stop(
+        mut self,
+        handler: impl EventHandle<EventData<SubagentStopPayload>> + 'static,
+    ) -> Self {
+        self.on_subagent_stop = Box::new(handler);
+        self
+    }
+
+    /// Sets the PermissionRequest event handler.
+    ///
+    /// Phase 7B ships this slot as infrastructure only — the real fire
+    /// site in `policy.rs` is added in the Phase 7 expansion.
+    pub fn on_permission_request(
+        mut self,
+        handler: impl EventHandle<EventData<PermissionRequestPayload>> + 'static,
+    ) -> Self {
+        self.on_permission_request = Box::new(handler);
+        self
+    }
+
+    /// Sets the PermissionDenied event handler.
+    pub fn on_permission_denied(
+        mut self,
+        handler: impl EventHandle<EventData<PermissionDeniedPayload>> + 'static,
+    ) -> Self {
+        self.on_permission_denied = Box::new(handler);
+        self
+    }
+
+    /// Sets the CwdChanged event handler.
+    ///
+    /// Phase 7C ships only the hook slot; the actual fire site in the
+    /// Shell tool / cwd tracker is deferred to the Phase 7 expansion.
+    pub fn on_cwd_changed(
+        mut self,
+        handler: impl EventHandle<EventData<CwdChangedPayload>> + 'static,
+    ) -> Self {
+        self.on_cwd_changed = Box::new(handler);
+        self
+    }
+
+    /// Sets the FileChanged event handler.
+    ///
+    /// Phase 7C ships only the hook slot; the `FileChangedWatcher`
+    /// service is deferred to the Phase 7 expansion.
+    pub fn on_file_changed(
+        mut self,
+        handler: impl EventHandle<EventData<FileChangedPayload>> + 'static,
+    ) -> Self {
+        self.on_file_changed = Box::new(handler);
+        self
+    }
+
+    /// Sets the WorktreeCreate event handler.
+    ///
+    /// Phase 7D ships only the hook slot; the worktree tools + sandbox
+    /// wiring are deferred to the Phase 7 expansion.
+    pub fn on_worktree_create(
+        mut self,
+        handler: impl EventHandle<EventData<WorktreeCreatePayload>> + 'static,
+    ) -> Self {
+        self.on_worktree_create = Box::new(handler);
+        self
+    }
+
+    /// Sets the WorktreeRemove event handler.
+    ///
+    /// Phase 7D ships only the hook slot; real fire sites are deferred
+    /// to the Phase 7 expansion.
+    pub fn on_worktree_remove(
+        mut self,
+        handler: impl EventHandle<EventData<WorktreeRemovePayload>> + 'static,
+    ) -> Self {
+        self.on_worktree_remove = Box::new(handler);
+        self
+    }
+
+    // ---- Phase 8 — MCP elicitation builder methods ----
+
+    /// Sets the Elicitation event handler.
+    ///
+    /// Phase 8D minimal wires this slot but does not yet fire the
+    /// event — the MCP client integration that will emit
+    /// `ElicitationPayload` values is deferred to Phase 8A/8B/8C.
+    pub fn on_elicitation(
+        mut self,
+        handler: impl EventHandle<EventData<ElicitationPayload>> + 'static,
+    ) -> Self {
+        self.on_elicitation = Box::new(handler);
+        self
+    }
+
+    /// Sets the ElicitationResult event handler.
+    ///
+    /// Phase 8D minimal ships only the hook slot.
+    pub fn on_elicitation_result(
+        mut self,
+        handler: impl EventHandle<EventData<ElicitationResultPayload>> + 'static,
+    ) -> Self {
+        self.on_elicitation_result = Box::new(handler);
+        self
+    }
 }
 
 impl Hook {
@@ -317,6 +881,40 @@ impl Hook {
             on_response: self.on_response.and(other.on_response),
             on_toolcall_start: self.on_toolcall_start.and(other.on_toolcall_start),
             on_toolcall_end: self.on_toolcall_end.and(other.on_toolcall_end),
+            on_pre_tool_use: self.on_pre_tool_use.and(other.on_pre_tool_use),
+            on_post_tool_use: self.on_post_tool_use.and(other.on_post_tool_use),
+            on_post_tool_use_failure: self
+                .on_post_tool_use_failure
+                .and(other.on_post_tool_use_failure),
+            on_user_prompt_submit: self
+                .on_user_prompt_submit
+                .and(other.on_user_prompt_submit),
+            on_session_start: self.on_session_start.and(other.on_session_start),
+            on_session_end: self.on_session_end.and(other.on_session_end),
+            on_stop: self.on_stop.and(other.on_stop),
+            on_stop_failure: self.on_stop_failure.and(other.on_stop_failure),
+            on_pre_compact: self.on_pre_compact.and(other.on_pre_compact),
+            on_post_compact: self.on_post_compact.and(other.on_post_compact),
+            on_notification: self.on_notification.and(other.on_notification),
+            on_setup: self.on_setup.and(other.on_setup),
+            on_config_change: self.on_config_change.and(other.on_config_change),
+            on_instructions_loaded: self
+                .on_instructions_loaded
+                .and(other.on_instructions_loaded),
+            on_subagent_start: self.on_subagent_start.and(other.on_subagent_start),
+            on_subagent_stop: self.on_subagent_stop.and(other.on_subagent_stop),
+            on_permission_request: self
+                .on_permission_request
+                .and(other.on_permission_request),
+            on_permission_denied: self.on_permission_denied.and(other.on_permission_denied),
+            on_cwd_changed: self.on_cwd_changed.and(other.on_cwd_changed),
+            on_file_changed: self.on_file_changed.and(other.on_file_changed),
+            on_worktree_create: self.on_worktree_create.and(other.on_worktree_create),
+            on_worktree_remove: self.on_worktree_remove.and(other.on_worktree_remove),
+            on_elicitation: self.on_elicitation.and(other.on_elicitation),
+            on_elicitation_result: self
+                .on_elicitation_result
+                .and(other.on_elicitation_result),
         }
     }
 }
@@ -339,6 +937,78 @@ impl EventHandle<LifecycleEvent> for Hook {
             }
             LifecycleEvent::ToolcallEnd(data) => {
                 self.on_toolcall_end.handle(data, conversation).await
+            }
+            LifecycleEvent::PreToolUse(data) => {
+                self.on_pre_tool_use.handle(data, conversation).await
+            }
+            LifecycleEvent::PostToolUse(data) => {
+                self.on_post_tool_use.handle(data, conversation).await
+            }
+            LifecycleEvent::PostToolUseFailure(data) => {
+                self.on_post_tool_use_failure
+                    .handle(data, conversation)
+                    .await
+            }
+            LifecycleEvent::UserPromptSubmit(data) => {
+                self.on_user_prompt_submit.handle(data, conversation).await
+            }
+            LifecycleEvent::SessionStart(data) => {
+                self.on_session_start.handle(data, conversation).await
+            }
+            LifecycleEvent::SessionEnd(data) => {
+                self.on_session_end.handle(data, conversation).await
+            }
+            LifecycleEvent::Stop(data) => self.on_stop.handle(data, conversation).await,
+            LifecycleEvent::StopFailure(data) => {
+                self.on_stop_failure.handle(data, conversation).await
+            }
+            LifecycleEvent::PreCompact(data) => {
+                self.on_pre_compact.handle(data, conversation).await
+            }
+            LifecycleEvent::PostCompact(data) => {
+                self.on_post_compact.handle(data, conversation).await
+            }
+            LifecycleEvent::Notification(data) => {
+                self.on_notification.handle(data, conversation).await
+            }
+            LifecycleEvent::Setup(data) => self.on_setup.handle(data, conversation).await,
+            LifecycleEvent::ConfigChange(data) => {
+                self.on_config_change.handle(data, conversation).await
+            }
+            LifecycleEvent::InstructionsLoaded(data) => {
+                self.on_instructions_loaded
+                    .handle(data, conversation)
+                    .await
+            }
+            LifecycleEvent::SubagentStart(data) => {
+                self.on_subagent_start.handle(data, conversation).await
+            }
+            LifecycleEvent::SubagentStop(data) => {
+                self.on_subagent_stop.handle(data, conversation).await
+            }
+            LifecycleEvent::PermissionRequest(data) => {
+                self.on_permission_request.handle(data, conversation).await
+            }
+            LifecycleEvent::PermissionDenied(data) => {
+                self.on_permission_denied.handle(data, conversation).await
+            }
+            LifecycleEvent::CwdChanged(data) => {
+                self.on_cwd_changed.handle(data, conversation).await
+            }
+            LifecycleEvent::FileChanged(data) => {
+                self.on_file_changed.handle(data, conversation).await
+            }
+            LifecycleEvent::WorktreeCreate(data) => {
+                self.on_worktree_create.handle(data, conversation).await
+            }
+            LifecycleEvent::WorktreeRemove(data) => {
+                self.on_worktree_remove.handle(data, conversation).await
+            }
+            LifecycleEvent::Elicitation(data) => {
+                self.on_elicitation.handle(data, conversation).await
+            }
+            LifecycleEvent::ElicitationResult(data) => {
+                self.on_elicitation_result.handle(data, conversation).await
             }
         }
     }
@@ -1132,5 +1802,307 @@ mod tests {
         // Both handlers should have been called
         assert_eq!(*hook1_title.lock().unwrap(), Some("Started".to_string()));
         assert_eq!(*hook2_title.lock().unwrap(), Some("Ended".to_string()));
+    }
+
+    // ---- Phase 4 Part 1: plugin-hook EventData + Hook tests ----
+
+    #[test]
+    fn test_event_data_new_fills_legacy_sentinels() {
+        let actual = EventData::new(test_agent(), test_model_id(), StartPayload);
+
+        assert_eq!(actual.session_id, LEGACY_SESSION_ID);
+        assert_eq!(
+            actual.transcript_path,
+            PathBuf::from(LEGACY_TRANSCRIPT_PATH)
+        );
+        assert_eq!(actual.permission_mode, None);
+        // `cwd` is whatever `std::env::current_dir()` returned — don't
+        // assert on it beyond being some value.
+    }
+
+    #[test]
+    fn test_event_data_with_context_sets_explicit_fields() {
+        let actual = EventData::with_context(
+            test_agent(),
+            test_model_id(),
+            "sess-xyz",
+            PathBuf::from("/tmp/t.jsonl"),
+            PathBuf::from("/work"),
+            StartPayload,
+        );
+
+        assert_eq!(actual.session_id, "sess-xyz");
+        assert_eq!(actual.transcript_path, PathBuf::from("/tmp/t.jsonl"));
+        assert_eq!(actual.cwd, PathBuf::from("/work"));
+        assert_eq!(actual.permission_mode, None);
+    }
+
+    #[test]
+    fn test_event_data_with_permission_mode_sets_mode() {
+        let actual = EventData::with_context(
+            test_agent(),
+            test_model_id(),
+            "s",
+            PathBuf::from("/t"),
+            PathBuf::from("/c"),
+            StartPayload,
+        )
+        .with_permission_mode("acceptEdits");
+
+        assert_eq!(actual.permission_mode.as_deref(), Some("acceptEdits"));
+    }
+
+    #[tokio::test]
+    async fn test_hook_on_pre_tool_use_fires_handler() {
+        use crate::PreToolUsePayload;
+
+        let fired = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let hook = Hook::default().on_pre_tool_use({
+            let fired = fired.clone();
+            move |_event: &EventData<PreToolUsePayload>,
+                  _conversation: &mut Conversation| {
+                let fired = fired.clone();
+                async move {
+                    *fired.lock().unwrap() += 1;
+                    Ok(())
+                }
+            }
+        });
+
+        let mut conversation = Conversation::generate();
+        let event = EventData::new(
+            test_agent(),
+            test_model_id(),
+            PreToolUsePayload {
+                tool_name: "Bash".to_string(),
+                tool_input: serde_json::json!({"command": "ls"}),
+                tool_use_id: "t1".to_string(),
+            },
+        );
+        hook.handle(&LifecycleEvent::PreToolUse(event), &mut conversation)
+            .await
+            .unwrap();
+
+        assert_eq!(*fired.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_hook_dispatches_new_variants_to_correct_slots() {
+        use crate::{
+            PostCompactPayload, PostToolUseFailurePayload, PostToolUsePayload,
+            PreCompactPayload, PreToolUsePayload, SessionEndPayload, SessionEndReason,
+            SessionStartPayload, SessionStartSource, StopFailurePayload, StopPayload,
+            UserPromptSubmitPayload,
+        };
+
+        let tag = std::sync::Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+
+        // Wire every slot to a closure that appends a tag.
+        let hook = Hook::default()
+            .on_pre_tool_use({
+                let tag = tag.clone();
+                move |_e: &EventData<PreToolUsePayload>, _c: &mut Conversation| {
+                    let tag = tag.clone();
+                    async move {
+                        tag.lock().unwrap().push("pre_tool_use");
+                        Ok(())
+                    }
+                }
+            })
+            .on_post_tool_use({
+                let tag = tag.clone();
+                move |_e: &EventData<PostToolUsePayload>, _c: &mut Conversation| {
+                    let tag = tag.clone();
+                    async move {
+                        tag.lock().unwrap().push("post_tool_use");
+                        Ok(())
+                    }
+                }
+            })
+            .on_post_tool_use_failure({
+                let tag = tag.clone();
+                move |_e: &EventData<PostToolUseFailurePayload>,
+                      _c: &mut Conversation| {
+                    let tag = tag.clone();
+                    async move {
+                        tag.lock().unwrap().push("post_tool_use_failure");
+                        Ok(())
+                    }
+                }
+            })
+            .on_user_prompt_submit({
+                let tag = tag.clone();
+                move |_e: &EventData<UserPromptSubmitPayload>,
+                      _c: &mut Conversation| {
+                    let tag = tag.clone();
+                    async move {
+                        tag.lock().unwrap().push("user_prompt_submit");
+                        Ok(())
+                    }
+                }
+            })
+            .on_session_start({
+                let tag = tag.clone();
+                move |_e: &EventData<SessionStartPayload>, _c: &mut Conversation| {
+                    let tag = tag.clone();
+                    async move {
+                        tag.lock().unwrap().push("session_start");
+                        Ok(())
+                    }
+                }
+            })
+            .on_session_end({
+                let tag = tag.clone();
+                move |_e: &EventData<SessionEndPayload>, _c: &mut Conversation| {
+                    let tag = tag.clone();
+                    async move {
+                        tag.lock().unwrap().push("session_end");
+                        Ok(())
+                    }
+                }
+            })
+            .on_stop({
+                let tag = tag.clone();
+                move |_e: &EventData<StopPayload>, _c: &mut Conversation| {
+                    let tag = tag.clone();
+                    async move {
+                        tag.lock().unwrap().push("stop");
+                        Ok(())
+                    }
+                }
+            })
+            .on_stop_failure({
+                let tag = tag.clone();
+                move |_e: &EventData<StopFailurePayload>, _c: &mut Conversation| {
+                    let tag = tag.clone();
+                    async move {
+                        tag.lock().unwrap().push("stop_failure");
+                        Ok(())
+                    }
+                }
+            })
+            .on_pre_compact({
+                let tag = tag.clone();
+                move |_e: &EventData<PreCompactPayload>, _c: &mut Conversation| {
+                    let tag = tag.clone();
+                    async move {
+                        tag.lock().unwrap().push("pre_compact");
+                        Ok(())
+                    }
+                }
+            })
+            .on_post_compact({
+                let tag = tag.clone();
+                move |_e: &EventData<PostCompactPayload>, _c: &mut Conversation| {
+                    let tag = tag.clone();
+                    async move {
+                        tag.lock().unwrap().push("post_compact");
+                        Ok(())
+                    }
+                }
+            });
+
+        let mut conversation = Conversation::generate();
+        let agent = test_agent();
+        let mid = test_model_id();
+
+        // Fire one of each.
+        let events = vec![
+            LifecycleEvent::PreToolUse(EventData::new(
+                agent.clone(),
+                mid.clone(),
+                PreToolUsePayload {
+                    tool_name: "Bash".to_string(),
+                    tool_input: serde_json::json!({}),
+                    tool_use_id: "t1".to_string(),
+                },
+            )),
+            LifecycleEvent::PostToolUse(EventData::new(
+                agent.clone(),
+                mid.clone(),
+                PostToolUsePayload {
+                    tool_name: "Bash".to_string(),
+                    tool_input: serde_json::json!({}),
+                    tool_response: serde_json::json!({}),
+                    tool_use_id: "t1".to_string(),
+                },
+            )),
+            LifecycleEvent::PostToolUseFailure(EventData::new(
+                agent.clone(),
+                mid.clone(),
+                PostToolUseFailurePayload {
+                    tool_name: "Bash".to_string(),
+                    tool_input: serde_json::json!({}),
+                    tool_use_id: "t1".to_string(),
+                    error: "boom".to_string(),
+                    is_interrupt: None,
+                },
+            )),
+            LifecycleEvent::UserPromptSubmit(EventData::new(
+                agent.clone(),
+                mid.clone(),
+                UserPromptSubmitPayload { prompt: "hi".to_string() },
+            )),
+            LifecycleEvent::SessionStart(EventData::new(
+                agent.clone(),
+                mid.clone(),
+                SessionStartPayload { source: SessionStartSource::Startup, model: None },
+            )),
+            LifecycleEvent::SessionEnd(EventData::new(
+                agent.clone(),
+                mid.clone(),
+                SessionEndPayload { reason: SessionEndReason::Clear },
+            )),
+            LifecycleEvent::Stop(EventData::new(
+                agent.clone(),
+                mid.clone(),
+                StopPayload { stop_hook_active: false, last_assistant_message: None },
+            )),
+            LifecycleEvent::StopFailure(EventData::new(
+                agent.clone(),
+                mid.clone(),
+                StopFailurePayload {
+                    error: "x".to_string(),
+                    last_assistant_message: None,
+                },
+            )),
+            LifecycleEvent::PreCompact(EventData::new(
+                agent.clone(),
+                mid.clone(),
+                PreCompactPayload {
+                    trigger: crate::CompactTrigger::Manual,
+                    custom_instructions: None,
+                },
+            )),
+            LifecycleEvent::PostCompact(EventData::new(
+                agent.clone(),
+                mid.clone(),
+                PostCompactPayload {
+                    trigger: crate::CompactTrigger::Auto,
+                    compact_summary: "ok".to_string(),
+                },
+            )),
+        ];
+
+        for event in events {
+            hook.handle(&event, &mut conversation).await.unwrap();
+        }
+
+        let handled = tag.lock().unwrap();
+        assert_eq!(
+            handled.clone(),
+            vec![
+                "pre_tool_use",
+                "post_tool_use",
+                "post_tool_use_failure",
+                "user_prompt_submit",
+                "session_start",
+                "session_end",
+                "stop",
+                "stop_failure",
+                "pre_compact",
+                "post_compact",
+            ]
+        );
     }
 }

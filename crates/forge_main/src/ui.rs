@@ -37,7 +37,7 @@ use crate::display_constants::{CommandType, headers, markers, status};
 use crate::editor::ReadLineError;
 use crate::info::Info;
 use crate::input::Console;
-use crate::model::{ForgeCommandManager, SlashCommand};
+use crate::model::{ForgeCommandManager, PluginSubcommand, SlashCommand};
 use crate::porcelain::Porcelain;
 use crate::prompt::ForgePrompt;
 use crate::state::UIState;
@@ -97,6 +97,49 @@ fn format_mcp_headers(server: &forge_domain::McpServerConfig) -> Option<String> 
             }
         }
     }
+}
+
+/// Formats a [`forge_domain::PluginSource`] as a short lowercase tag for
+/// the `/plugin list` and `/plugin info` outputs.
+fn format_plugin_source(source: forge_domain::PluginSource) -> &'static str {
+    match source {
+        forge_domain::PluginSource::Global => "user",
+        forge_domain::PluginSource::Project => "project",
+        forge_domain::PluginSource::CliFlag => "cli",
+        forge_domain::PluginSource::Builtin => "builtin",
+    }
+}
+
+/// Formats a [`forge_domain::PluginAuthor`] into the short form shown in
+/// `/plugin info` (the bare name for the string variant, `Name <email>`
+/// for the detailed variant).
+fn format_plugin_author(author: &forge_domain::PluginAuthor) -> String {
+    match author {
+        forge_domain::PluginAuthor::Name(name) => name.clone(),
+        forge_domain::PluginAuthor::Detailed { name, email, .. } => match email {
+            Some(email) => format!("{name} <{email}>"),
+            None => name.clone(),
+        },
+    }
+}
+
+/// Build the component summary column for `/plugin list`.
+///
+/// Uses the Phase 1 `LoadedPlugin` fields directly — no filesystem
+/// traversal — so the render path is O(1) per plugin.
+fn format_plugin_components(plugin: &forge_domain::LoadedPlugin) -> String {
+    let skills = plugin.skills_paths.len();
+    let commands = plugin.commands_paths.len();
+    let agents = plugin.agents_paths.len();
+    let hooks = if plugin.hooks_config.is_some() { 1 } else { 0 };
+    let mcp = plugin
+        .mcp_servers
+        .as_ref()
+        .map(|m| m.len())
+        .unwrap_or(0);
+    format!(
+        "{skills} skills, {commands} cmds, {hooks} hooks, {agents} agents, {mcp} mcp"
+    )
 }
 
 pub struct UI<A: ConsoleWriter, F: Fn(ForgeConfig) -> A> {
@@ -2087,6 +2130,9 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                         "Agent '{agent_id}' not found or unavailable"
                     ));
                 }
+            }
+            SlashCommand::Plugin(sub) => {
+                self.on_plugin_command(sub).await?;
             }
         }
 
@@ -4283,6 +4329,192 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                 let _ = crate::vscode::install_extension();
             }
         });
+    }
+
+    /// Dispatch a `/plugin <sub>` subcommand to the appropriate handler.
+    ///
+    /// Phase 9 exposes five operations:
+    /// - `list`: render all discovered plugins plus any load errors
+    /// - `enable <name>` / `disable <name>`: persist the enable flag to
+    ///   the user's `.forge.toml` and reload components
+    /// - `info <name>`: show manifest + component summary
+    /// - `reload`: invalidate the plugin cache and reload components
+    async fn on_plugin_command(&mut self, sub: PluginSubcommand) -> Result<()> {
+        match sub {
+            PluginSubcommand::List => self.on_plugin_list().await,
+            PluginSubcommand::Enable { name } => self.on_plugin_toggle(&name, true).await,
+            PluginSubcommand::Disable { name } => self.on_plugin_toggle(&name, false).await,
+            PluginSubcommand::Info { name } => self.on_plugin_info(&name).await,
+            PluginSubcommand::Reload => self.on_plugin_reload().await,
+        }
+    }
+
+    /// Render the full plugin inventory: every successfully-loaded plugin
+    /// plus any load errors encountered during discovery.
+    ///
+    /// Each plugin is shown with name, version, source (user/project/…),
+    /// enabled flag, and a component summary (`N skills, N cmds, N hooks,
+    /// N agents`). When no plugins are discovered a help hint is printed
+    /// instead. Broken plugins land in a separate "ERRORS" section so
+    /// operators can see why they were rejected without losing the
+    /// healthy entries.
+    async fn on_plugin_list(&mut self) -> Result<()> {
+        let result = self.api.list_plugins_with_errors().await?;
+
+        if result.plugins.is_empty() && result.errors.is_empty() {
+            self.writeln(
+                "No plugins found. Place plugins in ~/forge/plugins/ or ./.forge/plugins/",
+            )?;
+            return Ok(());
+        }
+
+        let mut info = Info::new();
+
+        if !result.plugins.is_empty() {
+            info = info.add_title("PLUGINS");
+            for plugin in result.plugins.iter() {
+                let version = plugin
+                    .manifest
+                    .version
+                    .as_deref()
+                    .unwrap_or(markers::EMPTY);
+                let source = format_plugin_source(plugin.source);
+                let enabled = if plugin.enabled { "✓" } else { "✗" };
+                let components = format_plugin_components(plugin);
+                let value = format!("{version:<10} {source:<8} {enabled:<3} {components}");
+                info = info.add_key_value(&plugin.name, value);
+            }
+        }
+
+        if !result.errors.is_empty() {
+            info = info.add_title("ERRORS");
+            for err in result.errors.iter() {
+                let key = err
+                    .plugin_name
+                    .clone()
+                    .unwrap_or_else(|| err.path.display().to_string());
+                info = info.add_key_value(key, err.error.as_str());
+            }
+        }
+
+        self.writeln(info)?;
+        Ok(())
+    }
+
+    /// Persist `enabled` for a plugin under the `[plugins.<name>]` table
+    /// in `~/forge/.forge.toml` and reload plugin-backed components so the
+    /// change takes effect mid-session.
+    ///
+    /// The lookup against [`API::list_plugins_with_errors`] ensures we
+    /// refuse to toggle plugin names the user mistyped. A verbose `Hint`
+    /// is printed afterwards pointing at `/plugin reload` in case any
+    /// component missed the implicit reload.
+    async fn on_plugin_toggle(&mut self, name: &str, enabled: bool) -> Result<()> {
+        let result = self.api.list_plugins_with_errors().await?;
+        let exists = result.plugins.iter().any(|p| p.name == name)
+            || result
+                .errors
+                .iter()
+                .any(|e| e.plugin_name.as_deref() == Some(name));
+
+        if !exists {
+            return Err(anyhow::anyhow!(
+                "Plugin '{name}' not found. Run /plugin list to see available plugins."
+            ));
+        }
+
+        self.api.set_plugin_enabled(name, enabled).await?;
+        // Apply the change in-process so the next request observes the
+        // new enable state without requiring a restart.
+        self.api.reload_plugins().await?;
+
+        let verb = if enabled { "enabled" } else { "disabled" };
+        self.writeln_title(TitleFormat::info(format!("Plugin '{name}' {verb}.")))?;
+        Ok(())
+    }
+
+    /// Show the manifest metadata and component counts for a single
+    /// plugin.
+    ///
+    /// Deliberately summary-only: skill / command bodies are not parsed
+    /// here. The directory counts (`skills_paths`, `commands_paths`, …)
+    /// come straight from the Phase 1 loader so this handler never
+    /// touches the filesystem itself.
+    async fn on_plugin_info(&mut self, name: &str) -> Result<()> {
+        let result = self.api.list_plugins_with_errors().await?;
+        let plugin = result
+            .plugins
+            .iter()
+            .find(|p| p.name == name)
+            .ok_or_else(|| anyhow::anyhow!("Plugin '{name}' not found."))?;
+
+        let mut info = Info::new().add_title("PLUGIN").add_key_value("Name", &plugin.name);
+
+        if let Some(version) = plugin.manifest.version.as_deref() {
+            info = info.add_key_value("Version", version);
+        }
+        if let Some(description) = plugin.manifest.description.as_deref() {
+            info = info.add_key_value("Description", description);
+        }
+        if let Some(author) = plugin.manifest.author.as_ref() {
+            info = info.add_key_value("Author", format_plugin_author(author));
+        }
+        if let Some(homepage) = plugin.manifest.homepage.as_deref() {
+            info = info.add_key_value("Homepage", homepage);
+        }
+        if let Some(license) = plugin.manifest.license.as_deref() {
+            info = info.add_key_value("License", license);
+        }
+
+        info = info
+            .add_key_value("Path", plugin.path.display().to_string())
+            .add_key_value("Source", format_plugin_source(plugin.source))
+            .add_key_value(
+                "Enabled",
+                if plugin.enabled { "yes" } else { "no" },
+            );
+
+        let skills_count: usize = plugin.skills_paths.len();
+        let commands_count: usize = plugin.commands_paths.len();
+        let agents_count: usize = plugin.agents_paths.len();
+        let hooks_status = if plugin.hooks_config.is_some() {
+            "configured"
+        } else {
+            "none"
+        };
+        let mcp_count = plugin
+            .mcp_servers
+            .as_ref()
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        info = info
+            .add_title("COMPONENTS")
+            .add_key_value("Skills Paths", skills_count.to_string())
+            .add_key_value("Commands Paths", commands_count.to_string())
+            .add_key_value("Agents Paths", agents_count.to_string())
+            .add_key_value("Hooks", hooks_status)
+            .add_key_value("MCP Servers", mcp_count.to_string());
+
+        self.writeln(info)?;
+        Ok(())
+    }
+
+    /// Invalidate the plugin cache and reload all plugin-backed
+    /// components, then print a short summary of the resulting state.
+    ///
+    /// The reload goes through [`API::reload_plugins`] which delegates to
+    /// `PluginComponentsReloader::reload_plugin_components` — see that
+    /// trait's docs for the exact ordering of cache flushes.
+    async fn on_plugin_reload(&mut self) -> Result<()> {
+        self.api.reload_plugins().await?;
+        let result = self.api.list_plugins_with_errors().await?;
+        self.writeln_title(TitleFormat::info(format!(
+            "Reloaded plugins: {} loaded, {} failed.",
+            result.plugins.len(),
+            result.errors.len()
+        )))?;
+        Ok(())
     }
 }
 

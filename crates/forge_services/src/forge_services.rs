@@ -6,8 +6,8 @@ use forge_app::{
     McpServerInfra, Services, StrategyFactory, UserInfra, WalkerInfra,
 };
 use forge_domain::{
-    ChatRepository, ConversationRepository, FuzzySearchRepository, PluginRepository,
-    ProviderRepository, SkillRepository, SnapshotRepository, ValidationRepository,
+    ChatRepository, ConversationRepository, FuzzySearchRepository, LoadedPlugin, PluginLoadResult,
+    PluginRepository, ProviderRepository, SkillRepository, SnapshotRepository, ValidationRepository,
     WorkspaceIndexRepository,
 };
 
@@ -20,6 +20,7 @@ use crate::command::CommandLoaderService as ForgeCommandLoaderService;
 use crate::conversation::ForgeConversationService;
 use crate::discovery::ForgeDiscoveryService;
 use crate::fd::FdDefault;
+use crate::hook_runtime::{ForgeHookConfigLoader, ForgeHookExecutor};
 use crate::instructions::ForgeCustomInstructionsService;
 use crate::mcp::{ForgeMcpManager, ForgeMcpService};
 use crate::policy::ForgePolicyService;
@@ -33,6 +34,30 @@ use crate::tool_services::{
 
 type McpService<F> = ForgeMcpService<ForgeMcpManager<F>, F, <F as McpServerInfra>::Client>;
 type AuthService<F> = ForgeAuthService<F>;
+
+/// Type-erased adapter that turns any `Arc<F: PluginRepository>` into an
+/// `Arc<dyn PluginRepository>`, so we can hand the plugin repository to
+/// services (like `CommandLoaderService`) that store a trait object.
+///
+/// Kept private to `forge_services` because it exists solely to bridge
+/// the generic infra into the dyn-object API used by downstream services.
+struct InfraPluginRepository<F> {
+    infra: Arc<F>,
+}
+
+#[async_trait::async_trait]
+impl<F> PluginRepository for InfraPluginRepository<F>
+where
+    F: PluginRepository + Send + Sync + 'static,
+{
+    async fn load_plugins(&self) -> anyhow::Result<Vec<LoadedPlugin>> {
+        self.infra.load_plugins().await
+    }
+
+    async fn load_plugins_with_errors(&self) -> anyhow::Result<PluginLoadResult> {
+        self.infra.load_plugins_with_errors().await
+    }
+}
 
 /// ForgeApp is the main application container that implements the App trait.
 /// It provides access to all core services required by the application.
@@ -85,6 +110,8 @@ pub struct ForgeServices<
     workspace_service: Arc<crate::context_engine::ForgeWorkspaceService<F, FdDefault<F>>>,
     skill_service: Arc<ForgeSkillFetch<F>>,
     plugin_loader_service: Arc<ForgePluginLoader<F>>,
+    hook_config_loader_service: Arc<ForgeHookConfigLoader<F>>,
+    hook_executor_service: Arc<ForgeHookExecutor<F>>,
     infra: Arc<F>,
 }
 
@@ -108,11 +135,24 @@ impl<
         + AgentRepository
         + SkillRepository
         + PluginRepository
-        + ValidationRepository,
+        + ValidationRepository
+        + Send
+        + Sync
+        + 'static,
 > ForgeServices<F>
 {
     pub fn new(infra: Arc<F>) -> Self {
-        let mcp_manager = Arc::new(ForgeMcpManager::new(infra.clone()));
+        // Plugin-aware MCP manager: plugin-contributed servers are merged
+        // into `read_mcp_config` output under the `"{plugin}:{server}"`
+        // namespace. Uses the same dyn-object adapter as the command /
+        // hook loaders so all three subsystems share one view of disk
+        // scans without coupling to the concrete infra type.
+        let mcp_plugin_repo: Arc<dyn PluginRepository> =
+            Arc::new(InfraPluginRepository { infra: infra.clone() });
+        let mcp_manager = Arc::new(ForgeMcpManager::with_plugin_repository(
+            infra.clone(),
+            mcp_plugin_repo,
+        ));
         let mcp_service = Arc::new(ForgeMcpService::new(mcp_manager.clone(), infra.clone()));
         let template_service = Arc::new(ForgeTemplateService::new(infra.clone()));
         let attachment_service = Arc::new(ForgeChatRequest::new(infra.clone()));
@@ -135,7 +175,12 @@ impl<
         let custom_instructions_service =
             Arc::new(ForgeCustomInstructionsService::new(infra.clone()));
         let agent_registry_service = Arc::new(ForgeAgentRegistryService::new(infra.clone()));
-        let command_loader_service = Arc::new(ForgeCommandLoaderService::new(infra.clone()));
+        let plugin_repository_dyn: Arc<dyn PluginRepository> =
+            Arc::new(InfraPluginRepository { infra: infra.clone() });
+        let command_loader_service = Arc::new(ForgeCommandLoaderService::new(
+            infra.clone(),
+            plugin_repository_dyn,
+        ));
         let policy_service = ForgePolicyService::new(infra.clone());
         let provider_auth_service = ForgeProviderAuthService::new(infra.clone());
         let discovery = Arc::new(FdDefault::new(infra.clone()));
@@ -145,6 +190,14 @@ impl<
         ));
         let skill_service = Arc::new(ForgeSkillFetch::new(infra.clone()));
         let plugin_loader_service = Arc::new(ForgePluginLoader::new(infra.clone()));
+        // Hook runtime: reuse the same dyn-object plugin repository adapter as
+        // the command loader so the loader caches disk scans independently from
+        // the command-level cache.
+        let hook_plugin_repo: Arc<dyn PluginRepository> =
+            Arc::new(InfraPluginRepository { infra: infra.clone() });
+        let hook_config_loader_service =
+            Arc::new(ForgeHookConfigLoader::new(infra.clone(), hook_plugin_repo));
+        let hook_executor_service = Arc::new(ForgeHookExecutor::new(infra.clone()));
 
         Self {
             conversation_service,
@@ -174,6 +227,8 @@ impl<
             workspace_service,
             skill_service,
             plugin_loader_service,
+            hook_config_loader_service,
+            hook_executor_service,
             chat_service,
             infra,
         }
@@ -242,6 +297,8 @@ impl<
     type WorkspaceService = crate::context_engine::ForgeWorkspaceService<F, FdDefault<F>>;
     type SkillFetchService = ForgeSkillFetch<F>;
     type PluginLoader = ForgePluginLoader<F>;
+    type HookConfigLoader = ForgeHookConfigLoader<F>;
+    type HookExecutor = ForgeHookExecutor<F>;
 
     fn config_service(&self) -> &Self::AppConfigService {
         &self.config_service
@@ -344,6 +401,14 @@ impl<
 
     fn plugin_loader(&self) -> &Self::PluginLoader {
         &self.plugin_loader_service
+    }
+
+    fn hook_config_loader(&self) -> &Self::HookConfigLoader {
+        &self.hook_config_loader_service
+    }
+
+    fn hook_executor(&self) -> &Self::HookExecutor {
+        &self.hook_executor_service
     }
 
     fn provider_service(&self) -> &Self::ProviderService {

@@ -1,13 +1,18 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use bytes::Bytes;
 use forge_domain::{
-    AuthCodeParams, CommandOutput, ConfigOperation, Environment, FileInfo, McpServerConfig,
-    OAuthConfig, OAuthTokenResponse, ToolDefinition, ToolName, ToolOutput,
+    AgentHookCommand, AuthCodeParams, CommandOutput, ConfigOperation, Environment, FileInfo,
+    HookInput, HttpHookCommand, McpServerConfig, OAuthConfig, OAuthTokenResponse,
+    PromptHookCommand, ShellHookCommand, ToolDefinition, ToolName, ToolOutput,
 };
+// Re-exported from `forge_domain` (the types live there so
+// `AggregatedHookResult::merge` can consume them without creating a
+// circular crate dependency).
+pub use forge_domain::{HookExecResult, HookOutcome};
 use reqwest::Response;
 use reqwest::header::HeaderMap;
 use reqwest_eventsource::EventSource;
@@ -402,6 +407,17 @@ pub trait AgentRepository: Send + Sync {
         provider_id: forge_domain::ProviderId,
         model_id: forge_domain::ModelId,
     ) -> anyhow::Result<Vec<forge_domain::Agent>>;
+
+    /// Drops any cached agent data so the next call to
+    /// [`get_agents`](Self::get_agents) re-reads from disk.
+    ///
+    /// Default implementation is a no-op for repositories that do not
+    /// maintain their own cache (e.g. `ForgeAgentRepository`, which
+    /// re-walks the agents directory on every call). Used by Phase 9's
+    /// plugin hot-swap to pick up newly-installed plugin agents.
+    async fn reload(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// Infrastructure trait for providing shared gRPC channel
@@ -416,4 +432,59 @@ pub trait GrpcInfra: Send + Sync {
     /// Hydrates the gRPC channel by establishing and then dropping the
     /// connection
     fn hydrate(&self);
+}
+
+/// Infrastructure trait for executing hook commands defined in
+/// `hooks.json`.
+///
+/// Each method corresponds to one of the four hook command variants
+/// ([`forge_domain::HookCommand`]) and produces a uniform
+/// [`HookExecResult`] regardless of the underlying transport.
+///
+/// Implementations are responsible for:
+/// - Serializing the [`HookInput`] into the appropriate wire format
+///   (stdin JSON, HTTP POST body, or prompt argument).
+/// - Enforcing the per-hook timeout.
+/// - Attempting to parse the response as a [`HookOutput`] and falling
+///   back to plain text when parsing fails.
+/// - Translating exit codes / HTTP statuses / model errors into a
+///   [`HookOutcome`] using Claude Code's semantics.
+///
+/// Only [`execute_shell`](HookExecutorInfra::execute_shell) is fully
+/// wired in Part 2 of Phase 3. The other methods exist so downstream
+/// callers can start depending on the trait shape; Part 3 fills in the
+/// HTTP, prompt, and agent executors.
+#[async_trait::async_trait]
+pub trait HookExecutorInfra: Send + Sync {
+    /// Execute a shell hook.
+    ///
+    /// `env_vars` is merged into the child process environment on top of
+    /// the inherited parent environment.
+    async fn execute_shell(
+        &self,
+        config: &ShellHookCommand,
+        input: &HookInput,
+        env_vars: HashMap<String, String>,
+    ) -> Result<HookExecResult>;
+
+    /// Execute an HTTP hook.
+    async fn execute_http(
+        &self,
+        config: &HttpHookCommand,
+        input: &HookInput,
+    ) -> Result<HookExecResult>;
+
+    /// Execute a prompt (single LLM call) hook.
+    async fn execute_prompt(
+        &self,
+        config: &PromptHookCommand,
+        input: &HookInput,
+    ) -> Result<HookExecResult>;
+
+    /// Execute a sub-agent hook.
+    async fn execute_agent(
+        &self,
+        config: &AgentHookCommand,
+        input: &HookInput,
+    ) -> Result<HookExecResult>;
 }

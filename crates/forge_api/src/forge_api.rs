@@ -8,7 +8,8 @@ use forge_app::{
     AgentProviderResolver, AgentRegistry, AppConfigService, AuthService, CommandInfra,
     CommandLoaderService, ConversationService, DataGenerationApp, EnvironmentInfra,
     FileDiscoveryService, ForgeApp, GitApp, GrpcInfra, McpConfigManager, McpService,
-    ProviderAuthService, ProviderService, Services, User, UserUsage, Walker, WorkspaceService,
+    PluginComponentsReloader, PluginLoader, ProviderAuthService, ProviderService, Services, User,
+    UserUsage, Walker, WorkspaceService,
 };
 use forge_config::ForgeConfig;
 use forge_domain::{Agent, ConsoleWriter, *};
@@ -420,6 +421,34 @@ impl<
     async fn mcp_auth_status(&self, server_url: &str) -> Result<String> {
         let env = self.services.get_environment().clone();
         Ok(forge_infra::mcp_auth_status(server_url, &env).await)
+    }
+
+    async fn list_plugins_with_errors(&self) -> Result<forge_domain::PluginLoadResult> {
+        self.services.list_plugins_with_errors().await
+    }
+
+    async fn set_plugin_enabled(&self, name: &str, enabled: bool) -> Result<()> {
+        use std::collections::BTreeMap;
+
+        use forge_config::PluginSetting;
+
+        // Round-trip the persisted config through the reader/writer so
+        // unrelated fields (session, providers, …) are preserved. The
+        // in-memory services cache is refreshed via `reload_plugins` by
+        // the calling slash command.
+        let mut fc = ForgeConfig::read().unwrap_or_default();
+        let entry = fc
+            .plugins
+            .get_or_insert_with(BTreeMap::new)
+            .entry(name.to_string())
+            .or_insert_with(|| PluginSetting { enabled: true });
+        entry.enabled = enabled;
+        fc.write()?;
+        Ok(())
+    }
+
+    async fn reload_plugins(&self) -> Result<()> {
+        self.services.reload_plugin_components().await
     }
 
     fn hydrate_channel(&self) -> Result<()> {

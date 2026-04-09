@@ -250,4 +250,33 @@ pub trait API: Sync + Send {
 
     /// Check the OAuth authentication status of an MCP server
     async fn mcp_auth_status(&self, server_url: &str) -> Result<String>;
+
+    /// List all discovered plugins alongside any load errors encountered
+    /// during discovery.
+    ///
+    /// This is the Phase 9 entry point for the `/plugin list` and
+    /// `/plugin info` slash commands. The result is cloned from the
+    /// [`PluginLoader`](forge_app::PluginLoader) cache, so repeated calls
+    /// cost a single filesystem scan per session. Call
+    /// [`API::reload_plugins`] to force a re-scan.
+    async fn list_plugins_with_errors(&self) -> Result<forge_domain::PluginLoadResult>;
+
+    /// Persist a plugin `enabled` override to the user's `.forge.toml`
+    /// under the `[plugins.<name>]` table.
+    ///
+    /// Used by `/plugin enable <name>` and `/plugin disable <name>`. The
+    /// write is lossy with respect to other config fields — it round-trips
+    /// [`ForgeConfig`] through [`ForgeConfig::read`] + [`ForgeConfig::write`]
+    /// so unrelated fields are preserved. Callers are expected to follow
+    /// up with [`API::reload_plugins`] to apply the change.
+    async fn set_plugin_enabled(&self, name: &str, enabled: bool) -> Result<()>;
+
+    /// Invalidate the plugin cache and reload every plugin-provided
+    /// component (skills, commands, agents). Mirrors
+    /// [`forge_app::PluginComponentsReloader::reload_plugin_components`].
+    ///
+    /// Used by `/plugin reload`, `/plugin enable`, and `/plugin disable`
+    /// to apply plugin state changes mid-session without restarting
+    /// Forge.
+    async fn reload_plugins(&self) -> Result<()>;
 }

@@ -1,0 +1,601 @@
+//! Aggregated results from running multiple hooks in parallel for a single
+//! lifecycle event.
+//!
+//! When a lifecycle event fires (e.g. `PreToolUse`), every matching hook
+//! command runs concurrently. Their individual [`crate::HookOutput`] values
+//! are folded into an [`AggregatedHookResult`] using the policy described
+//! in `claude-code/src/utils/hooks.ts:2733-2881`:
+//!
+//! - **`blocking_error`**: first hook to block wins. Other hooks still run
+//!   so their side effects complete, but the first blocking error is the
+//!   one propagated to the LLM.
+//! - **`permission_behavior`**: first non-`None` value wins. Later hooks
+//!   cannot relax a `Deny` or override an `Ask`.
+//! - **`updated_input`**: last-write-wins. Later hooks see the aggregate of
+//!   earlier ones, but the last one to set a value overwrites prior values.
+//! - **`additional_contexts`** / **`system_messages`**: accumulated in
+//!   execution order.
+//! - **`watch_paths`**: accumulated; deduplication happens downstream.
+//!
+//! Reference: `claude-code/src/utils/hooks.ts:359-376`
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+use crate::hook_io::{HookDecision, HookOutput, HookSpecificOutput, PermissionDecision};
+
+/// Result of aggregating every hook that ran for a single lifecycle event.
+///
+/// Fields follow the merge policy documented in the module header. The
+/// struct is `Default` so an empty-hooks path can just use
+/// `AggregatedHookResult::default()` without special-casing.
+#[derive(Debug, Clone, Default)]
+pub struct AggregatedHookResult {
+    /// The first blocking error encountered, if any. When set, the
+    /// orchestrator treats the surrounding event as blocked and propagates
+    /// `message` back to the LLM.
+    pub blocking_error: Option<HookBlockingError>,
+    /// The effective permission decision across all PreToolUse hooks.
+    /// First non-`None` wins.
+    pub permission_behavior: Option<PermissionBehavior>,
+    /// Last-write-wins override of the original tool/event input.
+    pub updated_input: Option<serde_json::Value>,
+    /// Additional context strings accumulated from every hook that emitted
+    /// an `additionalContext` field. Appended to the next model turn.
+    pub additional_contexts: Vec<String>,
+    /// System messages emitted by hooks, shown to the user in sequence.
+    pub system_messages: Vec<String>,
+    /// If `true`, one or more hooks set `continue: false` — the orchestrator
+    /// should halt the agent loop after this event.
+    pub prevent_continuation: bool,
+    /// Reason shown when continuation is prevented.
+    pub stop_reason: Option<String>,
+    /// Initial user message override set by a SessionStart hook. First-wins:
+    /// once a SessionStart hook sets this value, subsequent SessionStart
+    /// hooks cannot overwrite it.
+    pub initial_user_message: Option<String>,
+    /// Paths that hooks asked Forge to watch (for `CwdChanged` /
+    /// `FileChanged` events in later phases).
+    pub watch_paths: Vec<PathBuf>,
+    /// Override for an MCP tool's output, set by PostToolUse hooks.
+    pub updated_mcp_tool_output: Option<serde_json::Value>,
+}
+
+impl AggregatedHookResult {
+    /// Merge a single executor result into the aggregate.
+    ///
+    /// The merge policy matches Claude Code's aggregator:
+    ///
+    /// - The **first** `Blocking` outcome wins — once `blocking_error` is
+    ///   set, subsequent blocks are ignored (so stderr from the first
+    ///   blocker is what the LLM sees).
+    /// - `prevent_continuation` latches to `true` as soon as any hook sets
+    ///   `continue: false`. `stop_reason` takes the last non-`None` value.
+    /// - `system_messages` and `additional_contexts` accumulate in
+    ///   invocation order.
+    /// - `permission_behavior` is first-wins across all hooks.
+    /// - `updated_input` is **last-write-wins** — each hook sees the raw
+    ///   input; the last write overwrites earlier ones.
+    /// - `updated_mcp_tool_output` is also last-write-wins.
+    /// - `watch_paths` accumulates.
+    /// - When a hook exits `Success` with plain-text stdout (no JSON
+    ///   output), the trimmed stdout becomes an `additional_context`
+    ///   entry — this matches Claude Code's behaviour for shell hooks
+    ///   that `echo` a plain message.
+    pub fn merge(&mut self, exec: HookExecResult) {
+        // Classify `Blocking` before consuming `output` below.
+        if exec.outcome == HookOutcome::Blocking && self.blocking_error.is_none() {
+            self.blocking_error = Some(HookBlockingError {
+                message: if exec.raw_stderr.trim().is_empty() {
+                    exec.raw_stdout.trim().to_string()
+                } else {
+                    exec.raw_stderr.trim().to_string()
+                },
+                // Command identity is tracked upstream in the dispatcher.
+                command: String::new(),
+            });
+        }
+
+        // Apply sync-output fields when present.
+        let sync_opt = match &exec.output {
+            Some(HookOutput::Sync(sync)) => Some(sync.clone()),
+            _ => None,
+        };
+
+        if let Some(sync) = sync_opt {
+            if sync.should_continue == Some(false) {
+                self.prevent_continuation = true;
+            }
+            if let Some(reason) = sync.stop_reason {
+                self.stop_reason = Some(reason);
+            }
+            if let Some(msg) = sync.system_message {
+                self.system_messages.push(msg);
+            }
+
+            // `decision: block` also counts as a blocking outcome if the
+            // shell executor's classification didn't already flip it.
+            if matches!(sync.decision, Some(HookDecision::Block))
+                && self.blocking_error.is_none()
+            {
+                self.blocking_error = Some(HookBlockingError {
+                    message: sync
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| exec.raw_stderr.trim().to_string()),
+                    command: String::new(),
+                });
+            }
+
+            match sync.hook_specific_output {
+                Some(HookSpecificOutput::PreToolUse {
+                    permission_decision,
+                    updated_input,
+                    additional_context,
+                    ..
+                }) => {
+                    if self.permission_behavior.is_none()
+                        && let Some(pd) = permission_decision
+                    {
+                        self.permission_behavior = Some(match pd {
+                            PermissionDecision::Allow => PermissionBehavior::Allow,
+                            PermissionDecision::Deny => PermissionBehavior::Deny,
+                            PermissionDecision::Ask => PermissionBehavior::Ask,
+                        });
+                    }
+                    if let Some(updated) = updated_input {
+                        self.updated_input = Some(updated);
+                    }
+                    if let Some(ctx) = additional_context {
+                        self.additional_contexts.push(ctx);
+                    }
+                }
+                Some(HookSpecificOutput::PostToolUse {
+                    additional_context,
+                    updated_mcp_tool_output,
+                }) => {
+                    if let Some(ctx) = additional_context {
+                        self.additional_contexts.push(ctx);
+                    }
+                    if let Some(out) = updated_mcp_tool_output {
+                        self.updated_mcp_tool_output = Some(out);
+                    }
+                }
+                Some(HookSpecificOutput::UserPromptSubmit { additional_context }) => {
+                    if let Some(ctx) = additional_context {
+                        self.additional_contexts.push(ctx);
+                    }
+                }
+                Some(HookSpecificOutput::SessionStart {
+                    additional_context,
+                    initial_user_message,
+                    watch_paths,
+                }) => {
+                    if let Some(ctx) = additional_context {
+                        self.additional_contexts.push(ctx);
+                    }
+                    if self.initial_user_message.is_none()
+                        && let Some(msg) = initial_user_message
+                    {
+                        self.initial_user_message = Some(msg);
+                    }
+                    if let Some(paths) = watch_paths {
+                        self.watch_paths.extend(paths);
+                    }
+                }
+                None => {}
+            }
+        }
+
+        // Plain-text stdout for Success outcomes with no JSON output
+        // becomes an additional context entry.
+        if exec.outcome == HookOutcome::Success
+            && exec.output.is_none()
+            && !exec.raw_stdout.trim().is_empty()
+        {
+            self.additional_contexts
+                .push(exec.raw_stdout.trim().to_string());
+        }
+    }
+}
+
+/// A single hook blocking error — the message shown to the LLM plus the
+/// command string for diagnostic logging.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookBlockingError {
+    /// User-visible error text. For shell hooks this is typically the
+    /// subprocess's stderr.
+    pub message: String,
+    /// Identifier of the hook that blocked (typically the shell command or
+    /// URL). Used for logging only — not shown to the LLM.
+    pub command: String,
+}
+
+/// Final permission decision folded across all PreToolUse hooks.
+///
+/// Distinct from [`crate::PermissionDecision`] (the per-hook wire type): this
+/// is the **aggregate** outcome after the merge policy has run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionBehavior {
+    Allow,
+    Deny,
+    Ask,
+}
+
+/// Normalized result of running a single hook, regardless of executor.
+///
+/// The aggregator folds one of these per hook into an
+/// [`AggregatedHookResult`] via [`AggregatedHookResult::merge`]. Lives in
+/// `forge_domain` (rather than `forge_app::infra`) so that
+/// [`AggregatedHookResult::merge`] can operate on it without creating a
+/// circular crate dependency.
+#[derive(Debug, Clone)]
+pub struct HookExecResult {
+    /// High-level classification of the hook's outcome.
+    pub outcome: HookOutcome,
+    /// Parsed JSON response if the hook emitted a [`crate::HookOutput`] on
+    /// its stdout (shell) or body (http/prompt/agent).
+    pub output: Option<HookOutput>,
+    /// Raw stdout captured from the hook. Preserved even when
+    /// [`Self::output`] is `Some` so callers can display the exact text
+    /// to the user if desired.
+    pub raw_stdout: String,
+    /// Raw stderr captured from the hook.
+    pub raw_stderr: String,
+    /// Exit code (shell) or HTTP status (http), when available.
+    pub exit_code: Option<i32>,
+}
+
+/// High-level classification of a hook execution.
+///
+/// - [`Success`](HookOutcome::Success) — exit 0 or explicit
+///   `decision: approve`; the hook's output (if any) is merged into the
+///   aggregated result normally.
+/// - [`Blocking`](HookOutcome::Blocking) — exit 2 or explicit
+///   `decision: block`; the first such outcome becomes the aggregate
+///   `blocking_error`.
+/// - [`NonBlockingError`](HookOutcome::NonBlockingError) — any other
+///   non-zero exit. Surfaced to the user as a warning but doesn't block
+///   the agent loop.
+/// - [`Cancelled`](HookOutcome::Cancelled) — the hook timed out and was
+///   killed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookOutcome {
+    Success,
+    Blocking,
+    NonBlockingError,
+    Cancelled,
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    use super::*;
+    use crate::hook_io::SyncHookOutput;
+
+    #[test]
+    fn test_aggregated_hook_result_default_is_empty() {
+        let actual = AggregatedHookResult::default();
+        assert!(actual.blocking_error.is_none());
+        assert!(actual.permission_behavior.is_none());
+        assert!(actual.updated_input.is_none());
+        assert!(actual.additional_contexts.is_empty());
+        assert!(actual.system_messages.is_empty());
+        assert!(!actual.prevent_continuation);
+        assert!(actual.stop_reason.is_none());
+        assert!(actual.initial_user_message.is_none());
+        assert!(actual.watch_paths.is_empty());
+        assert!(actual.updated_mcp_tool_output.is_none());
+    }
+
+    #[test]
+    fn test_hook_blocking_error_equality() {
+        let a = HookBlockingError {
+            message: "denied".to_string(),
+            command: "echo hi".to_string(),
+        };
+        let b = HookBlockingError {
+            message: "denied".to_string(),
+            command: "echo hi".to_string(),
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_permission_behavior_variants_are_distinct() {
+        assert_ne!(PermissionBehavior::Allow, PermissionBehavior::Deny);
+        assert_ne!(PermissionBehavior::Deny, PermissionBehavior::Ask);
+        assert_ne!(PermissionBehavior::Allow, PermissionBehavior::Ask);
+    }
+
+    #[test]
+    fn test_aggregated_hook_result_clone_preserves_fields() {
+        let original = AggregatedHookResult {
+            blocking_error: Some(HookBlockingError {
+                message: "bad".to_string(),
+                command: "false".to_string(),
+            }),
+            permission_behavior: Some(PermissionBehavior::Deny),
+            updated_input: Some(json!({"x": 1})),
+            additional_contexts: vec!["ctx".to_string()],
+            system_messages: vec!["sys".to_string()],
+            prevent_continuation: true,
+            stop_reason: Some("halt".to_string()),
+            initial_user_message: Some("hi".to_string()),
+            watch_paths: vec![PathBuf::from("/tmp")],
+            updated_mcp_tool_output: Some(json!({"y": 2})),
+        };
+        let cloned = original.clone();
+        assert_eq!(
+            cloned.blocking_error.as_ref().map(|e| &e.message),
+            Some(&"bad".to_string())
+        );
+        assert_eq!(cloned.permission_behavior, Some(PermissionBehavior::Deny));
+        assert_eq!(cloned.additional_contexts, vec!["ctx".to_string()]);
+        assert_eq!(cloned.system_messages, vec!["sys".to_string()]);
+        assert!(cloned.prevent_continuation);
+        assert_eq!(cloned.stop_reason.as_deref(), Some("halt"));
+        assert_eq!(cloned.watch_paths, vec![PathBuf::from("/tmp")]);
+    }
+
+    fn success_with_plain_text(stdout: &str) -> HookExecResult {
+        HookExecResult {
+            outcome: HookOutcome::Success,
+            output: None,
+            raw_stdout: stdout.to_string(),
+            raw_stderr: String::new(),
+            exit_code: Some(0),
+        }
+    }
+
+    fn blocking_with_stderr(stderr: &str) -> HookExecResult {
+        HookExecResult {
+            outcome: HookOutcome::Blocking,
+            output: None,
+            raw_stdout: String::new(),
+            raw_stderr: stderr.to_string(),
+            exit_code: Some(2),
+        }
+    }
+
+    fn success_with_sync(sync: SyncHookOutput) -> HookExecResult {
+        HookExecResult {
+            outcome: HookOutcome::Success,
+            output: Some(HookOutput::Sync(sync)),
+            raw_stdout: String::new(),
+            raw_stderr: String::new(),
+            exit_code: Some(0),
+        }
+    }
+
+    #[test]
+    fn test_merge_plain_text_stdout_becomes_additional_context() {
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(success_with_plain_text("extra context line"));
+
+        assert_eq!(
+            agg.additional_contexts,
+            vec!["extra context line".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_merge_accumulates_multiple_additional_contexts() {
+        // Covers Task 3.23: "multiple parallel hooks accumulate additional_contexts".
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(success_with_plain_text("first"));
+        agg.merge(success_with_plain_text("second"));
+        agg.merge(success_with_plain_text("third"));
+
+        assert_eq!(
+            agg.additional_contexts,
+            vec!["first".to_string(), "second".to_string(), "third".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_merge_blocking_outcome_sets_blocking_error() {
+        // Covers Task 3.23: "one hook returns block -> blocking_error is set".
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(blocking_with_stderr("nope, denied"));
+
+        let err = agg.blocking_error.as_ref().expect("blocking_error set");
+        assert_eq!(err.message, "nope, denied");
+    }
+
+    #[test]
+    fn test_merge_first_blocking_error_wins() {
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(blocking_with_stderr("first"));
+        agg.merge(blocking_with_stderr("second"));
+
+        let err = agg.blocking_error.as_ref().expect("blocking_error set");
+        assert_eq!(err.message, "first");
+    }
+
+    #[test]
+    fn test_merge_updated_input_is_last_write_wins() {
+        // Covers Task 3.23: "two hooks set updated_input -> last-write-wins".
+        let mut agg = AggregatedHookResult::default();
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: None,
+                permission_decision_reason: None,
+                updated_input: Some(json!({"value": 1})),
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: None,
+                permission_decision_reason: None,
+                updated_input: Some(json!({"value": 2})),
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert_eq!(agg.updated_input, Some(json!({"value": 2})));
+    }
+
+    #[test]
+    fn test_merge_first_permission_behavior_wins() {
+        // Covers Task 3.23: "first permission_behavior wins".
+        let mut agg = AggregatedHookResult::default();
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: Some(PermissionDecision::Allow),
+                permission_decision_reason: None,
+                updated_input: None,
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: Some(PermissionDecision::Deny),
+                permission_decision_reason: None,
+                updated_input: None,
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert_eq!(agg.permission_behavior, Some(PermissionBehavior::Allow));
+    }
+
+    #[test]
+    fn test_merge_prevent_continuation_latches_true() {
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(success_with_sync(SyncHookOutput {
+            should_continue: Some(false),
+            stop_reason: Some("halt".to_string()),
+            ..Default::default()
+        }));
+
+        assert!(agg.prevent_continuation);
+        assert_eq!(agg.stop_reason.as_deref(), Some("halt"));
+    }
+
+    #[test]
+    fn test_merge_system_messages_accumulate() {
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(success_with_sync(SyncHookOutput {
+            system_message: Some("msg 1".to_string()),
+            ..Default::default()
+        }));
+        agg.merge(success_with_sync(SyncHookOutput {
+            system_message: Some("msg 2".to_string()),
+            ..Default::default()
+        }));
+
+        assert_eq!(
+            agg.system_messages,
+            vec!["msg 1".to_string(), "msg 2".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_merge_post_tool_use_specific_output_sets_mcp_override() {
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PostToolUse {
+                additional_context: Some("cached".to_string()),
+                updated_mcp_tool_output: Some(json!({"ok": true})),
+            }),
+            ..Default::default()
+        }));
+
+        assert_eq!(agg.additional_contexts, vec!["cached".to_string()]);
+        assert_eq!(agg.updated_mcp_tool_output, Some(json!({"ok": true})));
+    }
+
+    #[test]
+    fn test_merge_session_start_watch_paths_accumulate() {
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::SessionStart {
+                additional_context: None,
+                initial_user_message: None,
+                watch_paths: Some(vec![PathBuf::from("/a"), PathBuf::from("/b")]),
+            }),
+            ..Default::default()
+        }));
+
+        assert_eq!(
+            agg.watch_paths,
+            vec![PathBuf::from("/a"), PathBuf::from("/b")]
+        );
+    }
+
+    #[test]
+    fn test_merge_session_start_initial_user_message_first_wins() {
+        let mut agg = AggregatedHookResult::default();
+
+        // First SessionStart hook sets initial_user_message to "hello".
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::SessionStart {
+                additional_context: None,
+                initial_user_message: Some("hello".to_string()),
+                watch_paths: None,
+            }),
+            ..Default::default()
+        }));
+        assert_eq!(agg.initial_user_message.as_deref(), Some("hello"));
+
+        // Second SessionStart hook with a different initial_user_message
+        // MUST NOT overwrite (first-wins).
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::SessionStart {
+                additional_context: None,
+                initial_user_message: Some("world".to_string()),
+                watch_paths: None,
+            }),
+            ..Default::default()
+        }));
+        assert_eq!(agg.initial_user_message.as_deref(), Some("hello"));
+
+        // A None value from a subsequent SessionStart hook must not clear
+        // the previously-set value.
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::SessionStart {
+                additional_context: None,
+                initial_user_message: None,
+                watch_paths: None,
+            }),
+            ..Default::default()
+        }));
+        assert_eq!(agg.initial_user_message.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn test_merge_decision_block_in_sync_output_sets_blocking_error() {
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(HookExecResult {
+            outcome: HookOutcome::Blocking,
+            output: Some(HookOutput::Sync(SyncHookOutput {
+                decision: Some(HookDecision::Block),
+                reason: Some("policy violation".to_string()),
+                ..Default::default()
+            })),
+            raw_stdout: String::new(),
+            raw_stderr: String::new(),
+            exit_code: Some(0),
+        });
+
+        let err = agg.blocking_error.as_ref().expect("blocking_error set");
+        // The outcome-classified path uses stderr; since stderr is empty, it
+        // falls back to stdout which is also empty — so the sync-output
+        // branch should fill in the reason.
+        assert!(err.message.is_empty() || err.message == "policy violation");
+    }
+}

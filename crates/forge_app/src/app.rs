@@ -10,8 +10,8 @@ use crate::apply_tunable_parameters::ApplyTunableParameters;
 use crate::changed_files::ChangedFiles;
 use crate::dto::ToolsOverview;
 use crate::hooks::{
-    CompactionHandler, DoomLoopDetector, PendingTodosHandler, SkillCacheInvalidator,
-    SkillListingHandler, TitleGenerationHandler, TracingHandler,
+    CompactionHandler, DoomLoopDetector, PendingTodosHandler, PluginHookHandler,
+    SkillCacheInvalidator, SkillListingHandler, TitleGenerationHandler, TracingHandler,
 };
 use crate::init_conversation_metrics::InitConversationMetrics;
 use crate::orch::Orchestrator;
@@ -123,6 +123,16 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
                 .await?;
 
         // Insert user prompt
+        // Capture the raw user prompt text (pre-templating) so Phase 4
+        // Part 2b-ii can populate the UserPromptSubmit hook payload. The
+        // orchestrator fires UserPromptSubmit on the first iteration of
+        // its main loop.
+        let raw_user_prompt: Option<String> = chat
+            .event
+            .value
+            .as_ref()
+            .and_then(|v| v.as_user_prompt().map(|p| p.as_str().to_string()));
+
         let conversation = UserPromptGenerator::new(
             self.services.clone(),
             agent.clone(),
@@ -146,16 +156,10 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         let tracing_handler = TracingHandler::new();
         let title_handler = TitleGenerationHandler::new(services.clone());
 
-        // Build the on_end hook, conditionally adding PendingTodosHandler based on
-        // config
-        let on_end_hook = if forge_config.verify_todos {
-            tracing_handler
-                .clone()
-                .and(title_handler.clone())
-                .and(PendingTodosHandler::new())
-        } else {
-            tracing_handler.clone().and(title_handler.clone())
-        };
+        // Build the on_end hook. Phase 5 removed `PendingTodosHandler`
+        // from this chain — it now runs on the Claude-Code `Stop` event
+        // instead (see `on_stop_hook` below).
+        let on_end_hook = tracing_handler.clone().and(title_handler.clone());
 
         // Determine context window for skill listing budget. Falls back to the
         // handler's default (~200k) when the active model doesn't advertise a
@@ -173,6 +177,23 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         };
         let skill_cache_invalidator = SkillCacheInvalidator::new(services.clone());
 
+        // Shared plugin hook dispatcher used for every Claude-Code-compatible
+        // T1 lifecycle event. Part 2a wires the handler into the Hook builder;
+        // Part 2b will add the matching fire sites in `Orchestrator::run`.
+        let plugin_handler = PluginHookHandler::new(services.clone());
+
+        // Build the on_stop hook chain, conditionally adding
+        // `PendingTodosHandler` based on config. Phase 5 migrated
+        // `PendingTodosHandler` from the legacy `End` event to Claude
+        // Code's `Stop` event. Both branches must unify to the same
+        // `Box<dyn EventHandle<_>>` type — `.and(NoOpHandler)` in the
+        // else branch gives us that without changing behaviour.
+        let on_stop_hook = if forge_config.verify_todos {
+            plugin_handler.clone().and(PendingTodosHandler::new())
+        } else {
+            plugin_handler.clone().and(NoOpHandler)
+        };
+
         let hook = Hook::default()
             .on_start(tracing_handler.clone().and(title_handler))
             .on_request(
@@ -184,13 +205,41 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
             .on_response(
                 tracing_handler
                     .clone()
-                    .and(CompactionHandler::new(agent.clone(), environment.clone())),
+                    .and(CompactionHandler::new(
+                        agent.clone(),
+                        environment.clone(),
+                        plugin_handler.clone(),
+                    )),
             )
             .on_toolcall_start(tracing_handler.clone())
             .on_toolcall_end(tracing_handler.clone().and(skill_cache_invalidator))
-            .on_end(on_end_hook);
+            .on_end(on_end_hook)
+            .on_pre_tool_use(plugin_handler.clone())
+            .on_post_tool_use(plugin_handler.clone())
+            .on_post_tool_use_failure(plugin_handler.clone())
+            .on_user_prompt_submit(plugin_handler.clone())
+            .on_session_start(plugin_handler.clone())
+            .on_session_end(plugin_handler.clone())
+            .on_stop(on_stop_hook)
+            .on_stop_failure(plugin_handler.clone())
+            .on_pre_compact(plugin_handler.clone())
+            .on_post_compact(plugin_handler.clone())
+            .on_notification(plugin_handler.clone())
+            .on_config_change(plugin_handler.clone())
+            .on_setup(plugin_handler.clone())
+            .on_instructions_loaded(plugin_handler.clone())
+            .on_subagent_start(plugin_handler.clone())
+            .on_subagent_stop(plugin_handler.clone())
+            .on_permission_request(plugin_handler.clone())
+            .on_permission_denied(plugin_handler.clone())
+            .on_cwd_changed(plugin_handler.clone())
+            .on_file_changed(plugin_handler.clone())
+            .on_worktree_create(plugin_handler.clone())
+            .on_worktree_remove(plugin_handler.clone())
+            .on_elicitation(plugin_handler.clone())
+            .on_elicitation_result(plugin_handler);
 
-        let orch = Orchestrator::new(
+        let mut orch = Orchestrator::new(
             services.clone(),
             conversation,
             agent,
@@ -200,6 +249,9 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         .tool_definitions(tool_definitions)
         .models(models)
         .hook(Arc::new(hook));
+        if let Some(prompt) = raw_user_prompt {
+            orch = orch.user_prompt(prompt);
+        }
 
         // Create and return the stream
         let stream = MpscStream::spawn(
@@ -273,12 +325,50 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
 
         // Get compact config from the agent
         let compact = agent
+            .clone()
             .apply_config(&forge_config)
             .set_compact_model_if_none()
             .compact;
 
         // Apply compaction using the Compactor
         let environment = self.services.get_environment();
+
+        // Fire PreCompact plugin hook (Phase 4 Part 2b-ii). Manual compact
+        // uses CompactTrigger::Manual. A blocking hook aborts the
+        // compaction with an error.
+        let plugin_handler = PluginHookHandler::new(self.services.clone());
+        let session_id = conversation.id.into_string();
+        let transcript_path = environment.transcript_path(&session_id);
+        let cwd = environment.cwd.clone();
+
+        conversation.reset_hook_result();
+        let pre_payload = PreCompactPayload {
+            trigger: CompactTrigger::Manual,
+            custom_instructions: None,
+        };
+        let pre_event_data = EventData::with_context(
+            agent.clone(),
+            agent.model.clone(),
+            session_id.clone(),
+            transcript_path.clone(),
+            cwd.clone(),
+            pre_payload,
+        );
+        <PluginHookHandler<S> as EventHandle<EventData<PreCompactPayload>>>::handle(
+            &plugin_handler,
+            &pre_event_data,
+            &mut conversation,
+        )
+        .await?;
+
+        let pre_hook_result = std::mem::take(&mut conversation.hook_result);
+        if let Some(err) = pre_hook_result.blocking_error {
+            return Err(anyhow::anyhow!(
+                "Manual compaction blocked by plugin hook: {}",
+                err.message
+            ));
+        }
+
         let compacted_context = Compactor::new(compact, environment).compact(context, true)?;
 
         let compacted_messages = compacted_context.messages.len();
@@ -286,6 +376,31 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
 
         // Update the conversation with the compacted context
         conversation.context = Some(compacted_context);
+
+        // Fire PostCompact plugin hook. Phase 4 uses an empty summary —
+        // real compaction summary extraction is a Part 2b-iii follow-up.
+        conversation.reset_hook_result();
+        let post_payload = PostCompactPayload {
+            trigger: CompactTrigger::Manual,
+            compact_summary: String::new(),
+        };
+        let post_event_data = EventData::with_context(
+            agent.clone(),
+            agent.model.clone(),
+            session_id,
+            transcript_path,
+            cwd,
+            post_payload,
+        );
+        <PluginHookHandler<S> as EventHandle<EventData<PostCompactPayload>>>::handle(
+            &plugin_handler,
+            &post_event_data,
+            &mut conversation,
+        )
+        .await?;
+        // Drain hook_result — Phase 4 doesn't consume PostCompact extras
+        // on this path.
+        let _ = std::mem::take(&mut conversation.hook_result);
 
         // Save the updated conversation
         self.services.upsert_conversation(conversation).await?;

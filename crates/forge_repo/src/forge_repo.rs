@@ -57,6 +57,8 @@ impl<
     F: EnvironmentInfra<Config = forge_config::ForgeConfig>
         + FileReaderInfra
         + FileWriterInfra
+        + FileInfoInfra
+        + DirectoryReaderInfra
         + GrpcInfra
         + HttpInfra,
 > ForgeRepo<F>
@@ -80,9 +82,18 @@ impl<
         let chat_repository = Arc::new(ForgeChatRepository::new(infra.clone()));
 
         let codebase_repo = Arc::new(ForgeContextEngineRepository::new(infra.clone()));
-        let agent_repository = Arc::new(ForgeAgentRepository::new(infra.clone()));
-        let skill_repository = Arc::new(ForgeSkillRepository::new(infra.clone()));
         let plugin_repository = Arc::new(ForgePluginRepository::new(infra.clone()));
+        // Skills and agents consume the plugin repository so they can merge
+        // plugin-contributed components into their respective listings.
+        let plugin_repository_dyn: Arc<dyn PluginRepository> = plugin_repository.clone();
+        let agent_repository = Arc::new(ForgeAgentRepository::new(
+            infra.clone(),
+            plugin_repository_dyn.clone(),
+        ));
+        let skill_repository = Arc::new(ForgeSkillRepository::new(
+            infra.clone(),
+            plugin_repository_dyn,
+        ));
         let validation_repository = Arc::new(ForgeValidationRepository::new(infra.clone()));
         let fuzzy_search_repository = Arc::new(ForgeFuzzySearchRepository::new(infra.clone()));
         Self {
@@ -528,6 +539,12 @@ impl<
 {
     async fn load_plugins(&self) -> anyhow::Result<Vec<LoadedPlugin>> {
         self.plugin_repository.load_plugins().await
+    }
+
+    async fn load_plugins_with_errors(
+        &self,
+    ) -> anyhow::Result<forge_domain::PluginLoadResult> {
+        self.plugin_repository.load_plugins_with_errors().await
     }
 }
 

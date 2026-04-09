@@ -236,6 +236,60 @@ pub struct LoadedPlugin {
     pub mcp_servers: Option<BTreeMap<String, McpServerConfig>>,
 }
 
+/// Result of a plugin discovery pass that includes both successfully loaded
+/// plugins and errors encountered while loading malformed or broken plugin
+/// directories.
+///
+/// This is the richer return type used by
+/// [`crate::PluginRepository::load_plugins_with_errors`] and is preserved by
+/// the service-layer cache so that UI surfaces (notably the Phase 9
+/// `:plugin list` command) can render "broken" entries alongside healthy
+/// ones. The legacy [`crate::PluginRepository::load_plugins`] method
+/// discards the `errors` field for backward compatibility.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PluginLoadResult {
+    /// Plugins that parsed successfully and are ready to be consumed.
+    pub plugins: Vec<LoadedPlugin>,
+    /// Per-plugin errors accumulated during discovery. A non-empty list
+    /// does not indicate overall failure — the caller should still render
+    /// `plugins` and surface `errors` as diagnostics.
+    pub errors: Vec<PluginLoadError>,
+}
+
+impl PluginLoadResult {
+    /// Convenience constructor for tests and call sites that already have
+    /// the split vectors.
+    pub fn new(plugins: Vec<LoadedPlugin>, errors: Vec<PluginLoadError>) -> Self {
+        Self { plugins, errors }
+    }
+
+    /// Returns `true` when at least one plugin failed to load.
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+}
+
+/// Error encountered while attempting to load a single plugin directory.
+///
+/// Captured instead of propagated so a malformed plugin can't block
+/// discovery of the healthy ones sitting next to it on disk. The
+/// `plugin_name` field is populated when the directory name or
+/// (partial) manifest was readable; it is `None` when the error occurred
+/// before any identifying information could be extracted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginLoadError {
+    /// Effective plugin name if it could be determined (usually the
+    /// directory name). `None` when discovery failed too early.
+    pub plugin_name: Option<String>,
+    /// Absolute path to the plugin directory (or manifest file) that
+    /// failed.
+    pub path: PathBuf,
+    /// Human-readable error message. Typically the `Display` of the
+    /// underlying `anyhow::Error`, captured with its full chain via
+    /// `format!("{e:#}")`.
+    pub error: String,
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -380,5 +434,64 @@ mod tests {
         let json = r#"{ "name": "demo", "#; // truncated
         let result: Result<PluginManifest, _> = serde_json::from_str(json);
         assert!(result.is_err());
+    }
+
+    fn fixture_loaded_plugin(name: &str) -> LoadedPlugin {
+        LoadedPlugin {
+            name: name.to_string(),
+            manifest: PluginManifest {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            path: PathBuf::from(format!("/fake/{name}")),
+            source: PluginSource::Global,
+            enabled: true,
+            is_builtin: false,
+            commands_paths: Vec::new(),
+            agents_paths: Vec::new(),
+            skills_paths: Vec::new(),
+            hooks_config: None,
+            mcp_servers: None,
+        }
+    }
+
+    fn fixture_load_error(name: &str, err: &str) -> PluginLoadError {
+        PluginLoadError {
+            plugin_name: Some(name.to_string()),
+            path: PathBuf::from(format!("/fake/{name}")),
+            error: err.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_plugin_load_result_default_is_empty() {
+        let actual = PluginLoadResult::default();
+        assert!(actual.plugins.is_empty());
+        assert!(actual.errors.is_empty());
+        assert!(!actual.has_errors());
+    }
+
+    #[test]
+    fn test_plugin_load_result_new_constructs_populated() {
+        let plugins = vec![fixture_loaded_plugin("alpha")];
+        let errors = vec![fixture_load_error("broken", "missing name")];
+
+        let actual = PluginLoadResult::new(plugins.clone(), errors.clone());
+
+        let expected = PluginLoadResult { plugins, errors };
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_plugin_load_result_has_errors_reports_non_empty_errors() {
+        let result_ok =
+            PluginLoadResult::new(vec![fixture_loaded_plugin("alpha")], Vec::new());
+        assert!(!result_ok.has_errors());
+
+        let result_err = PluginLoadResult::new(
+            vec![fixture_loaded_plugin("alpha")],
+            vec![fixture_load_error("broken", "bad json")],
+        );
+        assert!(result_err.has_errors());
     }
 }

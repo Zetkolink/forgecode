@@ -6,15 +6,17 @@ use derive_setters::Setters;
 use forge_domain::{
     AgentId, AnyProvider, Attachment, AuthContextRequest, AuthContextResponse, AuthMethod,
     ChatCompletionMessage, CommandOutput, Context, Conversation, ConversationId, File, FileInfo,
-    FileStatus, Image, McpConfig, McpServers, Model, ModelId, Node, Provider, ProviderId,
-    ResultStream, Scope, SearchParams, SyncProgress, SyntaxError, Template, ToolCallFull,
-    ToolOutput, WorkspaceAuth, WorkspaceId, WorkspaceInfo,
+    FileStatus, Image, InvocableCommand, McpConfig, McpServers, Model, ModelId, Node,
+    NotificationKind, Provider, ProviderId, ResultStream, Scope, SearchParams, SyncProgress,
+    SyntaxError, Template, ToolCallFull, ToolOutput, WorkspaceAuth, WorkspaceId, WorkspaceInfo,
 };
 use reqwest::Response;
 use reqwest::header::HeaderMap;
 use reqwest_eventsource::EventSource;
 use url::Url;
 
+use crate::hook_runtime::HookConfigLoaderService;
+use crate::infra::HookExecutorInfra;
 use crate::user::{User, UserUsage};
 use crate::{EnvironmentInfra, Walker};
 
@@ -480,6 +482,18 @@ pub trait AgentRegistry: Send + Sync {
 pub trait CommandLoaderService: Send + Sync {
     /// Load all command definitions from the forge/commands directory
     async fn get_commands(&self) -> anyhow::Result<Vec<forge_domain::Command>>;
+
+    /// Drops any cached command data so the next call to
+    /// [`get_commands`](Self::get_commands) re-reads from disk.
+    ///
+    /// Default implementation is a no-op for loaders that do not
+    /// maintain their own cache. Production implementations that cache
+    /// (e.g. `forge_services::CommandLoaderService`) override this to
+    /// clear their cache so Phase 9's `:plugin reload` picks up newly
+    /// installed plugin commands without a process restart.
+    async fn reload(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -491,6 +505,50 @@ pub trait PolicyService: Send + Sync {
         &self,
         operation: &forge_domain::PermissionOperation,
     ) -> anyhow::Result<PolicyDecision>;
+}
+
+/// A user-facing notification that Forge wants to surface.
+///
+/// This is the in-process shape consumed by [`NotificationService::emit`].
+/// The Phase 6A infrastructure only carries the kind, optional title, and
+/// message body — real emission points (REPL idle, OAuth completion,
+/// elicitation) are deferred to Phase 8 along with the backing
+/// implementation.
+#[derive(Debug, Clone)]
+pub struct Notification {
+    /// Source of the notification (idle prompt, auth success, ...).
+    pub kind: NotificationKind,
+    /// Optional short title shown above the message body.
+    pub title: Option<String>,
+    /// Notification body text.
+    pub message: String,
+}
+
+/// Service that surfaces [`Notification`]s and fires the `Notification`
+/// hook event for each one.
+///
+/// Phase 6A only defines the trait; no implementation is wired into the
+/// [`Services`] aggregate yet. Later phases (Phase 8) will add a concrete
+/// implementation (`ForgeNotificationService`) that:
+///
+/// 1. Fires the `Notification` lifecycle event through the plugin hook
+///    dispatcher so configured hooks run.
+/// 2. Optionally emits a terminal bell / OS-level notification.
+///
+/// Hook emission is intended to be non-blocking: any errors from the
+/// hook dispatcher should be logged via `tracing::warn!` rather than
+/// propagated, so a misbehaving hook never blocks the UI feedback path.
+#[async_trait::async_trait]
+pub trait NotificationService: Send + Sync {
+    /// Emit the given notification.
+    ///
+    /// # Errors
+    ///
+    /// Implementations should treat hook-dispatcher errors as soft
+    /// failures (log and continue). An `Err` return is reserved for
+    /// unrecoverable infrastructure problems (e.g. the notification
+    /// subsystem itself is misconfigured).
+    async fn emit(&self, notification: Notification) -> anyhow::Result<()>;
 }
 
 /// Plugin loader service: wraps [`forge_domain::PluginRepository`] with
@@ -512,7 +570,22 @@ pub trait PluginLoader: Send + Sync {
     ///
     /// The returned list is cloned from an internal `Arc`, so consumers
     /// can mutate their own copy without affecting the cache.
+    ///
+    /// This variant silently drops per-plugin errors — prefer
+    /// [`list_plugins_with_errors`](Self::list_plugins_with_errors) when
+    /// you need to surface malformed plugins in the UI (e.g. the Phase 9
+    /// `:plugin list` command).
     async fn list_plugins(&self) -> anyhow::Result<Vec<forge_domain::LoadedPlugin>>;
+
+    /// Returns both the successfully-loaded plugins and any load errors
+    /// encountered during discovery.
+    ///
+    /// Backed by the same cache as [`list_plugins`](Self::list_plugins),
+    /// so calling both in sequence on the same state costs exactly one
+    /// filesystem scan.
+    async fn list_plugins_with_errors(
+        &self,
+    ) -> anyhow::Result<forge_domain::PluginLoadResult>;
 
     /// Drops any cached plugin data so the next call to
     /// [`list_plugins`](Self::list_plugins) re-reads the filesystem.
@@ -545,6 +618,71 @@ pub trait SkillFetchService: Send + Sync {
     /// modified mid-session so the next `<system_reminder>` catalog reflects
     /// the change without waiting for a process restart.
     async fn invalidate_cache(&self);
+}
+
+/// Unified provider of the LLM-facing [`InvocableCommand`] catalog.
+///
+/// Skills and commands flow through the same `<system_reminder>` pipeline in
+/// Claude Code (see `claude-code/src/utils/plugins/loadPluginCommands.ts`), so
+/// Forge exposes a single listing method that the per-turn
+/// `SkillListingHandler` consumes to decide what to surface to the model.
+///
+/// The default blanket implementation on any [`Services`] aggregates
+/// [`SkillFetchService::list_skills`] and
+/// [`CommandLoaderService::get_commands`] into one unified vector with no
+/// filtering — the consumer (`SkillListingHandler`) is responsible for
+/// honoring flags such as `disable_model_invocation` at display time.
+///
+/// Test fixtures and the orch_spec `Runner` provide their own implementation
+/// that returns only skills, since the test harness does not populate a
+/// command loader.
+#[async_trait::async_trait]
+pub trait InvocableCommandsProvider: Send + Sync {
+    /// Returns the complete list of invocables (skills + commands) known to
+    /// Forge, without any filtering. Entries with
+    /// `disable_model_invocation: true` are still returned — the caller
+    /// decides whether to hide them from the LLM.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either the skill repository or the command
+    /// loader cannot produce its list.
+    async fn list_invocable_commands(&self) -> anyhow::Result<Vec<InvocableCommand>>;
+}
+
+/// Aggregated reload entry point for plugin-provided components.
+///
+/// Phase 9's `:plugin reload`, `:plugin enable <name>`, and
+/// `:plugin disable <name>` slash commands all need to invalidate every
+/// downstream cache that depends on the plugin discovery output: skills,
+/// commands, agents, and the [`PluginLoader`] itself. Centralizing that
+/// fan-out here keeps the CLI command implementation small and ensures we
+/// never forget to flush a cache after a plugin state change.
+///
+/// The blanket implementation on any [`Services`] reloads, in order:
+///
+/// 1. The plugin loader cache (so the next discovery walk re-reads
+///    `~/forge/plugins/` and `./.forge/plugins/`)
+/// 2. The skill fetch cache (via [`SkillFetchService::invalidate_cache`])
+/// 3. The agent registry cache (via [`AgentRegistry::reload_agents`])
+/// 4. The command loader cache (via [`CommandLoaderService::reload`])
+///
+/// Per-handler caches (e.g. the per-conversation delta cache inside
+/// `SkillListingHandler`) are deliberately **not** touched here because the
+/// handler is owned by the orchestrator, not by `Services`. Phase 9's CLI
+/// command will reset those handler caches directly after calling
+/// `reload_plugin_components`.
+#[async_trait::async_trait]
+pub trait PluginComponentsReloader: Send + Sync {
+    /// Reload all plugin-provided components (skills, commands, agents)
+    /// so the next request observes the latest plugin enable/disable
+    /// state. See the trait docs for the exact reload order.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error encountered while reloading any
+    /// component. Earlier components that succeeded remain reloaded.
+    async fn reload_plugin_components(&self) -> anyhow::Result<()>;
 }
 
 /// Provider authentication service
@@ -602,6 +740,8 @@ pub trait Services: Send + Sync + 'static + Clone + EnvironmentInfra {
     type WorkspaceService: WorkspaceService;
     type SkillFetchService: SkillFetchService;
     type PluginLoader: PluginLoader;
+    type HookConfigLoader: HookConfigLoaderService;
+    type HookExecutor: HookExecutorInfra;
 
     fn provider_service(&self) -> &Self::ProviderService;
     fn config_service(&self) -> &Self::AppConfigService;
@@ -631,6 +771,8 @@ pub trait Services: Send + Sync + 'static + Clone + EnvironmentInfra {
     fn workspace_service(&self) -> &Self::WorkspaceService;
     fn skill_fetch_service(&self) -> &Self::SkillFetchService;
     fn plugin_loader(&self) -> &Self::PluginLoader;
+    fn hook_config_loader(&self) -> &Self::HookConfigLoader;
+    fn hook_executor(&self) -> &Self::HookExecutor;
 }
 
 #[async_trait::async_trait]
@@ -970,6 +1112,10 @@ impl<I: Services> CommandLoaderService for I {
     async fn get_commands(&self) -> anyhow::Result<Vec<forge_domain::Command>> {
         self.command_loader_service().get_commands().await
     }
+
+    async fn reload(&self) -> anyhow::Result<()> {
+        self.command_loader_service().reload().await
+    }
 }
 
 #[async_trait::async_trait]
@@ -1029,10 +1175,63 @@ impl<I: Services> SkillFetchService for I {
     }
 }
 
+/// Blanket [`InvocableCommandsProvider`] implementation for any type that
+/// implements the full [`Services`] aggregate.
+///
+/// Aggregates the skill repository (via [`SkillFetchService::list_skills`])
+/// and the command loader (via [`CommandLoaderService::get_commands`]) into a
+/// single [`InvocableCommand`] listing. Entries are returned in the order
+/// `skills ++ commands` and are **not** filtered by
+/// `disable_model_invocation` — the caller decides what to hide.
+#[async_trait::async_trait]
+impl<I: Services> InvocableCommandsProvider for I {
+    async fn list_invocable_commands(&self) -> anyhow::Result<Vec<InvocableCommand>> {
+        let skills = self.skill_fetch_service().list_skills().await?;
+        let commands = self.command_loader_service().get_commands().await?;
+
+        let mut invocables: Vec<InvocableCommand> =
+            Vec::with_capacity(skills.len() + commands.len());
+        invocables.extend(skills.iter().map(InvocableCommand::from));
+        invocables.extend(commands.iter().map(InvocableCommand::from));
+        Ok(invocables)
+    }
+}
+
+/// Blanket [`PluginComponentsReloader`] implementation for any type that
+/// implements the full [`Services`] aggregate.
+///
+/// See the trait docs for the reload ordering and the rationale for not
+/// touching per-handler caches here.
+#[async_trait::async_trait]
+impl<I: Services> PluginComponentsReloader for I {
+    async fn reload_plugin_components(&self) -> anyhow::Result<()> {
+        // 1. Plugin loader cache first so subsequent component reloads
+        //    observe fresh plugin discovery results.
+        self.plugin_loader().invalidate_cache().await;
+
+        // 2. Skill fetch cache.
+        self.skill_fetch_service().invalidate_cache().await;
+
+        // 3. Agent registry cache.
+        self.agent_registry().reload_agents().await?;
+
+        // 4. Command loader cache.
+        self.command_loader_service().reload().await?;
+
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl<I: Services> PluginLoader for I {
     async fn list_plugins(&self) -> anyhow::Result<Vec<forge_domain::LoadedPlugin>> {
         self.plugin_loader().list_plugins().await
+    }
+
+    async fn list_plugins_with_errors(
+        &self,
+    ) -> anyhow::Result<forge_domain::PluginLoadResult> {
+        self.plugin_loader().list_plugins_with_errors().await
     }
 
     async fn invalidate_cache(&self) {
