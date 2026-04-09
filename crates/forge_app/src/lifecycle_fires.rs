@@ -672,13 +672,13 @@ pub async fn fire_instructions_loaded_hook<S: Services>(
 /// their events are observability-only), this one **returns** the
 /// aggregate so the caller can consume:
 ///
-/// - `worktree_path` — a plugin-provided path override that the caller
-///   should use instead of running `git worktree add`.
-/// - `blocking_error` — a plugin veto of the worktree creation
-///   altogether. The caller is expected to surface this as an error.
-/// - `additional_contexts` / `system_messages` — pre-creation reminders
-///   that a future runtime `EnterWorktreeTool` fire site can forward
-///   into the conversation.
+/// - `worktree_path` — a plugin-provided path override that the caller should
+///   use instead of running `git worktree add`.
+/// - `blocking_error` — a plugin veto of the worktree creation altogether. The
+///   caller is expected to surface this as an error.
+/// - `additional_contexts` / `system_messages` — pre-creation reminders that a
+///   future runtime `EnterWorktreeTool` fire site can forward into the
+///   conversation.
 ///
 /// Dispatch failures are handled fail-open: any error from the hook
 /// plumbing is logged at `tracing::warn` and an empty
@@ -735,12 +735,13 @@ pub async fn fire_worktree_create_hook<S: Services>(
     let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
 
     let plugin_handler = PluginHookHandler::new(services.clone());
-    if let Err(err) = <PluginHookHandler<S> as EventHandle<EventData<WorktreeCreatePayload>>>::handle(
-        &plugin_handler,
-        &event,
-        &mut scratch,
-    )
-    .await
+    if let Err(err) =
+        <PluginHookHandler<S> as EventHandle<EventData<WorktreeCreatePayload>>>::handle(
+            &plugin_handler,
+            &event,
+            &mut scratch,
+        )
+        .await
     {
         warn!(
             name = %name,

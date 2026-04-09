@@ -33,11 +33,11 @@ pub struct WorktreeCreationResult {
 ///
 /// - Verifies the current directory is inside a git repository.
 /// - Computes the target worktree path as `<git-root-parent>/<name>`.
-/// - If the target path exists and is already a git worktree, returns
-///   the existing path with `created: false`.
+/// - If the target path exists and is already a git worktree, returns the
+///   existing path with `created: false`.
 /// - If the target path exists but is not a worktree, returns an error.
-/// - Creates a new branch named `<name>` if it doesn't exist, otherwise
-///   reuses the existing branch.
+/// - Creates a new branch named `<name>` if it doesn't exist, otherwise reuses
+///   the existing branch.
 /// - Returns the canonicalized path on success.
 ///
 /// # Errors
@@ -114,11 +114,7 @@ pub fn create_worktree(name: &str) -> Result<WorktreeCreationResult> {
 
     // Check if branch already exists
     let branch_check = Command::new("git")
-        .args([
-            "rev-parse",
-            "--verify",
-            &format!("refs/heads/{name}"),
-        ])
+        .args(["rev-parse", "--verify", &format!("refs/heads/{name}")])
         .current_dir(&git_root_path)
         .output()
         .context("Failed to check if branch exists")?;

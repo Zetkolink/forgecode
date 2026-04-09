@@ -129,8 +129,7 @@ async fn run() -> Result<()> {
     let cwd: PathBuf = match (&cli.sandbox, &cli.directory) {
         (Some(sandbox), Some(cli)) => {
             let current = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let bootstrap_api =
-                ForgeAPI::init(current, config.clone(), services_url.clone());
+            let bootstrap_api = ForgeAPI::init(current, config.clone(), services_url.clone());
             let services = bootstrap_api.services();
             drop(bootstrap_api);
             let mut sandbox = Sandbox::new(sandbox, services).create().await?;
@@ -139,8 +138,7 @@ async fn run() -> Result<()> {
         }
         (Some(sandbox), _) => {
             let current = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let bootstrap_api =
-                ForgeAPI::init(current, config.clone(), services_url.clone());
+            let bootstrap_api = ForgeAPI::init(current, config.clone(), services_url.clone());
             let services = bootstrap_api.services();
             drop(bootstrap_api);
             Sandbox::new(sandbox, services).create().await?

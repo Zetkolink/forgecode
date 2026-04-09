@@ -428,10 +428,7 @@ mod tests {
         assert!(cloned.prevent_continuation);
         assert_eq!(cloned.stop_reason.as_deref(), Some("halt"));
         assert_eq!(cloned.watch_paths, vec![PathBuf::from("/tmp")]);
-        assert_eq!(
-            cloned.worktree_path,
-            Some(PathBuf::from("/tmp/wt/feature"))
-        );
+        assert_eq!(cloned.worktree_path, Some(PathBuf::from("/tmp/wt/feature")));
     }
 
     fn success_with_plain_text(stdout: &str) -> HookExecResult {
@@ -867,9 +864,7 @@ mod tests {
         }));
 
         agg.merge(success_with_sync(SyncHookOutput {
-            hook_specific_output: Some(HookSpecificOutput::WorktreeCreate {
-                worktree_path: None,
-            }),
+            hook_specific_output: Some(HookSpecificOutput::WorktreeCreate { worktree_path: None }),
             ..Default::default()
         }));
 
