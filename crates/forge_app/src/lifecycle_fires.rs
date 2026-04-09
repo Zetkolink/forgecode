@@ -34,8 +34,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use forge_domain::{
     Agent, ConfigChangePayload, ConfigSource, Conversation, ConversationId, EventData, EventHandle,
-    InstructionsLoadedPayload, LoadedInstructions, ModelId, NotificationPayload, SetupPayload,
-    SetupTrigger,
+    FileChangeEvent, FileChangedPayload, InstructionsLoadedPayload, LoadedInstructions, ModelId,
+    NotificationPayload, SetupPayload, SetupTrigger,
 };
 use tracing::{debug, warn};
 
@@ -354,6 +354,107 @@ pub async fn fire_config_change_hook<S: Services>(
             source = ?source,
             error = %err.message,
             "ConfigChange hook returned blocking_error; ignoring (observability only)"
+        );
+    }
+}
+
+/// Fire the `FileChanged` lifecycle event for a debounced filesystem
+/// change under one of the user's watched paths.
+///
+/// Used by `ForgeAPI` as the out-of-orchestrator entry point for the
+/// Phase 7C `FileChangedWatcher` service. The watcher hands us an
+/// absolute `file_path` and a [`FileChangeEvent`] discriminator; we
+/// wrap them in a [`FileChangedPayload`] and dispatch through
+/// [`PluginHookHandler`] on a scratch [`Conversation`].
+///
+/// Per Claude Code's `FileChanged` semantics, the event is
+/// **observability-only** for Wave E-2a — any `blocking_error`
+/// returned by a plugin hook is drained and discarded, and dispatch
+/// failures are logged at `warn!` but never propagated. Dynamic
+/// extension of the watched-paths set based on hook results is
+/// deferred to Wave E-2b.
+///
+/// This function is safe to call even when no plugins are configured:
+/// the hook dispatcher returns an empty result which is then drained.
+pub async fn fire_file_changed_hook<S: Services>(
+    services: Arc<S>,
+    file_path: PathBuf,
+    event: FileChangeEvent,
+) {
+    use crate::services::AgentRegistry;
+
+    // Resolve an agent for the event context. FileChanged fires from
+    // a background filesystem watcher with no live Conversation bound
+    // to an agent — we use the active agent if set, otherwise the
+    // first registered agent. If the registry is empty, skip the
+    // fire entirely.
+    let agent = if let Ok(Some(active_id)) = services.get_active_agent_id().await {
+        match services.get_agent(&active_id).await {
+            Ok(Some(agent)) => Some(agent),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let agent = match agent {
+        Some(a) => a,
+        None => match services
+            .get_agents()
+            .await
+            .ok()
+            .and_then(|a| a.into_iter().next())
+        {
+            Some(a) => a,
+            None => {
+                debug!("no agent available — skipping FileChanged hook fire");
+                return;
+            }
+        },
+    };
+    let model_id: ModelId = agent.model.clone();
+
+    let environment = services.get_environment();
+    // Scratch conversation — FileChanged fires out-of-band from a
+    // background watcher thread, so there is no live Conversation to
+    // update. The resulting hook_result is drained and discarded
+    // below.
+    let mut scratch = Conversation::new(ConversationId::generate());
+    let session_id = scratch.id.into_string();
+    let transcript_path = environment.transcript_path(&session_id);
+    let cwd = environment.cwd.clone();
+
+    let payload = FileChangedPayload { file_path: file_path.clone(), event };
+    let event_data =
+        EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+
+    let plugin_handler = PluginHookHandler::new(services.clone());
+    if let Err(err) = <PluginHookHandler<S> as EventHandle<EventData<FileChangedPayload>>>::handle(
+        &plugin_handler,
+        &event_data,
+        &mut scratch,
+    )
+    .await
+    {
+        warn!(
+            path = %file_path.display(),
+            event = ?event,
+            error = %err,
+            "failed to dispatch FileChanged hook; ignoring per Claude Code semantics"
+        );
+    }
+
+    // Drain and explicitly ignore the blocking_error. FileChanged is
+    // observability-only in Wave E-2a — the watcher callback runs
+    // asynchronously on a background thread with no conversation to
+    // block against. Dynamic watch-path extension based on hook
+    // results is deferred to Wave E-2b.
+    let aggregated = std::mem::take(&mut scratch.hook_result);
+    if let Some(err) = aggregated.blocking_error {
+        debug!(
+            path = %file_path.display(),
+            event = ?event,
+            error = %err.message,
+            "FileChanged hook returned blocking_error; ignoring (observability only)"
         );
     }
 }

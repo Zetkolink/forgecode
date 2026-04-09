@@ -51,8 +51,8 @@ pub use git_app::*;
 pub use hook_matcher::{matches_condition, matches_pattern};
 pub use infra::*;
 pub use lifecycle_fires::{
-    ForgeNotificationService, fire_config_change_hook, fire_instructions_loaded_hook,
-    fire_setup_hook,
+    ForgeNotificationService, fire_config_change_hook, fire_file_changed_hook,
+    fire_instructions_loaded_hook, fire_setup_hook,
 };
 pub use services::*;
 pub use template_engine::*;

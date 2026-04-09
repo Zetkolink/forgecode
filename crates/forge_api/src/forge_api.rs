@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use forge_app::dto::ToolsOverview;
+use forge_app::hook_runtime::HookConfigLoaderService;
 use forge_app::{
     AgentProviderResolver, AgentRegistry, AppConfigService, AuthService, CommandInfra,
     CommandLoaderService, ConversationService, DataGenerationApp, EnvironmentInfra,
@@ -12,17 +13,19 @@ use forge_app::{
     ProviderService, Services, User, UserUsage, Walker, WorkspaceService, fire_setup_hook,
 };
 use forge_config::{ConfigReader, ForgeConfig};
-use forge_domain::{Agent, ConsoleWriter, *};
+use forge_domain::{Agent, ConsoleWriter, HookEventName, *};
 use forge_infra::ForgeInfra;
 use forge_repo::ForgeRepo;
 use forge_services::{ForgeServices, RecursiveMode};
 use forge_stream::MpscStream;
 use futures::stream::BoxStream;
+use tokio::runtime::Handle;
 use tracing::warn;
 use url::Url;
 
 use crate::API;
 use crate::config_watcher_handle::ConfigWatcherHandle;
+use crate::file_changed_watcher_handle::FileChangedWatcherHandle;
 
 pub struct ForgeAPI<S, F> {
     services: Arc<S>,
@@ -40,11 +43,25 @@ pub struct ForgeAPI<S, F> {
     /// [`ForgeAPI::mark_config_write`] so Forge's own writes can be
     /// suppressed within the 5-second internal-write window.
     _config_watcher: Option<ConfigWatcherHandle>,
+    /// Background filesystem watcher that fires the `FileChanged`
+    /// lifecycle hook (Phase 7C Wave E-2a) when any user-configured
+    /// watched file changes on disk. `None` when construction failed,
+    /// no `FileChanged` matchers are present in the merged hook
+    /// config, or the call site lacked a multi-threaded tokio runtime
+    /// to bootstrap the async config loader. Prefixed with an
+    /// underscore for the same Drop-impl-lifetime reason as
+    /// `_config_watcher`.
+    _file_changed_watcher: Option<FileChangedWatcherHandle>,
 }
 
 impl<A, F> ForgeAPI<A, F> {
     pub fn new(services: Arc<A>, infra: Arc<F>) -> Self {
-        Self { services, infra, _config_watcher: None }
+        Self {
+            services,
+            infra,
+            _config_watcher: None,
+            _file_changed_watcher: None,
+        }
     }
 
     /// Creates a ForgeApp instance with the current services and latest config.
@@ -103,13 +120,142 @@ impl ForgeAPI<ForgeServices<ForgeRepo<ForgeInfra>>, ForgeRepo<ForgeInfra>> {
             }
         };
 
-        ForgeAPI { services: app, infra: repo, _config_watcher: config_watcher }
+        // Phase 7C Wave E-2a: spin up the `FileChangedWatcher` that
+        // feeds the `FileChanged` lifecycle hook. Unlike the config
+        // watcher — which derives its paths purely from the live
+        // `Environment` — this one has to load the merged hook
+        // config asynchronously so it can discover the user's
+        // `FileChanged` matchers (e.g. `.envrc|.env` in a
+        // `hooks.json`). `ForgeAPI::init` is sync, so we need to
+        // bridge async→sync. We do it with `block_in_place` +
+        // `Handle::block_on`, but ONLY on a multi-thread tokio
+        // runtime where that pattern is safe. On a single-thread
+        // runtime (or outside any runtime) we silently skip the
+        // watcher; the single-thread case exists mostly in unit
+        // tests, where `FileChanged` observability is not required.
+        //
+        // TODO(wave-e-2a): converting `ForgeAPI::init` to async would
+        // let us drop the block_in_place dance entirely. That's a
+        // cross-cutting change tracked separately.
+        let file_changed_watcher = match Handle::try_current() {
+            Ok(runtime)
+                if runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
+            {
+                let services_for_load = app.clone();
+                let watch_paths = tokio::task::block_in_place(move || {
+                    runtime.block_on(resolve_file_changed_watch_paths(services_for_load))
+                });
+
+                if watch_paths.is_empty() {
+                    None
+                } else {
+                    match FileChangedWatcherHandle::spawn(app.clone(), watch_paths) {
+                        Ok(handle) => Some(handle),
+                        Err(err) => {
+                            warn!(
+                                error = %err,
+                                "failed to start FileChangedWatcher; FileChanged hooks will be disabled"
+                            );
+                            None
+                        }
+                    }
+                }
+            }
+            _ => {
+                // Single-thread runtime or no runtime at all —
+                // `block_in_place` would panic on the former and
+                // `block_on` on the latter. Silently skip the
+                // watcher; the test harness is the only expected
+                // caller here.
+                None
+            }
+        };
+
+        ForgeAPI {
+            services: app,
+            infra: repo,
+            _config_watcher: config_watcher,
+            _file_changed_watcher: file_changed_watcher,
+        }
     }
 
     pub async fn get_skills_internal(&self) -> Result<Vec<Skill>> {
         use forge_domain::SkillRepository;
         self.infra.load_skills().await
     }
+}
+
+/// Resolve the list of filesystem paths the `FileChangedWatcher`
+/// should observe, derived from the `FileChanged` matchers in the
+/// merged hook config.
+///
+/// Claude Code accepts pipe-separated alternatives (e.g.
+/// `".envrc|.env"`) inside a single matcher string. We split on `|`,
+/// trim each entry, resolve relative paths against
+/// `environment.cwd`, and drop any entry whose resolved path does
+/// not exist on disk — the watcher skips missing paths internally
+/// too, but filtering here keeps the watcher's install log quiet.
+///
+/// All entries are installed with [`RecursiveMode::NonRecursive`]
+/// because the Claude Code wire semantics treat a matcher as a
+/// single file path, not a directory tree. Users who want
+/// recursive behaviour can supply `*` globs in their hook command
+/// bodies and filter inside the hook itself.
+async fn resolve_file_changed_watch_paths<S: Services + 'static>(
+    services: Arc<S>,
+) -> Vec<(PathBuf, RecursiveMode)> {
+    let merged = match services.hook_config_loader().load().await {
+        Ok(config) => config,
+        Err(err) => {
+            warn!(
+                error = %err,
+                "failed to load merged hook config for FileChangedWatcher; \
+                 FileChanged hooks will be disabled"
+            );
+            return Vec::new();
+        }
+    };
+
+    let Some(matchers) = merged.entries.get(&HookEventName::FileChanged) else {
+        return Vec::new();
+    };
+
+    let cwd = services.get_environment().cwd;
+    let mut result: Vec<(PathBuf, RecursiveMode)> = Vec::new();
+
+    for matcher_with_source in matchers {
+        let Some(pattern) = matcher_with_source.matcher.matcher.as_deref() else {
+            continue;
+        };
+
+        for alternative in pattern.split('|') {
+            let trimmed = alternative.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let candidate = PathBuf::from(trimmed);
+            let resolved = if candidate.is_absolute() {
+                candidate
+            } else {
+                cwd.join(candidate)
+            };
+
+            if !resolved.exists() {
+                tracing::debug!(
+                    path = %resolved.display(),
+                    "FileChangedWatcher: matcher path does not exist, skipping"
+                );
+                continue;
+            }
+
+            if result.iter().any(|(p, _)| p == &resolved) {
+                continue;
+            }
+            result.push((resolved, RecursiveMode::NonRecursive));
+        }
+    }
+
+    result
 }
 
 #[async_trait::async_trait]

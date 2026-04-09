@@ -50,7 +50,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::Result;
 use forge_domain::ConfigSource;
@@ -60,42 +62,10 @@ pub use notify_debouncer_full::notify::RecursiveMode;
 use notify_debouncer_full::notify::{self, EventKind, RecommendedWatcher};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 
-/// How long after a `mark_internal_write` call the path stays
-/// suppressed. Matches Claude Code's 5-second window.
-const INTERNAL_WRITE_WINDOW: Duration = Duration::from_secs(5);
-
-/// How long the watcher waits after a `Remove` event before firing a
-/// delete. If a matching `Create` arrives within this window the pair
-/// is collapsed into a single `Modify`-equivalent event. Matches the
-/// 1.7-second grace period documented in
-/// `claude-code/src/utils/settings/changeDetector.ts`.
-const ATOMIC_SAVE_GRACE: Duration = Duration::from_millis(1700);
-
-/// Debounce timeout handed to `notify-debouncer-full`. Matches Claude
-/// Code's `awaitWriteFinish.stabilityThreshold: 1000`.
-const DEBOUNCE_TIMEOUT: Duration = Duration::from_secs(1);
-
-/// Minimum interval between back-to-back dispatches for the same path.
-///
-/// `notify-debouncer-full` coalesces raw filesystem events but still
-/// emits multi-event batches for a single atomic save (e.g.
-/// `[Remove, Create, Modify, Modify]` on macOS FSEvents). Without a
-/// callback-level per-path cooldown we would fire the user's
-/// [`ConfigChange`] callback multiple times for one save. We use a
-/// window slightly larger than [`DEBOUNCE_TIMEOUT`] so every event
-/// inside one debounce batch collapses to a single dispatch.
-const DISPATCH_COOLDOWN: Duration = Duration::from_millis(1500);
-
-/// Canonicalize `path` for map lookup purposes. Uses
-/// [`std::fs::canonicalize`] when the path exists (resolves symlinks
-/// like macOS's `/var → /private/var`) and falls back to the
-/// un-canonicalized path when it does not (e.g. after a delete, or
-/// for a path that has not been created yet). This keeps the
-/// internal-write and pending-unlink maps keyed consistently with the
-/// paths emitted by `notify-debouncer-full`.
-fn canonicalize_for_lookup(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
+use crate::fs_watcher_core::{
+    ATOMIC_SAVE_GRACE, DEBOUNCE_TIMEOUT, DISPATCH_COOLDOWN, INTERNAL_WRITE_WINDOW,
+    canonicalize_for_lookup, is_internal_write_sync,
+};
 
 /// A debounced configuration change detected by [`ConfigWatcher`].
 ///
@@ -310,27 +280,6 @@ impl ConfigWatcher {
             None
         }
     }
-}
-
-/// Returns `true` if `path` was marked as an internal write within the
-/// last [`INTERNAL_WRITE_WINDOW`]. Synchronous helper so the debouncer
-/// callback can call it without needing a tokio runtime. Checks both
-/// the as-received path and its canonicalized form.
-fn is_internal_write_sync(recent: &Mutex<HashMap<PathBuf, Instant>>, path: &Path) -> bool {
-    let guard = recent
-        .lock()
-        .expect("recent_internal_writes mutex poisoned");
-    let hit = |p: &Path| {
-        guard
-            .get(p)
-            .map(|ts| ts.elapsed() < INTERNAL_WRITE_WINDOW)
-            .unwrap_or(false)
-    };
-    if hit(path) {
-        return true;
-    }
-    let canonical = canonicalize_for_lookup(path);
-    hit(&canonical)
 }
 
 /// Fire a [`ConfigChange`] through `state.callback` if `path` maps to a
