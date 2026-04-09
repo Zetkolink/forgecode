@@ -510,8 +510,7 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
         // Consume SessionStart hook_result:
         //  - initial_user_message → push as a User ContextMessage
         //  - additional_contexts → push as <system_reminder> messages
-        //  - watch_paths → install runtime FileChanged watchers
-        //    (Phase 7C Wave E-2b)
+        //  - watch_paths → install runtime FileChanged watchers (Phase 7C Wave E-2b)
         let session_start_hook_result = std::mem::take(&mut self.conversation.hook_result);
 
         if let Some(init_msg) = session_start_hook_result.initial_user_message {
