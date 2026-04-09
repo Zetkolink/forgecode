@@ -1,9 +1,10 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use forge_app::dto::ToolsOverview;
-use forge_app::{User, UserUsage};
-use forge_domain::{AgentId, Effort, ModelId, ProviderModels};
+use forge_app::{NotificationService, User, UserUsage};
+use forge_domain::{AgentId, Effort, ModelId, ProviderModels, SetupTrigger};
 use forge_stream::MpscStream;
 use futures::stream::BoxStream;
 use url::Url;
@@ -279,4 +280,29 @@ pub trait API: Sync + Send {
     /// to apply plugin state changes mid-session without restarting
     /// Forge.
     async fn reload_plugins(&self) -> Result<()>;
+
+    /// Returns a handle to the notification service for emitting
+    /// user-facing notifications (REPL idle, OAuth success, elicitation,
+    /// ...). Calling [`NotificationService::emit`] fires the
+    /// `Notification` lifecycle event through the plugin hook
+    /// dispatcher (observability only — hook errors never propagate)
+    /// and, on non-VS-Code TTY terminals, emits a best-effort terminal
+    /// bell.
+    ///
+    /// Construction is cheap: the returned handle holds only an `Arc`
+    /// to the services aggregate, so callers can either cache the
+    /// handle or construct one per emit.
+    fn notification_service(&self) -> Arc<dyn NotificationService>;
+
+    /// Fires the `Setup` lifecycle event with the given trigger.
+    ///
+    /// Plugin hooks can observe or log the event, but blocking errors
+    /// returned by hooks are intentionally ignored per Claude Code
+    /// semantics (`hooksConfigManager.ts:175`) — Setup runs before a
+    /// conversation exists, so there is nothing to block.
+    ///
+    /// Called by `UI::run_inner` when the user invokes
+    /// `forge --init` / `forge --init-only` / `forge --maintenance`.
+    /// Safe to call even when no plugins are configured.
+    async fn fire_setup_hook(&self, trigger: SetupTrigger) -> Result<()>;
 }

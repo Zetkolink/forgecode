@@ -275,6 +275,11 @@ pub struct UI<A: ConsoleWriter, F: Fn(ForgeConfig) -> A> {
     state: UIState,
     api: Arc<F::Output>,
     new_api: Arc<F>,
+    /// Handle to the [`forge_app::NotificationService`] resolved from
+    /// `api.notification_service()` at init time. Fed by Wave B Phase 6A
+    /// fire sites (`UI::prompt` for `IdlePrompt`,
+    /// `finalize_provider_activation` for `AuthSuccess`).
+    notification_service: Arc<dyn forge_app::NotificationService>,
     console: Console,
     command: Arc<ForgeCommandManager>,
     cli: Cli,
@@ -331,6 +336,9 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         let config = forge_config::ForgeConfig::read().unwrap_or_default();
         self.config = config.clone();
         self.api = Arc::new((self.new_api)(config));
+        // Refresh the notification-service handle because it closes over
+        // the old `api`'s internal `Arc<Services>`.
+        self.notification_service = self.api.notification_service();
         self.init_state(false).await?;
 
         // Set agent if provided via CLI
@@ -390,10 +398,16 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         let env = api.environment();
         let command = Arc::new(ForgeCommandManager::default());
         let spinner = SharedSpinner::new(SpinnerManager::new(api.clone()));
+        // Resolve the notification service handle once at init time so the
+        // fire sites in `prompt()` and `finalize_provider_activation()`
+        // can call it through a single stable field. Construction is
+        // cheap (holds only an `Arc<Services>`).
+        let notification_service = api.notification_service();
         Ok(Self {
             state: Default::default(),
             api,
             new_api: Arc::new(f),
+            notification_service,
             console: Console::new(
                 env.clone(),
                 config.custom_history_path.clone(),
@@ -427,6 +441,24 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             .get_agent_model(self.api.get_active_agent().await)
             .await;
         let forge_prompt = ForgePrompt { cwd: self.state.cwd.clone(), usage, model, agent_id };
+
+        // Wave B Phase 6A: emit an `IdlePrompt` notification just before we
+        // block on user input. This fires the `Notification` hook
+        // (observability only — hook errors never propagate) and, on
+        // non-VS-Code TTY terminals, emits a best-effort terminal bell so
+        // long-running agents can passively nudge the user.
+        if let Err(err) = self
+            .notification_service
+            .emit(forge_app::Notification {
+                kind: forge_domain::NotificationKind::IdlePrompt,
+                title: None,
+                message: "Waiting for user input".to_string(),
+            })
+            .await
+        {
+            tracing::debug!(error = %err, "IdlePrompt notification failed");
+        }
+
         self.console.prompt(forge_prompt).await
     }
 
@@ -462,6 +494,35 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         self.trace_user();
         self.hydrate_caches();
         self.init_conversation().await?;
+
+        // Wave B Phase 6B: fire the `Setup` lifecycle hook if the user
+        // invoked `--init`, `--init-only`, or `--maintenance`. Hook
+        // errors are logged but never propagate — Setup is
+        // observability-only per Claude Code semantics.
+        if self.cli.init || self.cli.init_only {
+            if let Err(err) = self
+                .api
+                .fire_setup_hook(forge_domain::SetupTrigger::Init)
+                .await
+            {
+                tracing::warn!(error = %err, "Setup(init) hook fire failed");
+            }
+        } else if self.cli.maintenance
+            && let Err(err) = self
+                .api
+                .fire_setup_hook(forge_domain::SetupTrigger::Maintenance)
+                .await
+        {
+            tracing::warn!(error = %err, "Setup(maintenance) hook fire failed");
+        }
+
+        // `--init-only` runs Setup and exits without entering the REPL
+        // (or executing any follow-up prompt/dispatch), so CI and batch
+        // provisioning users get a clean one-shot bootstrap.
+        if self.cli.init_only {
+            tracing::debug!("--init-only: exiting after Setup hook");
+            return Ok(());
+        }
 
         // Check for dispatch flag first
         if let Some(dispatch_json) = self.cli.event.clone() {
@@ -3076,6 +3137,11 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         provider: Provider<Url>,
         model: Option<ModelId>,
     ) -> Result<()> {
+        // Capture the provider name up front so we can reference it in the
+        // Wave B Phase 6A `AuthSuccess` notification at every success exit
+        // without fighting Rust's move checker around `provider.id`.
+        let provider_name = provider.id.to_string();
+
         // If a model was pre-selected (e.g. from :model), validate and set it
         // directly without prompting
         if let Some(model) = model {
@@ -3094,6 +3160,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             self.writeln_title(
                 TitleFormat::action(model_id.as_str()).sub_title("is now the default model"),
             )?;
+            self.emit_auth_success(&provider_name).await;
             return Ok(());
         }
 
@@ -3139,7 +3206,30 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             )?;
         }
 
+        // Wave B Phase 6A: surface `AuthSuccess` for the successful exits
+        // (pre-selected model handled above; fall-through covered here).
+        // The user-cancelled branch returns early without emitting.
+        self.emit_auth_success(&provider_name).await;
+
         Ok(())
+    }
+
+    /// Helper that fires the `AuthSuccess` notification for a completed
+    /// provider activation. Failures are logged at `debug!` and swallowed
+    /// so the auth flow itself is never blocked by a misbehaving
+    /// notification hook.
+    async fn emit_auth_success(&self, provider_name: &str) {
+        if let Err(err) = self
+            .notification_service
+            .emit(forge_app::Notification {
+                kind: forge_domain::NotificationKind::AuthSuccess,
+                title: Some("Authentication successful".to_string()),
+                message: format!("{provider_name} is now the default provider"),
+            })
+            .await
+        {
+            tracing::debug!(error = %err, "AuthSuccess notification failed");
+        }
     }
 
     // Handle dispatching events from the CLI

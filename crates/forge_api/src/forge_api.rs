@@ -7,9 +7,9 @@ use forge_app::dto::ToolsOverview;
 use forge_app::{
     AgentProviderResolver, AgentRegistry, AppConfigService, AuthService, CommandInfra,
     CommandLoaderService, ConversationService, DataGenerationApp, EnvironmentInfra,
-    FileDiscoveryService, ForgeApp, GitApp, GrpcInfra, McpConfigManager, McpService,
-    PluginComponentsReloader, PluginLoader, ProviderAuthService, ProviderService, Services, User,
-    UserUsage, Walker, WorkspaceService,
+    FileDiscoveryService, ForgeApp, ForgeNotificationService, GitApp, GrpcInfra, McpConfigManager,
+    McpService, NotificationService, PluginComponentsReloader, PluginLoader, ProviderAuthService,
+    ProviderService, Services, User, UserUsage, Walker, WorkspaceService, fire_setup_hook,
 };
 use forge_config::ForgeConfig;
 use forge_domain::{Agent, ConsoleWriter, *};
@@ -449,6 +449,20 @@ impl<
 
     async fn reload_plugins(&self) -> Result<()> {
         self.services.reload_plugin_components().await
+    }
+
+    fn notification_service(&self) -> Arc<dyn NotificationService> {
+        // `ForgeNotificationService` is cheap to construct — it holds only
+        // an `Arc<S>` — so we construct a fresh instance per call instead
+        // of caching on `ForgeAPI`. This also sidesteps a storage-side
+        // circular-dependency problem where a cached
+        // `ForgeNotificationService<ForgeServices<...>>` would have to
+        // name the fully monomorphized services type at every callsite.
+        Arc::new(ForgeNotificationService::new(self.services.clone()))
+    }
+
+    async fn fire_setup_hook(&self, trigger: SetupTrigger) -> Result<()> {
+        fire_setup_hook(self.services.clone(), trigger).await
     }
 
     fn hydrate_channel(&self) -> Result<()> {
