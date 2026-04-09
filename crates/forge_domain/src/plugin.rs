@@ -246,10 +246,7 @@ mod tests {
     fn test_parse_minimal_manifest() {
         let json = r#"{ "name": "demo" }"#;
         let actual: PluginManifest = serde_json::from_str(json).unwrap();
-        let expected = PluginManifest {
-            name: Some("demo".to_string()),
-            ..Default::default()
-        };
+        let expected = PluginManifest { name: Some("demo".to_string()), ..Default::default() };
         assert_eq!(actual, expected);
     }
 

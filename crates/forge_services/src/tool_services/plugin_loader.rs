@@ -99,10 +99,7 @@ mod tests {
 
     impl MockPluginRepository {
         fn new(plugins: Vec<LoadedPlugin>) -> Self {
-            Self {
-                plugins: Mutex::new(plugins),
-                load_calls: Mutex::new(0),
-            }
+            Self { plugins: Mutex::new(plugins), load_calls: Mutex::new(0) }
         }
 
         fn load_call_count(&self) -> u32 {
@@ -130,10 +127,7 @@ mod tests {
         LoadedPlugin {
             name: name.to_string(),
             path: PathBuf::from(format!("/fake/{name}")),
-            manifest: PluginManifest {
-                name: Some(name.to_string()),
-                ..Default::default()
-            },
+            manifest: PluginManifest { name: Some(name.to_string()), ..Default::default() },
             source: PluginSource::Global,
             enabled: true,
             is_builtin: false,

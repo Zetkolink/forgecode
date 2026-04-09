@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use forge_app::domain::{
-    LoadedPlugin, McpServerConfig, PluginComponentPath, PluginHooksConfig, PluginHooksManifestField,
-    PluginManifest, PluginRepository, PluginSource,
+    LoadedPlugin, McpServerConfig, PluginComponentPath, PluginHooksConfig,
+    PluginHooksManifestField, PluginManifest, PluginRepository, PluginSource,
 };
 use forge_app::{DirectoryReaderInfra, EnvironmentInfra, FileInfoInfra, FileReaderInfra};
 use forge_config::PluginSetting;
@@ -77,9 +77,8 @@ where
     async fn load_plugins(&self) -> anyhow::Result<Vec<LoadedPlugin>> {
         let env = self.infra.get_environment();
         let config = self.infra.get_config().ok();
-        let plugin_settings: BTreeMap<String, PluginSetting> = config
-            .and_then(|cfg| cfg.plugins)
-            .unwrap_or_default();
+        let plugin_settings: BTreeMap<String, PluginSetting> =
+            config.and_then(|cfg| cfg.plugins).unwrap_or_default();
 
         // Scan global and project-local plugin roots in parallel.
         let global_root = env.plugin_path();
@@ -330,9 +329,7 @@ where
                     merged.push(cfg.raw);
                 }
             }
-            Some(PluginHooksConfig {
-                raw: serde_json::Value::Array(merged),
-            })
+            Some(PluginHooksConfig { raw: serde_json::Value::Array(merged) })
         }
     }
 }
@@ -456,10 +453,7 @@ mod tests {
     fn fixture_plugin(name: &str, source: PluginSource) -> LoadedPlugin {
         LoadedPlugin {
             name: name.to_string(),
-            manifest: PluginManifest {
-                name: Some(name.to_string()),
-                ..Default::default()
-            },
+            manifest: PluginManifest { name: Some(name.to_string()), ..Default::default() },
             path: PathBuf::from("/fake").join(name),
             source,
             enabled: true,
