@@ -342,6 +342,29 @@ pub enum HookSpecificOutput {
         #[serde(default, rename = "watchPaths")]
         watch_paths: Option<Vec<PathBuf>>,
     },
+    /// Plugin-driven output for a `PermissionRequest` event. Mirrors
+    /// Claude Code's wire shape (`claude-code/src/utils/hooks.ts:3480-3560`)
+    /// and is consumed by [`crate::AggregatedHookResult::merge`] inside
+    /// the permission fire site.
+    PermissionRequest {
+        #[serde(default, rename = "permissionDecision")]
+        permission_decision: Option<PermissionDecision>,
+        #[serde(default, rename = "permissionDecisionReason")]
+        permission_decision_reason: Option<String>,
+        #[serde(default, rename = "updatedInput")]
+        updated_input: Option<serde_json::Value>,
+        /// Updated permission scopes for tool/path — merged into
+        /// `AggregatedHookResult.updated_permissions` last-write-wins.
+        #[serde(default, rename = "updatedPermissions")]
+        updated_permissions: Option<serde_json::Value>,
+        /// If `true`, plugin requests an interactive session interrupt.
+        #[serde(default)]
+        interrupt: Option<bool>,
+        /// If `true`, plugin requests the caller to re-issue the
+        /// permission prompt (e.g. after refreshing credentials).
+        #[serde(default)]
+        retry: Option<bool>,
+    },
 }
 
 /// Permission decision returned by PreToolUse hooks.
@@ -509,6 +532,49 @@ mod tests {
                     assert_eq!(updated_mcp_tool_output.unwrap()["content"], "override");
                 }
                 other => panic!("expected PostToolUse specific output, got {other:?}"),
+            },
+            other => panic!("expected Sync variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_hook_output_sync_parses_permission_request_specific_output() {
+        // Wave E-1b: PermissionRequest hook output carries a permission
+        // decision, optional reason, updated_input/updated_permissions
+        // overrides, plus interrupt/retry signals.
+        let fixture = r#"{
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "permissionDecision": "allow",
+                "permissionDecisionReason": "plugin approved",
+                "updatedInput": {"command": "git status"},
+                "updatedPermissions": {"rules": ["Bash(git *)"]},
+                "interrupt": true,
+                "retry": false
+            }
+        }"#;
+        let actual: HookOutput = serde_json::from_str(fixture).unwrap();
+        match actual {
+            HookOutput::Sync(sync) => match sync.hook_specific_output {
+                Some(HookSpecificOutput::PermissionRequest {
+                    permission_decision,
+                    permission_decision_reason,
+                    updated_input,
+                    updated_permissions,
+                    interrupt,
+                    retry,
+                }) => {
+                    assert_eq!(permission_decision, Some(PermissionDecision::Allow));
+                    assert_eq!(
+                        permission_decision_reason.as_deref(),
+                        Some("plugin approved")
+                    );
+                    assert_eq!(updated_input.unwrap()["command"], "git status");
+                    assert_eq!(updated_permissions.unwrap()["rules"][0], "Bash(git *)");
+                    assert_eq!(interrupt, Some(true));
+                    assert_eq!(retry, Some(false));
+                }
+                other => panic!("expected PermissionRequest specific output, got {other:?}"),
             },
             other => panic!("expected Sync variant, got {other:?}"),
         }

@@ -388,6 +388,8 @@ mod tests {
 
     #[test]
     fn test_reset_hook_result_clears_aggregated_fields() {
+        use serde_json::json;
+
         use crate::{HookBlockingError, PermissionBehavior};
 
         let mut conversation = Conversation::generate();
@@ -398,12 +400,22 @@ mod tests {
             .hook_result
             .additional_contexts
             .push("ctx".to_string());
+        // Wave E-1b: the three new PermissionRequest fields must also be
+        // wiped by `reset_hook_result`. `AggregatedHookResult::default()`
+        // is what powers the reset, so this check effectively asserts
+        // that the new fields are included in the `Default` impl.
+        conversation.hook_result.updated_permissions = Some(json!({"rules": ["Bash(*)"]}));
+        conversation.hook_result.interrupt = true;
+        conversation.hook_result.retry = true;
 
         conversation.reset_hook_result();
 
         assert!(conversation.hook_result.blocking_error.is_none());
         assert!(conversation.hook_result.permission_behavior.is_none());
         assert!(conversation.hook_result.additional_contexts.is_empty());
+        assert!(conversation.hook_result.updated_permissions.is_none());
+        assert!(!conversation.hook_result.interrupt);
+        assert!(!conversation.hook_result.retry);
     }
 
     #[test]

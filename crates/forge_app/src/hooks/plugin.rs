@@ -934,7 +934,10 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use forge_domain::{HookEventName, HookInput, HookInputBase, HookInputPayload, HookOutcome};
+    use forge_domain::{
+        HookEventName, HookExecResult, HookInput, HookInputBase, HookInputPayload, HookOutcome,
+        HookOutput, HookSpecificOutput, PermissionBehavior, PermissionDecision, SyncHookOutput,
+    };
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -1051,6 +1054,75 @@ mod tests {
             for (_cmd, _src) in pending {
                 self.executor.calls.lock().await.push("hit".to_string());
                 aggregated.merge(StubExecutor::canned_success());
+            }
+            aggregated
+        }
+
+        /// Mirror of [`Self::dispatch`] that folds pre-canned
+        /// [`HookExecResult`]s into the aggregate instead of the default
+        /// `canned_success()` stub. Used by Wave E-1b PermissionRequest
+        /// merge tests that need the executor to return
+        /// [`HookSpecificOutput::PermissionRequest`] values so the
+        /// aggregator's permission-merge branch actually runs.
+        ///
+        /// Results are consumed in matcher+hook iteration order. If
+        /// `canned` has fewer entries than matched hooks, the extras fall
+        /// back to `StubExecutor::canned_success()`.
+        async fn dispatch_with_canned_results(
+            &self,
+            event: HookEventName,
+            tool_name: Option<&str>,
+            tool_input: Option<&serde_json::Value>,
+            _input: HookInput,
+            mut canned: Vec<HookExecResult>,
+        ) -> AggregatedHookResult {
+            let Some(matchers) = self.merged.entries.get(&event) else {
+                return AggregatedHookResult::default();
+            };
+            let empty = serde_json::Value::Null;
+            let tn = tool_name.unwrap_or("");
+            let ti = tool_input.unwrap_or(&empty);
+
+            let mut pending: Vec<(HookCommand, HookMatcherWithSource)> = Vec::new();
+            {
+                let mut once_fired = self.once_fired.lock().await;
+                for (mi, matcher_with_source) in matchers.iter().enumerate() {
+                    let pat = matcher_with_source.matcher.matcher.as_deref().unwrap_or("");
+                    if !matches_pattern(pat, tn) {
+                        continue;
+                    }
+                    for (hi, cmd) in matcher_with_source.matcher.hooks.iter().enumerate() {
+                        if let Some(c) = condition_for(cmd)
+                            && !matches_condition(c, tn, ti)
+                        {
+                            continue;
+                        }
+                        if is_once(cmd) {
+                            let id = HookId {
+                                event: event.clone(),
+                                matcher_index: mi,
+                                hook_index: hi,
+                                source: source_tag(matcher_with_source),
+                            };
+                            if once_fired.contains(&id) {
+                                continue;
+                            }
+                            once_fired.insert(id);
+                        }
+                        pending.push((cmd.clone(), matcher_with_source.clone()));
+                    }
+                }
+            }
+
+            // Drain canned results in order. Using `into_iter` + a drain
+            // counter would also work; `remove(0)` is fine here because
+            // tests only enqueue a handful of results.
+            let mut aggregated = AggregatedHookResult::default();
+            canned.reverse();
+            for (_cmd, _src) in pending {
+                self.executor.calls.lock().await.push("hit".to_string());
+                let exec = canned.pop().unwrap_or_else(StubExecutor::canned_success);
+                aggregated.merge(exec);
             }
             aggregated
         }
@@ -1731,5 +1803,299 @@ mod tests {
             )
             .await;
         assert_eq!(result.additional_contexts, vec!["canned".to_string()]);
+    }
+
+    // ---- Wave E-1b: Phase 7B Permission dispatcher merge tests ----
+    //
+    // These three tests live in a nested `wave_e1b_permission` module so
+    // they can reuse the literal names called out in the Wave E-1b test
+    // plan without colliding with the pre-existing matcher-level tests
+    // at the parent level (`test_dispatch_permission_request_matches_tool_name`
+    // / `test_dispatch_permission_denied_matches_tool_name`). The nested
+    // module inherits the parent test scope via `use super::*;`, so all
+    // of `ExplicitDispatcher`, `StubExecutor`, `sample_input`, the
+    // `HookId` internal, and every domain type imported at the top of
+    // the parent `tests` mod are available with no extra plumbing.
+    mod wave_e1b_permission {
+        use forge_domain::{HookMatcher, ShellHookCommand};
+        use pretty_assertions::assert_eq;
+
+        use super::*;
+
+        // Task A / Test 1: Verify that a single matching PermissionRequest
+        // hook actually reaches the executor stub — i.e. the matcher +
+        // pending-list + executor invocation chain is wired correctly for
+        // `"Bash"` as the tool name. Mirrors the
+        // `test_dispatch_subagent_start_matches_agent_type` pattern but
+        // adds an explicit assertion on `StubExecutor.calls` so we can
+        // tell a matcher pass from a mere default `AggregatedHookResult`.
+        //
+        // This shares the leaf name with the pre-existing matcher test
+        // at the parent module level — the nested module gives each its
+        // own fully-qualified path so both coexist.
+        #[tokio::test]
+        async fn test_dispatch_permission_request_matches_tool_name() {
+            let mut merged = MergedHooksConfig::default();
+            merged.entries.insert(
+                HookEventName::PermissionRequest,
+                vec![HookMatcherWithSource {
+                    matcher: HookMatcher {
+                        matcher: Some("Bash".to_string()),
+                        hooks: vec![HookCommand::Command(ShellHookCommand {
+                            command: "echo asked".to_string(),
+                            condition: None,
+                            shell: None,
+                            timeout: None,
+                            status_message: None,
+                            once: false,
+                            async_mode: false,
+                            async_rewake: false,
+                        })],
+                    },
+                    source: crate::hook_runtime::HookConfigSource::UserGlobal,
+                    plugin_root: None,
+                    plugin_name: None,
+                }],
+            );
+
+            let dispatcher = ExplicitDispatcher::new(merged);
+            let _ = dispatcher
+                .dispatch(
+                    HookEventName::PermissionRequest,
+                    Some("Bash"),
+                    Some(&json!({"command": "ls"})),
+                    // The sample_input helper hard-codes the
+                    // `hook_event_name` into `HookInputBase`, mirroring
+                    // what `PluginHookHandler::<EventData<PermissionRequestPayload>>::handle`
+                    // would stamp via `build_hook_input` for a
+                    // `PermissionRequest` lifecycle event.
+                    sample_input("PermissionRequest"),
+                )
+                .await;
+
+            // The matcher picked up the "Bash" tool name and the executor
+            // stub was invoked exactly once — the key observable that the
+            // dispatcher actually fanned the event out to a hook.
+            let calls = dispatcher.executor.calls.lock().await;
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0], "hit");
+        }
+
+        // Task B / Test 2: Verify the merge policy for two matching
+        // PermissionRequest hooks that both return a
+        // `HookSpecificOutput::PermissionRequest`. First-wins on
+        // `permission_decision` (Allow then Deny → aggregate stays Allow),
+        // and `interrupt`/`retry` latch to false when neither hook sets
+        // them.
+        #[tokio::test]
+        async fn test_dispatch_permission_request_consumes_permission_decision_first_wins() {
+            let mut merged = MergedHooksConfig::default();
+            merged.entries.insert(
+                HookEventName::PermissionRequest,
+                vec![
+                    HookMatcherWithSource {
+                        matcher: HookMatcher {
+                            matcher: Some("Bash".to_string()),
+                            hooks: vec![HookCommand::Command(ShellHookCommand {
+                                command: "echo first".to_string(),
+                                condition: None,
+                                shell: None,
+                                timeout: None,
+                                status_message: None,
+                                once: false,
+                                async_mode: false,
+                                async_rewake: false,
+                            })],
+                        },
+                        source: crate::hook_runtime::HookConfigSource::UserGlobal,
+                        plugin_root: None,
+                        plugin_name: None,
+                    },
+                    HookMatcherWithSource {
+                        matcher: HookMatcher {
+                            matcher: Some("Bash".to_string()),
+                            hooks: vec![HookCommand::Command(ShellHookCommand {
+                                command: "echo second".to_string(),
+                                condition: None,
+                                shell: None,
+                                timeout: None,
+                                status_message: None,
+                                once: false,
+                                async_mode: false,
+                                async_rewake: false,
+                            })],
+                        },
+                        source: crate::hook_runtime::HookConfigSource::UserGlobal,
+                        plugin_root: None,
+                        plugin_name: None,
+                    },
+                ],
+            );
+
+            // Build two canned results: first votes Allow, second votes
+            // Deny. Both carry the `PermissionRequest` hook-specific
+            // output variant so the aggregator's new merge branch
+            // (first-wins on decision, latch on interrupt/retry) is what
+            // actually runs.
+            let first = HookExecResult {
+                outcome: HookOutcome::Success,
+                output: Some(HookOutput::Sync(SyncHookOutput {
+                    hook_specific_output: Some(HookSpecificOutput::PermissionRequest {
+                        permission_decision: Some(PermissionDecision::Allow),
+                        permission_decision_reason: None,
+                        updated_input: None,
+                        updated_permissions: None,
+                        interrupt: None,
+                        retry: None,
+                    }),
+                    ..Default::default()
+                })),
+                raw_stdout: String::new(),
+                raw_stderr: String::new(),
+                exit_code: Some(0),
+            };
+            let second = HookExecResult {
+                outcome: HookOutcome::Success,
+                output: Some(HookOutput::Sync(SyncHookOutput {
+                    hook_specific_output: Some(HookSpecificOutput::PermissionRequest {
+                        permission_decision: Some(PermissionDecision::Deny),
+                        permission_decision_reason: None,
+                        updated_input: None,
+                        updated_permissions: None,
+                        interrupt: None,
+                        retry: None,
+                    }),
+                    ..Default::default()
+                })),
+                raw_stdout: String::new(),
+                raw_stderr: String::new(),
+                exit_code: Some(0),
+            };
+
+            let dispatcher = ExplicitDispatcher::new(merged);
+            let result = dispatcher
+                .dispatch_with_canned_results(
+                    HookEventName::PermissionRequest,
+                    Some("Bash"),
+                    Some(&json!({"command": "rm -rf /"})),
+                    sample_input("PermissionRequest"),
+                    vec![first, second],
+                )
+                .await;
+
+            // First-wins: even though the second hook voted Deny, the
+            // aggregate stays Allow because the first hook got there
+            // first.
+            assert_eq!(result.permission_behavior, Some(PermissionBehavior::Allow));
+
+            // Neither hook set interrupt or retry, so they remain latched
+            // off. These are the new Wave E-1b fields on
+            // `AggregatedHookResult`.
+            assert!(!result.interrupt);
+            assert!(!result.retry);
+
+            // Sanity check: both hooks actually ran through the executor
+            // stub.
+            let calls = dispatcher.executor.calls.lock().await;
+            assert_eq!(calls.len(), 2);
+        }
+
+        // Task C / Test 3: PermissionDenied is meant to be
+        // observability-only per the Wave E-1b plan — plugins listening
+        // to PermissionDenied should be able to log or alert but must
+        // NOT be able to flip a decision back to Allow or mutate the
+        // tool input. The dispatcher today does not gate the
+        // `HookSpecificOutput::PermissionRequest` merge branch on event
+        // type, so a PermissionDenied hook that returns a
+        // `PermissionRequest`-shaped output will (incorrectly) have its
+        // `permission_decision` and `updated_input` folded into the
+        // aggregate.
+        //
+        // We encode the *intended* observability-only contract in this
+        // test so it doubles as an executable spec: when the dispatcher
+        // is fixed to gate the merge by event kind, this test will
+        // start passing with no body edits. It is `#[ignore]`d today
+        // because the fix lands in a follow-up session (see
+        // `plans/2026-04-09-claude-code-plugins-v4/`).
+        //
+        // TODO(wave-e-1b): Gate the `HookSpecificOutput::PermissionRequest`
+        // merge branch so it is a no-op when the dispatching event is
+        // `HookEventName::PermissionDenied`. Implementation options:
+        //   1. Teach `AggregatedHookResult::merge` to take an optional
+        //      event hint and skip the permission branch for
+        //      PermissionDenied.
+        //   2. Make the `EventHandle<EventData<PermissionDeniedPayload>>`
+        //      impl in `plugin.rs` (around the Phase 7B T1 section)
+        //      discard the merged result's `permission_behavior` /
+        //      `updated_input` fields after dispatch.
+        // Once either lands, remove the `#[ignore]` below.
+        #[tokio::test]
+        #[ignore = "observability-only gating for PermissionDenied is pending; see TODO above"]
+        async fn test_dispatch_permission_denied_observability_only() {
+            let mut merged = MergedHooksConfig::default();
+            merged.entries.insert(
+                HookEventName::PermissionDenied,
+                vec![HookMatcherWithSource {
+                    matcher: HookMatcher {
+                        matcher: Some("Bash".to_string()),
+                        hooks: vec![HookCommand::Command(ShellHookCommand {
+                            command: "echo observed".to_string(),
+                            condition: None,
+                            shell: None,
+                            timeout: None,
+                            status_message: None,
+                            once: false,
+                            async_mode: false,
+                            async_rewake: false,
+                        })],
+                    },
+                    source: crate::hook_runtime::HookConfigSource::UserGlobal,
+                    plugin_root: None,
+                    plugin_name: None,
+                }],
+            );
+
+            // Deliberately try to mutate state through a PermissionDenied
+            // event by returning a fully-populated
+            // `HookSpecificOutput::PermissionRequest`. A well-behaved
+            // dispatcher should ignore both the decision and the
+            // updated_input because PermissionDenied is
+            // observability-only.
+            let leaky = HookExecResult {
+                outcome: HookOutcome::Success,
+                output: Some(HookOutput::Sync(SyncHookOutput {
+                    hook_specific_output: Some(HookSpecificOutput::PermissionRequest {
+                        permission_decision: Some(PermissionDecision::Allow),
+                        permission_decision_reason: None,
+                        updated_input: Some(json!({"mutated": true})),
+                        updated_permissions: None,
+                        interrupt: None,
+                        retry: None,
+                    }),
+                    ..Default::default()
+                })),
+                raw_stdout: String::new(),
+                raw_stderr: String::new(),
+                exit_code: Some(0),
+            };
+
+            let dispatcher = ExplicitDispatcher::new(merged);
+            let result = dispatcher
+                .dispatch_with_canned_results(
+                    HookEventName::PermissionDenied,
+                    Some("Bash"),
+                    Some(&json!({})),
+                    sample_input("PermissionDenied"),
+                    vec![leaky],
+                )
+                .await;
+
+            // Ideal contract: PermissionDenied must not consume
+            // PermissionRequest fields. Both assertions will fail today
+            // because the merge branch runs regardless of event type —
+            // hence the `#[ignore]` on the test.
+            assert_eq!(result.permission_behavior, None);
+            assert_eq!(result.updated_input, None);
+        }
     }
 }

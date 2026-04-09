@@ -13,6 +13,12 @@
 //!   relax a `Deny` or override an `Ask`.
 //! - **`updated_input`**: last-write-wins. Later hooks see the aggregate of
 //!   earlier ones, but the last one to set a value overwrites prior values.
+//! - **`updated_permissions`**: last-write-wins, mirrors `updated_input`.
+//!   Set by `PermissionRequest` hooks that want to mutate the persisted
+//!   permission scopes for a tool / file path tuple.
+//! - **`interrupt`** / **`retry`**: latch to `true` (OR across all hooks).
+//!   Once any `PermissionRequest` hook asks to interrupt or retry, the
+//!   flag stays on for the rest of the merge.
 //! - **`additional_contexts`** / **`system_messages`**: accumulated in
 //!   execution order.
 //! - **`watch_paths`**: accumulated; deduplication happens downstream.
@@ -60,6 +66,24 @@ pub struct AggregatedHookResult {
     pub watch_paths: Vec<PathBuf>,
     /// Override for an MCP tool's output, set by PostToolUse hooks.
     pub updated_mcp_tool_output: Option<serde_json::Value>,
+    /// Last-write-wins override of permission scopes set by a
+    /// `PermissionRequest` hook. When set, the orchestrator updates the
+    /// persisted permission config for the (tool_name, file_path) tuple.
+    /// Carries a plugin-defined JSON blob — Forge does not interpret the
+    /// contents here; the permission fire site in
+    /// `ToolRegistry::check_tool_permission` currently logs it and
+    /// defers the actual persistence step (see the TODO referenced in
+    /// `plans/2026-04-09-claude-code-plugins-v4/08-phase-7-t3-intermediate.md`).
+    pub updated_permissions: Option<serde_json::Value>,
+    /// Set to `true` when any `PermissionRequest` hook requested an
+    /// interactive session interrupt. Triggers the orchestrator's
+    /// interrupt handling after the permission decision resolves.
+    pub interrupt: bool,
+    /// Set to `true` when any `PermissionRequest` hook asked the
+    /// permission prompt to be re-issued (for example, after a
+    /// credential refresh). The orchestrator re-fires the permission
+    /// check rather than applying the current decision.
+    pub retry: bool,
 }
 
 impl AggregatedHookResult {
@@ -182,6 +206,40 @@ impl AggregatedHookResult {
                         self.watch_paths.extend(paths);
                     }
                 }
+                Some(HookSpecificOutput::PermissionRequest {
+                    permission_decision,
+                    updated_input,
+                    updated_permissions,
+                    interrupt,
+                    retry,
+                    permission_decision_reason: _,
+                }) => {
+                    // First-wins on permission_decision (mirrors PreToolUse).
+                    if self.permission_behavior.is_none()
+                        && let Some(pd) = permission_decision
+                    {
+                        self.permission_behavior = Some(match pd {
+                            PermissionDecision::Allow => PermissionBehavior::Allow,
+                            PermissionDecision::Deny => PermissionBehavior::Deny,
+                            PermissionDecision::Ask => PermissionBehavior::Ask,
+                        });
+                    }
+                    // Last-write-wins on updated_input.
+                    if let Some(input) = updated_input {
+                        self.updated_input = Some(input);
+                    }
+                    // Last-write-wins on updated_permissions.
+                    if let Some(perms) = updated_permissions {
+                        self.updated_permissions = Some(perms);
+                    }
+                    // Latch to true on interrupt / retry.
+                    if interrupt.unwrap_or(false) {
+                        self.interrupt = true;
+                    }
+                    if retry.unwrap_or(false) {
+                        self.retry = true;
+                    }
+                }
                 None => {}
             }
         }
@@ -285,6 +343,19 @@ mod tests {
         assert!(actual.initial_user_message.is_none());
         assert!(actual.watch_paths.is_empty());
         assert!(actual.updated_mcp_tool_output.is_none());
+        assert!(actual.updated_permissions.is_none());
+        assert!(!actual.interrupt);
+        assert!(!actual.retry);
+    }
+
+    /// Wave E-1b: sanity-check the `Default` impl zeroes the three new
+    /// `PermissionRequest` fields.
+    #[test]
+    fn test_aggregated_default_has_false_interrupt_and_retry() {
+        let actual = AggregatedHookResult::default();
+        assert!(!actual.interrupt);
+        assert!(!actual.retry);
+        assert!(actual.updated_permissions.is_none());
     }
 
     #[test]
@@ -323,6 +394,9 @@ mod tests {
             initial_user_message: Some("hi".to_string()),
             watch_paths: vec![PathBuf::from("/tmp")],
             updated_mcp_tool_output: Some(json!({"y": 2})),
+            updated_permissions: Some(json!({"rules": ["Bash(*)"]})),
+            interrupt: true,
+            retry: true,
         };
         let cloned = original.clone();
         assert_eq!(
@@ -470,6 +544,140 @@ mod tests {
         }));
 
         assert_eq!(agg.permission_behavior, Some(PermissionBehavior::Allow));
+    }
+
+    // ---- Wave E-1b: PermissionRequest merge tests ----
+
+    /// Two hooks vote Allow then Deny — first-wins, so the aggregate
+    /// stays Allow. Mirrors PreToolUse semantics.
+    #[test]
+    fn test_merge_permission_request_first_wins_on_decision() {
+        let mut agg = AggregatedHookResult::default();
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PermissionRequest {
+                permission_decision: Some(PermissionDecision::Allow),
+                permission_decision_reason: None,
+                updated_input: None,
+                updated_permissions: None,
+                interrupt: None,
+                retry: None,
+            }),
+            ..Default::default()
+        }));
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PermissionRequest {
+                permission_decision: Some(PermissionDecision::Deny),
+                permission_decision_reason: None,
+                updated_input: None,
+                updated_permissions: None,
+                interrupt: None,
+                retry: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert_eq!(agg.permission_behavior, Some(PermissionBehavior::Allow));
+    }
+
+    /// Two hooks both set `updated_permissions` — last-write-wins.
+    #[test]
+    fn test_merge_permission_request_last_wins_on_updated_permissions() {
+        let mut agg = AggregatedHookResult::default();
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PermissionRequest {
+                permission_decision: None,
+                permission_decision_reason: None,
+                updated_input: None,
+                updated_permissions: Some(json!({"rules": ["first"]})),
+                interrupt: None,
+                retry: None,
+            }),
+            ..Default::default()
+        }));
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PermissionRequest {
+                permission_decision: None,
+                permission_decision_reason: None,
+                updated_input: None,
+                updated_permissions: Some(json!({"rules": ["second"]})),
+                interrupt: None,
+                retry: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert_eq!(
+            agg.updated_permissions,
+            Some(json!({"rules": ["second"]}))
+        );
+    }
+
+    /// One hook sets `interrupt: true`, another `false`. Latch wins.
+    #[test]
+    fn test_merge_permission_request_latches_interrupt_to_true() {
+        let mut agg = AggregatedHookResult::default();
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PermissionRequest {
+                permission_decision: None,
+                permission_decision_reason: None,
+                updated_input: None,
+                updated_permissions: None,
+                interrupt: Some(true),
+                retry: None,
+            }),
+            ..Default::default()
+        }));
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PermissionRequest {
+                permission_decision: None,
+                permission_decision_reason: None,
+                updated_input: None,
+                updated_permissions: None,
+                interrupt: Some(false),
+                retry: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert!(agg.interrupt);
+    }
+
+    /// One hook sets `retry: true`, another `false`. Latch wins.
+    #[test]
+    fn test_merge_permission_request_latches_retry_to_true() {
+        let mut agg = AggregatedHookResult::default();
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PermissionRequest {
+                permission_decision: None,
+                permission_decision_reason: None,
+                updated_input: None,
+                updated_permissions: None,
+                interrupt: None,
+                retry: Some(true),
+            }),
+            ..Default::default()
+        }));
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PermissionRequest {
+                permission_decision: None,
+                permission_decision_reason: None,
+                updated_input: None,
+                updated_permissions: None,
+                interrupt: None,
+                retry: Some(false),
+            }),
+            ..Default::default()
+        }));
+
+        assert!(agg.retry);
     }
 
     #[test]
