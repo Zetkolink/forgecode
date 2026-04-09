@@ -107,10 +107,20 @@ impl ForgeAPI<ForgeServices<ForgeRepo<ForgeInfra>>, ForgeRepo<ForgeInfra>> {
         // cycle (the `Arc` doesn't exist until `Arc::new` returns).
         // This `init_elicitation_dispatcher` call closes that cycle
         // exactly once; until it runs, the dispatcher declines every
-        // request with a warn log. Wave F-2 will start invoking the
-        // dispatcher from the rmcp `ClientHandler::create_elicitation`
-        // impl in `forge_infra/src/mcp_client.rs`.
+        // request with a warn log.
         app.init_elicitation_dispatcher();
+
+        // Phase 8 Wave F-2: plumb the same dispatcher into
+        // `ForgeInfra`'s `ForgeMcpServer` slot so the rmcp
+        // `ClientHandler::create_elicitation` callback (implemented
+        // by `forge_infra::ForgeMcpHandler`) can route MCP
+        // server-initiated elicitation requests through the plugin
+        // hook pipeline. This must run AFTER
+        // `app.init_elicitation_dispatcher()` so the
+        // `ForgeElicitationDispatcher` inside the returned Arc has a
+        // live `Services` handle; otherwise every MCP elicitation
+        // would decline with a "called before init" warn log.
+        infra.init_elicitation_dispatcher(app.elicitation_dispatcher_arc());
 
         // Wave C Part 2: spin up the `ConfigWatcher` that feeds the
         // `ConfigChange` lifecycle hook. The watch paths are derived

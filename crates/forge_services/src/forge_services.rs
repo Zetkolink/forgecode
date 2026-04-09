@@ -262,6 +262,24 @@ impl<
     pub fn init_elicitation_dispatcher(self: &Arc<Self>) {
         self.elicitation_dispatcher.init(self.clone());
     }
+
+    /// Return a type-erased handle to the elicitation dispatcher so
+    /// it can be plumbed into [`forge_infra::ForgeInfra`] (which
+    /// doesn't know the concrete `ForgeServices<F>` type — and
+    /// shouldn't, to keep the `forge_infra` → `forge_app` dep graph
+    /// flowing in one direction).
+    ///
+    /// Wave F-2: used by `forge_api::ForgeAPI::init` to hand the
+    /// dispatcher to `ForgeMcpServer` via
+    /// `ForgeInfra::init_elicitation_dispatcher`, closing the loop
+    /// between the MCP client handler (which lives in `forge_infra`)
+    /// and the hook-fire pipeline (which lives in `forge_services`).
+    pub fn elicitation_dispatcher_arc(&self) -> Arc<dyn forge_app::ElicitationDispatcher>
+    where
+        ForgeServices<F>: forge_app::Services,
+    {
+        self.elicitation_dispatcher.clone()
+    }
 }
 
 impl<

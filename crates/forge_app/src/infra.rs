@@ -225,6 +225,7 @@ pub trait McpServerInfra: Send + Sync + 'static {
     type Client: McpClientInfra;
     async fn connect(
         &self,
+        server_name: &str,
         config: McpServerConfig,
         env_vars: &BTreeMap<String, String>,
         environment: &Environment,

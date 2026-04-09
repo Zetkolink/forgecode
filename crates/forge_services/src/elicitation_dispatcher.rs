@@ -4,10 +4,13 @@
 //! system first, then falls back to interactive UI when no plugin
 //! handles the request.
 //!
-//! Wave F-1 lands the hook short-circuit path. The interactive UI
-//! fallback is Wave F-2 — for now, non-hook-handled requests return
-//! [`ElicitationAction::Decline`] so the MCP server gets a well-formed
-//! response instead of hanging on a not-yet-implemented prompt.
+//! Wave F-1 landed the hook short-circuit path. Wave F-2 landed the
+//! interactive UI fallback — url-mode opens the browser and prompts
+//! the user for confirmation, form-mode renders a minimal terminal
+//! form keyed off the JSON schema's top-level `properties` map. Both
+//! interactive paths run inside `tokio::task::spawn_blocking` because
+//! [`forge_select::ForgeWidget`] is rustyline-based and blocks on
+//! stdin.
 //!
 //! # Why `OnceLock`?
 //!
@@ -31,6 +34,7 @@ use forge_app::{
     fire_elicitation_hook, fire_elicitation_result_hook,
 };
 use forge_domain::{AggregatedHookResult, PermissionBehavior};
+use serde_json::Value;
 
 /// Production [`ElicitationDispatcher`] that fires the `Elicitation`
 /// hook and short-circuits on plugin-provided auto-responses, falling
@@ -142,20 +146,38 @@ impl<S: Services + 'static> ElicitationDispatcher for ForgeElicitationDispatcher
             return response;
         }
 
-        // Step 3: no plugin short-circuit — fall back.
+        // Step 3: no plugin short-circuit — fall back to the
+        // interactive UI. Wave F-2 implements two modes:
         //
-        // TODO(wave-f-2-interactive-ui): Wave F-2 replaces this Decline
-        // with an interactive form (for form mode) or url-open prompt
-        // (for url mode) driven through `forge_select` under
-        // `spawn_blocking`. Until then, declining is the safest
-        // default: the MCP server gets a well-formed response and the
-        // user is not left staring at a hung tool call.
-        tracing::warn!(
-            server = %request.server_name,
-            "no plugin hook handled elicitation and interactive UI fallback is not yet implemented (Wave F-2); declining"
-        );
+        // - url mode (`request.url.is_some()`): open the URL in the
+        //   default browser via the `open` crate, then prompt the
+        //   user for a y/n confirmation so we know whether the flow
+        //   succeeded. Accept on yes → MCP server proceeds, Decline
+        //   on no → MCP server aborts the in-flight tool.
+        //
+        // - form mode (`request.url.is_none()`): iterate the JSON
+        //   schema's top-level `properties` map and prompt once per
+        //   property via [`forge_select::ForgeWidget`]. Returns the
+        //   collected values as a JSON object so the MCP server can
+        //   consume it as `CreateElicitationResult.content`.
+        //
+        // Both paths run inside `tokio::task::spawn_blocking` because
+        // `ForgeWidget` uses rustyline's blocking `DefaultEditor`,
+        // which must not be called from an async runtime task. On
+        // spawn-blocking failure (panic propagation) or cancellation,
+        // we fall back to Decline so the MCP server still gets a
+        // well-formed response.
+        let response = if let Some(url) = request.url.clone() {
+            run_url_mode(request.server_name.clone(), url).await
+        } else {
+            run_form_mode(
+                request.server_name.clone(),
+                request.message.clone(),
+                request.requested_schema.clone(),
+            )
+            .await
+        };
 
-        let response = ElicitationResponse { action: ElicitationAction::Decline, content: None };
         fire_elicitation_result_hook(
             services.clone(),
             request.server_name,
@@ -165,6 +187,209 @@ impl<S: Services + 'static> ElicitationDispatcher for ForgeElicitationDispatcher
         .await;
         response
     }
+}
+
+/// Url-mode fallback: open the elicitation URL in the default browser
+/// and prompt the user to confirm whether they completed the flow.
+///
+/// Runs browser-launch inside a `spawn_blocking` tick because
+/// [`open::that`] can block briefly while spawning the child process
+/// on some platforms. The confirmation prompt is a separate
+/// `spawn_blocking` call because `ForgeWidget::confirm().prompt()` is
+/// rustyline-backed and blocks on stdin. Both errors (browser-launch
+/// failure, stdin-read failure) degrade to Decline rather than
+/// propagating, so a headless or non-terminal session still returns a
+/// well-formed response to the MCP server.
+async fn run_url_mode(server_name: String, url: String) -> ElicitationResponse {
+    if let Err(err) = tokio::task::spawn_blocking({
+        let url = url.clone();
+        move || open::that(&url)
+    })
+    .await
+    {
+        tracing::warn!(
+            error = %err,
+            url = %url,
+            "failed to spawn open::that for elicitation URL"
+        );
+    } else {
+        tracing::info!(
+            server = %server_name,
+            url = %url,
+            "opened elicitation URL, prompting for confirmation"
+        );
+    }
+
+    let message = format!(
+        "Did you complete the authorization flow for MCP server '{}'?",
+        server_name
+    );
+    let confirmed = tokio::task::spawn_blocking(move || {
+        forge_select::ForgeWidget::confirm(message)
+            .with_default(false)
+            .prompt()
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false);
+
+    if confirmed {
+        ElicitationResponse {
+            action: ElicitationAction::Accept,
+            content: None,
+        }
+    } else {
+        ElicitationResponse {
+            action: ElicitationAction::Decline,
+            content: None,
+        }
+    }
+}
+
+/// Form-mode fallback: render the JSON schema as a minimal terminal
+/// form and collect the user's responses as a JSON object.
+///
+/// Wave F-2 Pass 1 implements the bare minimum renderer — it walks
+/// the top-level `properties` map and delegates each field to either
+/// [`forge_select::ForgeWidget::confirm`] (boolean) or
+/// [`forge_select::ForgeWidget::input`] (everything else). Enums,
+/// nested objects, arrays, required-field validation, and per-field
+/// description propagation from the rmcp typed schema variants are
+/// TODO(wave-g-form-renderer-polish). Non-object or `None` schemas
+/// Decline instead of presenting an empty form.
+async fn run_form_mode(
+    server_name: String,
+    message: String,
+    schema: Option<Value>,
+) -> ElicitationResponse {
+    let Some(schema) = schema else {
+        tracing::warn!(
+            server = %server_name,
+            "form-mode elicitation called with no schema; declining"
+        );
+        return ElicitationResponse {
+            action: ElicitationAction::Decline,
+            content: None,
+        };
+    };
+
+    let form_result = tokio::task::spawn_blocking(move || {
+        render_schema_form(&server_name, &message, &schema)
+    })
+    .await;
+
+    match form_result {
+        Ok(Ok(content)) => ElicitationResponse {
+            action: ElicitationAction::Accept,
+            content: Some(content),
+        },
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, "form-mode renderer errored; declining");
+            ElicitationResponse {
+                action: ElicitationAction::Decline,
+                content: None,
+            }
+        }
+        Err(join_err) => {
+            tracing::warn!(
+                error = %join_err,
+                "form-mode spawn_blocking task was cancelled or panicked; declining"
+            );
+            ElicitationResponse {
+                action: ElicitationAction::Decline,
+                content: None,
+            }
+        }
+    }
+}
+
+/// Render a JSON schema as a minimal terminal form and return the
+/// collected values as a JSON object.
+///
+/// Wave F-2 Pass 1 walks only the top-level `properties` map. For
+/// each property, the type discriminator decides which widget to use:
+///
+/// - `"boolean"` → [`forge_select::ForgeWidget::confirm`]
+/// - everything else → [`forge_select::ForgeWidget::input`] (string)
+///
+/// The prompt text prefers the property's `description` field, falling
+/// back to the property name. Missing or cancelled input becomes an
+/// empty string / `false`; a bailing EOF (Ctrl-D) for any field will
+/// leave that field empty but the form still proceeds so the MCP
+/// server can decide whether partial data is acceptable.
+///
+/// Returns a JSON `Value::Object` so the caller can wrap it directly
+/// into `CreateElicitationResult.content`.
+fn render_schema_form(
+    server_name: &str,
+    message: &str,
+    schema: &Value,
+) -> anyhow::Result<Value> {
+    use forge_select::ForgeWidget;
+
+    eprintln!();
+    eprintln!(
+        "MCP server '{}' is requesting the following input:",
+        server_name
+    );
+    eprintln!("  {}", message);
+    eprintln!();
+
+    let mut result = serde_json::Map::new();
+
+    if let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) {
+        for (key, prop_schema) in properties {
+            let description = prop_schema
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or(key.as_str())
+                .to_string();
+
+            let prop_type = prop_schema
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("string");
+
+            match prop_type {
+                "boolean" => {
+                    let default = prop_schema
+                        .get("default")
+                        .and_then(|d| d.as_bool())
+                        .unwrap_or(false);
+                    let value = ForgeWidget::confirm(description)
+                        .with_default(default)
+                        .prompt()
+                        .ok()
+                        .flatten()
+                        .unwrap_or(default);
+                    result.insert(key.clone(), Value::Bool(value));
+                }
+                _ => {
+                    // TODO(wave-g-form-renderer-polish): handle
+                    // number/integer/enum with typed widgets rather
+                    // than round-tripping everything through string
+                    // input. For now, the MCP server is responsible
+                    // for parsing the string back into its wire type.
+                    let value = ForgeWidget::input(description)
+                        .allow_empty(true)
+                        .prompt()
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
+                    result.insert(key.clone(), Value::String(value));
+                }
+            }
+        }
+    } else {
+        tracing::warn!(
+            server = %server_name,
+            "elicitation schema has no top-level `properties` map; returning empty form data"
+        );
+    }
+
+    Ok(Value::Object(result))
 }
 
 /// Pure function that inspects an [`AggregatedHookResult`] for a

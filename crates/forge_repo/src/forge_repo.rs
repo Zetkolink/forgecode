@@ -464,11 +464,14 @@ where
 
     async fn connect(
         &self,
+        server_name: &str,
         config: McpServerConfig,
         env_vars: &BTreeMap<String, String>,
         environment: &Environment,
     ) -> anyhow::Result<F::Client> {
-        self.infra.connect(config, env_vars, environment).await
+        self.infra
+            .connect(server_name, config, env_vars, environment)
+            .await
     }
 }
 
