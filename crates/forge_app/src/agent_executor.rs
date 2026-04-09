@@ -145,10 +145,13 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> AgentEx
         // dispatching so we observe only this event's aggregated
         // output.
         conversation.reset_hook_result();
-        if let Err(err) = <PluginHookHandler<S> as EventHandle<
-            EventData<SubagentStartPayload>,
-        >>::handle(&self.plugin_handler, &start_event_data, &mut conversation)
-        .await
+        if let Err(err) =
+            <PluginHookHandler<S> as EventHandle<EventData<SubagentStartPayload>>>::handle(
+                &self.plugin_handler,
+                &start_event_data,
+                &mut conversation,
+            )
+            .await
         {
             tracing::warn!(error = ?err, "SubagentStart hook dispatch failed");
         }
@@ -176,8 +179,11 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> AgentEx
         // land in Pass 2 / Wave G; the fallback keeps Pass 1 simple
         // and robust against the `SystemPrompt::add_system_message`
         // overwrite that happens inside `ForgeApp::chat`.
-        let extra_contexts: Vec<String> =
-            conversation.hook_result.additional_contexts.drain(..).collect();
+        let extra_contexts: Vec<String> = conversation
+            .hook_result
+            .additional_contexts
+            .drain(..)
+            .collect();
         let effective_task: String = if extra_contexts.is_empty() {
             task.clone()
         } else {

@@ -76,8 +76,8 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
     /// `PluginHookHandler::build_hook_input`, and updating every
     /// fire site in `orch.rs` that currently destructures the
     /// 3-tuple from this helper. See
-    /// `plans/2026-04-09-claude-code-plugins-v4/08-phase-7-t3-intermediate.md:97-102`
-    /// for the original design note. Wave E-1a Pass 1 ships the
+    /// `plans/2026-04-09-claude-code-plugins-v4/08-phase-7-t3-intermediate.md:
+    /// 97-102` for the original design note. Wave E-1a Pass 1 ships the
     /// explicit `SubagentStart` / `SubagentStop` fire sites at the
     /// executor boundary — those carry the subagent UUID directly
     /// inside the payload so plugins that need to distinguish
