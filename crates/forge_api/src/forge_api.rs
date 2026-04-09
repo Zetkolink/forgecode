@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,25 +11,40 @@ use forge_app::{
     McpService, NotificationService, PluginComponentsReloader, PluginLoader, ProviderAuthService,
     ProviderService, Services, User, UserUsage, Walker, WorkspaceService, fire_setup_hook,
 };
-use forge_config::ForgeConfig;
+use forge_config::{ConfigReader, ForgeConfig};
 use forge_domain::{Agent, ConsoleWriter, *};
 use forge_infra::ForgeInfra;
 use forge_repo::ForgeRepo;
-use forge_services::ForgeServices;
+use forge_services::{ForgeServices, RecursiveMode};
 use forge_stream::MpscStream;
 use futures::stream::BoxStream;
+use tracing::warn;
 use url::Url;
 
+use crate::config_watcher_handle::ConfigWatcherHandle;
 use crate::API;
 
 pub struct ForgeAPI<S, F> {
     services: Arc<S>,
     infra: Arc<F>,
+    /// Background filesystem watcher that fires the `ConfigChange`
+    /// lifecycle hook when Forge's config files / plugin directory
+    /// change on disk. `None` when construction failed or the
+    /// watcher was disabled (e.g. unit tests). Prefixed with an
+    /// underscore because the field is kept alive purely for the
+    /// inner `Arc<ConfigWatcher>`'s `Drop` impl — nothing reads
+    /// the field directly on the generic `impl<A, F>` block.
+    ///
+    /// The concrete `init` path also exposes a clone of this handle
+    /// to internal call sites (e.g. `set_plugin_enabled`) via
+    /// [`ForgeAPI::mark_config_write`] so Forge's own writes can be
+    /// suppressed within the 5-second internal-write window.
+    _config_watcher: Option<ConfigWatcherHandle>,
 }
 
 impl<A, F> ForgeAPI<A, F> {
     pub fn new(services: Arc<A>, infra: Arc<F>) -> Self {
-        Self { services, infra }
+        Self { services, infra, _config_watcher: None }
     }
 
     /// Creates a ForgeApp instance with the current services and latest config.
@@ -53,7 +68,47 @@ impl ForgeAPI<ForgeServices<ForgeRepo<ForgeInfra>>, ForgeRepo<ForgeInfra>> {
         let infra = Arc::new(ForgeInfra::new(cwd, config, services_url));
         let repo = Arc::new(ForgeRepo::new(infra.clone()));
         let app = Arc::new(ForgeServices::new(repo.clone()));
-        ForgeAPI::new(app, repo)
+
+        // Wave C Part 2: spin up the `ConfigWatcher` that feeds the
+        // `ConfigChange` lifecycle hook. The watch paths are derived
+        // from the live `Environment`:
+        //
+        // - `base_path` (NonRecursive) covers `~/forge/.forge.toml`
+        //   and any other top-level config files that sit directly
+        //   inside the Forge config directory.
+        // - `plugin_path` (Recursive) covers `~/forge/plugins/**` so
+        //   any add/remove/edit inside an installed plugin fires a
+        //   `ConfigChange { source: Plugins, .. }` event.
+        //
+        // The watcher itself skips paths that do not exist yet
+        // (logged at `debug!`), so we can blindly include
+        // `plugin_path()` even on a fresh install.
+        let environment = app.get_environment();
+        let watch_paths: Vec<(PathBuf, RecursiveMode)> = vec![
+            (environment.base_path.clone(), RecursiveMode::NonRecursive),
+            (environment.plugin_path(), RecursiveMode::Recursive),
+        ];
+
+        // Build the watcher handle. On construction failure we log a
+        // warning and fall back to `None` so the API still boots —
+        // `ConfigChange` is an observability event, not a correctness
+        // event, so losing it must not be fatal.
+        let config_watcher = match ConfigWatcherHandle::spawn(app.clone(), watch_paths) {
+            Ok(handle) => Some(handle),
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "failed to start ConfigWatcher; ConfigChange hooks will be disabled"
+                );
+                None
+            }
+        };
+
+        ForgeAPI {
+            services: app,
+            infra: repo,
+            _config_watcher: config_watcher,
+        }
     }
 
     pub async fn get_skills_internal(&self) -> Result<Vec<Skill>> {
@@ -443,6 +498,16 @@ impl<
             .entry(name.to_string())
             .or_insert_with(|| PluginSetting { enabled: true });
         entry.enabled = enabled;
+
+        // Wave C Part 2: mark this write as internal *before* the
+        // actual `fc.write()?` so the `ConfigWatcher` debouncer
+        // callback ignores the resulting filesystem event. Without
+        // this suppression every `/plugin enable` / `/plugin disable`
+        // would round-trip through the `ConfigChange` plugin hook
+        // with `source: UserSettings`.
+        let config_path = ConfigReader::config_path();
+        self.mark_config_write(&config_path);
+
         fc.write()?;
         Ok(())
     }
@@ -463,6 +528,12 @@ impl<
 
     async fn fire_setup_hook(&self, trigger: SetupTrigger) -> Result<()> {
         fire_setup_hook(self.services.clone(), trigger).await
+    }
+
+    fn mark_config_write(&self, path: &Path) {
+        if let Some(ref watcher) = self._config_watcher {
+            watcher.mark_internal_write(path);
+        }
     }
 
     fn hydrate_channel(&self) -> Result<()> {

@@ -1,7 +1,9 @@
 mod api;
+mod config_watcher_handle;
 mod forge_api;
 
 pub use api::*;
+pub use config_watcher_handle::ConfigWatcherHandle;
 pub use forge_api::*;
 pub use forge_app::dto::*;
 pub use forge_app::{Plan, UsageInfo, UserUsage};

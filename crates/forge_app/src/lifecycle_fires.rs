@@ -28,12 +28,13 @@
 //! conversation is discarded immediately after the dispatch.
 
 use std::io::{self, IsTerminal, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use forge_domain::{
-    Agent, Conversation, ConversationId, EventData, EventHandle, ModelId, NotificationPayload,
-    SetupPayload, SetupTrigger,
+    Agent, ConfigChangePayload, ConfigSource, Conversation, ConversationId, EventData, EventHandle,
+    ModelId, NotificationPayload, SetupPayload, SetupTrigger,
 };
 use tracing::{debug, warn};
 
@@ -257,6 +258,99 @@ pub async fn fire_setup_hook<S: Services>(
     }
 
     Ok(())
+}
+
+/// Fire the `ConfigChange` lifecycle event for a debounced config
+/// file/directory change.
+///
+/// Used by `ForgeAPI` as the out-of-orchestrator entry point for the
+/// `ConfigWatcher` service (Wave C Part 1). The watcher hands us a
+/// classified [`ConfigSource`] and absolute `file_path`; we wrap them
+/// in a [`ConfigChangePayload`] and dispatch through
+/// [`PluginHookHandler`] on a scratch [`Conversation`].
+///
+/// Per the trait documentation in `services.rs:538-540`, ConfigChange
+/// is an observability-only event — hook dispatcher errors are soft
+/// failures (logged at `warn!`) and any `blocking_error` on the
+/// aggregated result is drained and discarded. Config changes can
+/// fire at any time (including from a background watcher thread),
+/// long after the triggering conversation is gone, so there is
+/// nothing to block.
+///
+/// This function is safe to call even when no plugins are configured:
+/// the hook dispatcher returns an empty result which is then drained.
+pub async fn fire_config_change_hook<S: Services>(
+    services: Arc<S>,
+    source: ConfigSource,
+    file_path: Option<PathBuf>,
+) {
+    use crate::services::AgentRegistry;
+
+    // Resolve an agent for the event context. ConfigChange fires
+    // out-of-band (from a background filesystem watcher) so there is
+    // no live Conversation bound to an agent — we use the active
+    // agent if set, otherwise the first registered agent. If the
+    // registry is empty, skip the fire entirely.
+    let agent = if let Ok(Some(active_id)) = services.get_active_agent_id().await {
+        match services.get_agent(&active_id).await {
+            Ok(Some(agent)) => Some(agent),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let agent = match agent {
+        Some(a) => a,
+        None => match services.get_agents().await.ok().and_then(|a| a.into_iter().next()) {
+            Some(a) => a,
+            None => {
+                debug!("no agent available — skipping ConfigChange hook fire");
+                return;
+            }
+        },
+    };
+    let model_id: ModelId = agent.model.clone();
+
+    let environment = services.get_environment();
+    // Scratch conversation — ConfigChange fires out-of-band from a
+    // background watcher thread, so there is no live Conversation to
+    // update. The resulting hook_result is drained and discarded
+    // below.
+    let mut scratch = Conversation::new(ConversationId::generate());
+    let session_id = scratch.id.into_string();
+    let transcript_path = environment.transcript_path(&session_id);
+    let cwd = environment.cwd.clone();
+
+    let payload = ConfigChangePayload { source, file_path };
+    let event =
+        EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+
+    let plugin_handler = PluginHookHandler::new(services.clone());
+    if let Err(err) = <PluginHookHandler<S> as EventHandle<EventData<ConfigChangePayload>>>::handle(
+        &plugin_handler,
+        &event,
+        &mut scratch,
+    )
+    .await
+    {
+        warn!(
+            source = ?source,
+            error = %err,
+            "failed to dispatch ConfigChange hook; ignoring per Claude Code semantics"
+        );
+    }
+
+    // Drain and explicitly ignore the blocking_error. ConfigChange is
+    // observability-only — the watcher callback runs asynchronously
+    // on a background thread with no conversation to block against.
+    let aggregated = std::mem::take(&mut scratch.hook_result);
+    if let Some(err) = aggregated.blocking_error {
+        debug!(
+            source = ?source,
+            error = %err.message,
+            "ConfigChange hook returned blocking_error; ignoring (observability only)"
+        );
+    }
 }
 
 #[cfg(test)]
