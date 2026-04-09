@@ -149,17 +149,16 @@ impl<S: Services + 'static> ElicitationDispatcher for ForgeElicitationDispatcher
         // Step 3: no plugin short-circuit — fall back to the
         // interactive UI. Wave F-2 implements two modes:
         //
-        // - url mode (`request.url.is_some()`): open the URL in the
-        //   default browser via the `open` crate, then prompt the
-        //   user for a y/n confirmation so we know whether the flow
-        //   succeeded. Accept on yes → MCP server proceeds, Decline
-        //   on no → MCP server aborts the in-flight tool.
+        // - url mode (`request.url.is_some()`): open the URL in the default browser via
+        //   the `open` crate, then prompt the user for a y/n confirmation so we know
+        //   whether the flow succeeded. Accept on yes → MCP server proceeds, Decline on
+        //   no → MCP server aborts the in-flight tool.
         //
-        // - form mode (`request.url.is_none()`): iterate the JSON
-        //   schema's top-level `properties` map and prompt once per
-        //   property via [`forge_select::ForgeWidget`]. Returns the
-        //   collected values as a JSON object so the MCP server can
-        //   consume it as `CreateElicitationResult.content`.
+        // - form mode (`request.url.is_none()`): iterate the JSON schema's top-level
+        //   `properties` map and prompt once per property via
+        //   [`forge_select::ForgeWidget`]. Returns the collected values as a JSON
+        //   object so the MCP server can consume it as
+        //   `CreateElicitationResult.content`.
         //
         // Both paths run inside `tokio::task::spawn_blocking` because
         // `ForgeWidget` uses rustyline's blocking `DefaultEditor`,
@@ -236,15 +235,9 @@ async fn run_url_mode(server_name: String, url: String) -> ElicitationResponse {
     .unwrap_or(false);
 
     if confirmed {
-        ElicitationResponse {
-            action: ElicitationAction::Accept,
-            content: None,
-        }
+        ElicitationResponse { action: ElicitationAction::Accept, content: None }
     } else {
-        ElicitationResponse {
-            action: ElicitationAction::Decline,
-            content: None,
-        }
+        ElicitationResponse { action: ElicitationAction::Decline, content: None }
     }
 }
 
@@ -269,38 +262,27 @@ async fn run_form_mode(
             server = %server_name,
             "form-mode elicitation called with no schema; declining"
         );
-        return ElicitationResponse {
-            action: ElicitationAction::Decline,
-            content: None,
-        };
+        return ElicitationResponse { action: ElicitationAction::Decline, content: None };
     };
 
-    let form_result = tokio::task::spawn_blocking(move || {
-        render_schema_form(&server_name, &message, &schema)
-    })
-    .await;
+    let form_result =
+        tokio::task::spawn_blocking(move || render_schema_form(&server_name, &message, &schema))
+            .await;
 
     match form_result {
-        Ok(Ok(content)) => ElicitationResponse {
-            action: ElicitationAction::Accept,
-            content: Some(content),
-        },
+        Ok(Ok(content)) => {
+            ElicitationResponse { action: ElicitationAction::Accept, content: Some(content) }
+        }
         Ok(Err(err)) => {
             tracing::warn!(error = %err, "form-mode renderer errored; declining");
-            ElicitationResponse {
-                action: ElicitationAction::Decline,
-                content: None,
-            }
+            ElicitationResponse { action: ElicitationAction::Decline, content: None }
         }
         Err(join_err) => {
             tracing::warn!(
                 error = %join_err,
                 "form-mode spawn_blocking task was cancelled or panicked; declining"
             );
-            ElicitationResponse {
-                action: ElicitationAction::Decline,
-                content: None,
-            }
+            ElicitationResponse { action: ElicitationAction::Decline, content: None }
         }
     }
 }
@@ -322,11 +304,7 @@ async fn run_form_mode(
 ///
 /// Returns a JSON `Value::Object` so the caller can wrap it directly
 /// into `CreateElicitationResult.content`.
-fn render_schema_form(
-    server_name: &str,
-    message: &str,
-    schema: &Value,
-) -> anyhow::Result<Value> {
+fn render_schema_form(server_name: &str, message: &str, schema: &Value) -> anyhow::Result<Value> {
     use forge_select::ForgeWidget;
 
     eprintln!();

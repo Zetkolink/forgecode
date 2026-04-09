@@ -13,12 +13,12 @@
 //! A [`ForgeMcpHandler`] is constructed once per `.serve(transport)`
 //! call site in `mcp_client.rs`. The handler owns:
 //!
-//! - `server_name: String` — used as the hook matcher so plugins can
-//!   target specific MCP servers in their hook configs.
-//! - `dispatcher: Arc<dyn ElicitationDispatcher>` — the process-wide
-//!   dispatcher produced by `ForgeServices::elicitation_dispatcher()`
-//!   and plumbed through [`crate::ForgeInfra::init_elicitation_dispatcher`]
-//!   from `forge_api::ForgeAPI::init`.
+//! - `server_name: String` — used as the hook matcher so plugins can target
+//!   specific MCP servers in their hook configs.
+//! - `dispatcher: Arc<dyn ElicitationDispatcher>` — the process-wide dispatcher
+//!   produced by `ForgeServices::elicitation_dispatcher()` and plumbed through
+//!   [`crate::ForgeInfra::init_elicitation_dispatcher`] from
+//!   `forge_api::ForgeAPI::init`.
 //!
 //! # Graceful degradation when dispatcher is absent
 //!
@@ -142,8 +142,7 @@ impl ClientHandler for ForgeMcpHandler {
             // On serialization failure (should never happen — the
             // type implements `Serialize`), fall through with an
             // empty schema rather than erroring.
-            let requested_schema =
-                serde_json::to_value(&request.requested_schema).ok();
+            let requested_schema = serde_json::to_value(&request.requested_schema).ok();
 
             let forge_request = ElicitationRequest {
                 server_name: self.server_name.clone(),
@@ -177,7 +176,7 @@ impl ClientHandler for ForgeMcpHandler {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use forge_app::{ElicitationResponse, ElicitationDispatcher as _};
+    use forge_app::ElicitationResponse;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -200,10 +199,7 @@ mod tests {
     #[test]
     fn test_get_info_advertises_elicitation_capability() {
         let dispatcher: Arc<dyn ElicitationDispatcher> = Arc::new(StubDispatcher {
-            response: ElicitationResponse {
-                action: ElicitationAction::Decline,
-                content: None,
-            },
+            response: ElicitationResponse { action: ElicitationAction::Decline, content: None },
         });
         let handler = ForgeMcpHandler::new("test-server".to_string(), dispatcher);
 

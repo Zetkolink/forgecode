@@ -10,13 +10,12 @@ use forge_domain::{
     Environment, Image, McpHttpServer, McpServerConfig, ToolDefinition, ToolName, ToolOutput,
 };
 use http::{HeaderName, HeaderValue, header};
-use rmcp::RoleClient;
 use rmcp::model::CallToolRequestParam;
 use rmcp::service::RunningService;
 use rmcp::transport::sse_client::SseClientConfig;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{SseClientTransport, StreamableHttpClientTransport, TokioChildProcess};
-use rmcp::{ServiceExt};
+use rmcp::{RoleClient, ServiceExt};
 use schemars::Schema;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -102,9 +101,7 @@ impl ForgeMcpClient {
     /// instance — rmcp consumes the handler by value during `serve`.
     fn build_handler(&self) -> ForgeMcpHandler {
         match self.elicitation_dispatcher.get() {
-            Some(dispatcher) => {
-                ForgeMcpHandler::new(self.server_name.clone(), dispatcher.clone())
-            }
+            Some(dispatcher) => ForgeMcpHandler::new(self.server_name.clone(), dispatcher.clone()),
             None => {
                 tracing::debug!(
                     server = %self.server_name,
