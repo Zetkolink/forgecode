@@ -2095,5 +2095,79 @@ mod tests {
             assert_eq!(result.permission_behavior, None);
             assert_eq!(result.updated_input, None);
         }
+
+        // ---- Wave E-2c-i: WorktreeCreate dispatcher test ----
+
+        /// A `WorktreeCreate` hook returning a `worktreePath` override
+        /// must have its path folded into
+        /// `AggregatedHookResult.worktree_path` via the aggregator's
+        /// last-write-wins merge branch. This is the end-to-end
+        /// dispatcher proof that the new
+        /// [`forge_domain::HookSpecificOutput::WorktreeCreate`] variant
+        /// round-trips through the plugin handler's merge policy.
+        #[tokio::test]
+        async fn test_dispatch_worktree_create_merges_worktree_path_override() {
+            use forge_domain::{HookMatcher, ShellHookCommand};
+            let mut merged = MergedHooksConfig::default();
+            merged.entries.insert(
+                HookEventName::WorktreeCreate,
+                vec![HookMatcherWithSource {
+                    matcher: HookMatcher {
+                        matcher: Some("feature-auth".to_string()),
+                        hooks: vec![HookCommand::Command(ShellHookCommand {
+                            command: "echo override".to_string(),
+                            condition: None,
+                            shell: None,
+                            timeout: None,
+                            status_message: None,
+                            once: false,
+                            async_mode: false,
+                            async_rewake: false,
+                        })],
+                    },
+                    source: crate::hook_runtime::HookConfigSource::UserGlobal,
+                    plugin_root: None,
+                    plugin_name: None,
+                }],
+            );
+
+            // Canned result: the stub executor will return a sync
+            // hook output carrying a plugin-provided worktreePath
+            // override. The aggregator's
+            // `HookSpecificOutput::WorktreeCreate` merge branch must
+            // fold this into `AggregatedHookResult.worktree_path`.
+            let expected = PathBuf::from("/tmp/wt/plugin-override");
+            let canned = HookExecResult {
+                outcome: HookOutcome::Success,
+                output: Some(HookOutput::Sync(SyncHookOutput {
+                    hook_specific_output: Some(HookSpecificOutput::WorktreeCreate {
+                        worktree_path: Some(expected.clone()),
+                    }),
+                    ..Default::default()
+                })),
+                raw_stdout: String::new(),
+                raw_stderr: String::new(),
+                exit_code: Some(0),
+            };
+
+            let dispatcher = ExplicitDispatcher::new(merged);
+            let result = dispatcher
+                .dispatch_with_canned_results(
+                    HookEventName::WorktreeCreate,
+                    Some("feature-auth"),
+                    None,
+                    sample_input("WorktreeCreate"),
+                    vec![canned],
+                )
+                .await;
+
+            assert_eq!(result.worktree_path, Some(expected));
+            assert!(result.blocking_error.is_none());
+
+            // Sanity check: the hook actually ran through the
+            // executor stub.
+            let calls = dispatcher.executor.calls.lock().await;
+            assert_eq!(calls.len(), 1);
+        }
     }
 }

@@ -64,6 +64,19 @@ impl<A, F> ForgeAPI<A, F> {
         }
     }
 
+    /// Returns a clone of the internal services `Arc`.
+    ///
+    /// Used by the `--worktree` CLI flag handler in
+    /// `crates/forge_main/src/main.rs` to fire the
+    /// `WorktreeCreate` plugin hook via
+    /// [`forge_app::fire_worktree_create_hook`] before the main
+    /// orchestrator run begins. The services Arc is shared across
+    /// the whole API — cloning it here is the same
+    /// reference-counted clone the internal `app()` helper uses.
+    pub fn services(&self) -> Arc<A> {
+        self.services.clone()
+    }
+
     /// Creates a ForgeApp instance with the current services and latest config.
     fn app(&self) -> ForgeApp<A>
     where

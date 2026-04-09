@@ -33,9 +33,10 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use forge_domain::{
-    Agent, ConfigChangePayload, ConfigSource, Conversation, ConversationId, EventData, EventHandle,
-    FileChangeEvent, FileChangedPayload, InstructionsLoadedPayload, LoadedInstructions, ModelId,
-    NotificationPayload, SetupPayload, SetupTrigger,
+    Agent, AggregatedHookResult, ConfigChangePayload, ConfigSource, Conversation, ConversationId,
+    EventData, EventHandle, FileChangeEvent, FileChangedPayload, InstructionsLoadedPayload,
+    LoadedInstructions, ModelId, NotificationPayload, SetupPayload, SetupTrigger,
+    WorktreeCreatePayload,
 };
 use notify_debouncer_full::notify::RecursiveMode;
 use tracing::{debug, warn};
@@ -660,6 +661,100 @@ pub async fn fire_instructions_loaded_hook<S: Services>(
             "InstructionsLoaded hook returned blocking_error; ignoring (observability only)"
         );
     }
+}
+
+/// Fire the `WorktreeCreate` lifecycle event with the given worktree
+/// name and return the aggregated hook result.
+///
+/// Used by `crates/forge_main/src/sandbox.rs` as the out-of-orchestrator
+/// entry point for the `--worktree` CLI flag. Unlike the other fire
+/// helpers in this module (which discard the aggregated result because
+/// their events are observability-only), this one **returns** the
+/// aggregate so the caller can consume:
+///
+/// - `worktree_path` — a plugin-provided path override that the caller
+///   should use instead of running `git worktree add`.
+/// - `blocking_error` — a plugin veto of the worktree creation
+///   altogether. The caller is expected to surface this as an error.
+/// - `additional_contexts` / `system_messages` — pre-creation reminders
+///   that a future runtime `EnterWorktreeTool` fire site can forward
+///   into the conversation.
+///
+/// Dispatch failures are handled fail-open: any error from the hook
+/// plumbing is logged at `tracing::warn` and an empty
+/// `AggregatedHookResult` is returned, so the caller falls back to the
+/// built-in `git worktree add` path. This matches the observability-
+/// over-correctness philosophy of the other fire sites.
+pub async fn fire_worktree_create_hook<S: Services>(
+    services: Arc<S>,
+    name: String,
+) -> AggregatedHookResult {
+    use crate::services::AgentRegistry;
+
+    // Resolve an agent for the event context. WorktreeCreate fires
+    // before any conversation has been established, so we use the
+    // active agent if set, otherwise the first registered agent. If
+    // the registry is empty, skip the fire entirely — without an
+    // agent tag the hook infrastructure cannot build an `EventData`.
+    let agent = if let Ok(Some(active_id)) = services.get_active_agent_id().await {
+        match services.get_agent(&active_id).await {
+            Ok(Some(agent)) => Some(agent),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let agent = match agent {
+        Some(a) => a,
+        None => match services
+            .get_agents()
+            .await
+            .ok()
+            .and_then(|a| a.into_iter().next())
+        {
+            Some(a) => a,
+            None => {
+                debug!("no agent available — skipping WorktreeCreate hook fire");
+                return AggregatedHookResult::default();
+            }
+        },
+    };
+    let model_id: ModelId = agent.model.clone();
+
+    let environment = services.get_environment();
+    // Scratch conversation — WorktreeCreate fires from the CLI
+    // `--worktree` flag handler, which runs before the live
+    // orchestrator has been set up. The scratch conversation is
+    // dropped as soon as we drain its `hook_result` below.
+    let mut scratch = Conversation::new(ConversationId::generate());
+    let session_id = scratch.id.into_string();
+    let transcript_path = environment.transcript_path(&session_id);
+    let cwd = environment.cwd.clone();
+
+    let payload = WorktreeCreatePayload { name: name.clone() };
+    let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+
+    let plugin_handler = PluginHookHandler::new(services.clone());
+    if let Err(err) = <PluginHookHandler<S> as EventHandle<EventData<WorktreeCreatePayload>>>::handle(
+        &plugin_handler,
+        &event,
+        &mut scratch,
+    )
+    .await
+    {
+        warn!(
+            name = %name,
+            error = %err,
+            "failed to dispatch WorktreeCreate hook; falling back to built-in git worktree add"
+        );
+        return AggregatedHookResult::default();
+    }
+
+    // Drain the aggregated result so the caller can inspect
+    // worktree_path / blocking_error / additional_contexts. The
+    // scratch conversation itself is dropped at the end of the
+    // function scope.
+    std::mem::take(&mut scratch.hook_result)
 }
 
 #[cfg(test)]

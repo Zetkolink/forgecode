@@ -27,6 +27,7 @@ mod sync;
 mod template;
 mod tool_services;
 mod utils;
+pub mod worktree_manager;
 
 pub use app_config::*;
 pub use clipper::*;

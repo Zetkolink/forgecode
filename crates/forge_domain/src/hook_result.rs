@@ -85,6 +85,14 @@ pub struct AggregatedHookResult {
     /// credential refresh). The orchestrator re-fires the permission
     /// check rather than applying the current decision.
     pub retry: bool,
+    /// Plugin-provided override for the worktree path during a
+    /// `WorktreeCreate` hook. Last-write-wins across multiple hooks on
+    /// the same event. When present, the CLI `--worktree` handler in
+    /// `crates/forge_main/src/sandbox.rs` uses this path instead of
+    /// falling back to `git worktree add`. The runtime
+    /// `EnterWorktreeTool` fire site (deferred to a future wave) will
+    /// consume the same field.
+    pub worktree_path: Option<PathBuf>,
 }
 
 impl AggregatedHookResult {
@@ -241,6 +249,14 @@ impl AggregatedHookResult {
                         self.retry = true;
                     }
                 }
+                Some(HookSpecificOutput::WorktreeCreate { worktree_path }) => {
+                    // Last-write-wins on the plugin-provided worktree
+                    // path override. A `None` value is a no-op — it
+                    // does not clear a previously-set path.
+                    if let Some(path) = worktree_path {
+                        self.worktree_path = Some(path);
+                    }
+                }
                 None => {}
             }
         }
@@ -347,6 +363,7 @@ mod tests {
         assert!(actual.updated_permissions.is_none());
         assert!(!actual.interrupt);
         assert!(!actual.retry);
+        assert!(actual.worktree_path.is_none());
     }
 
     /// Wave E-1b: sanity-check the `Default` impl zeroes the three new
@@ -398,6 +415,7 @@ mod tests {
             updated_permissions: Some(json!({"rules": ["Bash(*)"]})),
             interrupt: true,
             retry: true,
+            worktree_path: Some(PathBuf::from("/tmp/wt/feature")),
         };
         let cloned = original.clone();
         assert_eq!(
@@ -410,6 +428,10 @@ mod tests {
         assert!(cloned.prevent_continuation);
         assert_eq!(cloned.stop_reason.as_deref(), Some("halt"));
         assert_eq!(cloned.watch_paths, vec![PathBuf::from("/tmp")]);
+        assert_eq!(
+            cloned.worktree_path,
+            Some(PathBuf::from("/tmp/wt/feature"))
+        );
     }
 
     fn success_with_plain_text(stdout: &str) -> HookExecResult {
@@ -802,5 +824,66 @@ mod tests {
         // falls back to stdout which is also empty — so the sync-output
         // branch should fill in the reason.
         assert!(err.message.is_empty() || err.message == "policy violation");
+    }
+
+    // ---- Wave E-2c-i: WorktreeCreate merge tests ----
+
+    /// Two `WorktreeCreate` hooks both hand back a path — last-write-wins.
+    /// Mirrors the `updated_input` semantics so plugins that chain on top
+    /// of each other see predictable ordering.
+    #[test]
+    fn test_merge_worktree_create_last_wins_on_worktree_path() {
+        let mut agg = AggregatedHookResult::default();
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::WorktreeCreate {
+                worktree_path: Some(PathBuf::from("/tmp/wt/first")),
+            }),
+            ..Default::default()
+        }));
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::WorktreeCreate {
+                worktree_path: Some(PathBuf::from("/tmp/wt/second")),
+            }),
+            ..Default::default()
+        }));
+
+        assert_eq!(agg.worktree_path, Some(PathBuf::from("/tmp/wt/second")));
+    }
+
+    /// A subsequent `WorktreeCreate` hook that returns `worktreePath: None`
+    /// must NOT clear a previously-set path. This guards against a
+    /// noisy plugin wiping the intended override.
+    #[test]
+    fn test_merge_worktree_create_none_preserves_prior_path() {
+        let mut agg = AggregatedHookResult::default();
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::WorktreeCreate {
+                worktree_path: Some(PathBuf::from("/tmp/wt/keep")),
+            }),
+            ..Default::default()
+        }));
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::WorktreeCreate {
+                worktree_path: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert_eq!(agg.worktree_path, Some(PathBuf::from("/tmp/wt/keep")));
+    }
+
+    /// Sanity check: the `Default` impl zeros the new `worktree_path`
+    /// field. Paired with the broader default test above; this one
+    /// exists as a single-purpose regression gate so a future refactor
+    /// that accidentally drops the field from `Default` is caught by a
+    /// targeted failure instead of a multi-assertion cascade.
+    #[test]
+    fn test_aggregated_default_has_none_worktree_path() {
+        let actual = AggregatedHookResult::default();
+        assert!(actual.worktree_path.is_none());
     }
 }

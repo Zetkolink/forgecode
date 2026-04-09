@@ -365,6 +365,16 @@ pub enum HookSpecificOutput {
         #[serde(default)]
         retry: Option<bool>,
     },
+    /// Plugin-driven output for a `WorktreeCreate` event. Mirrors
+    /// Claude Code's wire shape (`claude-code/src/utils/hooks.ts:4956`)
+    /// where a plugin can hand back a custom worktree path that the
+    /// `--worktree` CLI flag uses instead of falling back to the
+    /// built-in `git worktree add` path. Consumed by
+    /// [`crate::AggregatedHookResult::merge`] last-write-wins.
+    WorktreeCreate {
+        #[serde(default, rename = "worktreePath")]
+        worktree_path: Option<PathBuf>,
+    },
 }
 
 /// Permission decision returned by PreToolUse hooks.
@@ -864,6 +874,62 @@ mod tests {
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["hook_event_name"], "WorktreeRemove");
         assert_eq!(json["worktreePath"], "/tmp/wt/feature");
+    }
+
+    /// Wave E-2c-i: parsing a `WorktreeCreate` hook's JSON stdout
+    /// should surface the `worktreePath` field on the specific-output
+    /// variant. Mirrors Claude Code's wire format
+    /// (`claude-code/src/utils/hooks.ts:4956`) where a `command`-type
+    /// hook can hand the CLI a custom path to skip the built-in
+    /// `git worktree add` fallback.
+    ///
+    /// The plain-text fallback ("hook stdout is just `/path/to/wt`") is
+    /// handled one layer up in
+    /// [`crate::AggregatedHookResult::merge`], which folds non-JSON
+    /// stdout into `additional_contexts` — so there is no plain-text
+    /// branch at the `HookOutput` parser level. Plugins that want the
+    /// override behaviour must emit the full JSON envelope.
+    #[test]
+    fn test_hook_output_parses_worktree_create_specific_output() {
+        // Case 1: full JSON envelope with an explicit worktreePath.
+        let fixture_with_path = r#"{
+            "hookSpecificOutput": {
+                "hookEventName": "WorktreeCreate",
+                "worktreePath": "/tmp/wt/override"
+            }
+        }"#;
+        let actual: HookOutput = serde_json::from_str(fixture_with_path).unwrap();
+        match actual {
+            HookOutput::Sync(sync) => match sync.hook_specific_output {
+                Some(HookSpecificOutput::WorktreeCreate { worktree_path }) => {
+                    assert_eq!(worktree_path, Some(PathBuf::from("/tmp/wt/override")));
+                }
+                other => panic!("expected WorktreeCreate specific output, got {other:?}"),
+            },
+            other => panic!("expected Sync variant, got {other:?}"),
+        }
+
+        // Case 2: JSON envelope without a worktreePath — the field is
+        // optional (`#[serde(default)]`) so a bare
+        // `{ "hookEventName": "WorktreeCreate" }` parses cleanly and
+        // the field defaults to `None`. This mirrors how plain-text
+        // hooks that `echo` status without overriding the path are
+        // treated upstream in `AggregatedHookResult::merge`.
+        let fixture_without_path = r#"{
+            "hookSpecificOutput": {
+                "hookEventName": "WorktreeCreate"
+            }
+        }"#;
+        let actual: HookOutput = serde_json::from_str(fixture_without_path).unwrap();
+        match actual {
+            HookOutput::Sync(sync) => match sync.hook_specific_output {
+                Some(HookSpecificOutput::WorktreeCreate { worktree_path }) => {
+                    assert_eq!(worktree_path, None);
+                }
+                other => panic!("expected WorktreeCreate specific output, got {other:?}"),
+            },
+            other => panic!("expected Sync variant, got {other:?}"),
+        }
     }
 
     // ---- Phase 6D: InstructionsLoaded wire test ----
