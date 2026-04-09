@@ -86,9 +86,9 @@ impl From<&Skill> for InvocableCommand {
     fn from(skill: &Skill) -> Self {
         let source = match &skill.source {
             SkillSource::Builtin => InvocableSource::Builtin,
-            SkillSource::Plugin { plugin_name } => InvocableSource::Plugin {
-                plugin_name: plugin_name.clone(),
-            },
+            SkillSource::Plugin { plugin_name } => {
+                InvocableSource::Plugin { plugin_name: plugin_name.clone() }
+            }
             SkillSource::GlobalUser | SkillSource::AgentsDir => InvocableSource::User,
             SkillSource::ProjectCwd => InvocableSource::Project,
         };
@@ -109,9 +109,9 @@ impl From<&Command> for InvocableCommand {
     fn from(command: &Command) -> Self {
         let source = match &command.source {
             CommandSource::Builtin => InvocableSource::Builtin,
-            CommandSource::Plugin { plugin_name } => InvocableSource::Plugin {
-                plugin_name: plugin_name.clone(),
-            },
+            CommandSource::Plugin { plugin_name } => {
+                InvocableSource::Plugin { plugin_name: plugin_name.clone() }
+            }
             CommandSource::GlobalUser | CommandSource::AgentsDir => InvocableSource::User,
             CommandSource::ProjectCwd => InvocableSource::Project,
         };
@@ -176,8 +176,7 @@ mod tests {
 
     #[test]
     fn test_from_skill_global_user_collapses_to_user() {
-        let fixture =
-            Skill::new("s", "b", "d").with_source(SkillSource::GlobalUser);
+        let fixture = Skill::new("s", "b", "d").with_source(SkillSource::GlobalUser);
 
         let actual = InvocableCommand::from(&fixture);
 
@@ -186,8 +185,7 @@ mod tests {
 
     #[test]
     fn test_from_skill_agents_dir_collapses_to_user() {
-        let fixture =
-            Skill::new("s", "b", "d").with_source(SkillSource::AgentsDir);
+        let fixture = Skill::new("s", "b", "d").with_source(SkillSource::AgentsDir);
 
         let actual = InvocableCommand::from(&fixture);
 
@@ -196,8 +194,7 @@ mod tests {
 
     #[test]
     fn test_from_skill_project_cwd_maps_to_project() {
-        let fixture =
-            Skill::new("s", "b", "d").with_source(SkillSource::ProjectCwd);
+        let fixture = Skill::new("s", "b", "d").with_source(SkillSource::ProjectCwd);
 
         let actual = InvocableCommand::from(&fixture);
 
@@ -206,8 +203,7 @@ mod tests {
 
     #[test]
     fn test_from_skill_preserves_when_to_use() {
-        let fixture =
-            Skill::new("s", "b", "d").when_to_use("when the user asks");
+        let fixture = Skill::new("s", "b", "d").when_to_use("when the user asks");
 
         let actual = InvocableCommand::from(&fixture);
 
@@ -239,9 +235,7 @@ mod tests {
 
     #[test]
     fn test_from_command_builtin() {
-        let fixture = Command::default()
-            .name("deploy")
-            .description("Ship it");
+        let fixture = Command::default().name("deploy").description("Ship it");
 
         let actual = InvocableCommand::from(&fixture);
 

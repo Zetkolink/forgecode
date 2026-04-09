@@ -152,7 +152,10 @@ impl<I: FileInfoInfra + EnvironmentInfra + DirectoryReaderInfra> ForgeAgentRepos
                 continue;
             }
             for agents_dir in &plugin.agents_paths {
-                match self.load_plugin_agents_from_dir(agents_dir, &plugin.name).await {
+                match self
+                    .load_plugin_agents_from_dir(agents_dir, &plugin.name)
+                    .await
+                {
                     Ok(loaded) => all.extend(loaded),
                     Err(err) => {
                         tracing::warn!(
@@ -191,10 +194,7 @@ impl<I: FileInfoInfra + EnvironmentInfra + DirectoryReaderInfra> ForgeAgentRepos
             let mut agent = match parse_agent_file(&content) {
                 Ok(agent) => agent,
                 Err(err) => {
-                    tracing::warn!(
-                        "Failed to parse plugin agent {}: {err:#}",
-                        path.display()
-                    );
+                    tracing::warn!("Failed to parse plugin agent {}: {err:#}", path.display());
                     continue;
                 }
             };
@@ -297,10 +297,7 @@ mod tests {
     fn fixture_plugin(name: &str, enabled: bool, agents_path: PathBuf) -> LoadedPlugin {
         LoadedPlugin {
             name: name.to_string(),
-            manifest: PluginManifest {
-                name: Some(name.to_string()),
-                ..Default::default()
-            },
+            manifest: PluginManifest { name: Some(name.to_string()), ..Default::default() },
             path: PathBuf::from(format!("/fake/{name}")),
             source: PluginSource::Global,
             enabled,
@@ -361,8 +358,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_plugin_agents_namespaces_and_tags_source() {
-        let agents_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/fixtures/plugin_agents");
+        let agents_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/plugin_agents");
         let plugin = fixture_plugin("demo", true, agents_dir);
         let repo = fixture_agent_repo_with_plugins(vec![plugin]);
 
@@ -393,13 +390,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_plugin_agents_skips_disabled_plugins() {
-        let agents_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/fixtures/plugin_agents");
+        let agents_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/plugin_agents");
         let plugin = fixture_plugin("demo", false, agents_dir);
         let repo = fixture_agent_repo_with_plugins(vec![plugin]);
 
         let actual = repo.load_plugin_agents().await;
-        assert!(actual.is_empty(), "disabled plugin agents should be skipped");
+        assert!(
+            actual.is_empty(),
+            "disabled plugin agents should be skipped"
+        );
     }
 
     #[tokio::test]

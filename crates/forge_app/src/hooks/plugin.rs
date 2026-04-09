@@ -19,14 +19,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use forge_domain::{
-    AggregatedHookResult, AgentHookCommand, ConfigChangePayload, Conversation, CwdChangedPayload,
+    AgentHookCommand, AggregatedHookResult, ConfigChangePayload, Conversation, CwdChangedPayload,
     ElicitationPayload, ElicitationResultPayload, EventData, EventHandle, FileChangedPayload,
     HookCommand, HookEventName, HookInput, HookInputBase, HookInputPayload, HttpHookCommand,
     InstructionsLoadedPayload, NotificationPayload, PermissionDeniedPayload,
     PermissionRequestPayload, PostCompactPayload, PostToolUseFailurePayload, PostToolUsePayload,
-    PreCompactPayload, PreToolUsePayload, PromptHookCommand, SessionEndPayload, SessionStartPayload,
-    SetupPayload, ShellHookCommand, StopFailurePayload, StopPayload, SubagentStartPayload,
-    SubagentStopPayload, UserPromptSubmitPayload, WorktreeCreatePayload, WorktreeRemovePayload,
+    PreCompactPayload, PreToolUsePayload, PromptHookCommand, SessionEndPayload,
+    SessionStartPayload, SetupPayload, ShellHookCommand, StopFailurePayload, StopPayload,
+    SubagentStartPayload, SubagentStopPayload, UserPromptSubmitPayload, WorktreeCreatePayload,
+    WorktreeRemovePayload,
 };
 use tokio::sync::Mutex;
 
@@ -75,10 +76,7 @@ impl<S> Clone for PluginHookHandler<S> {
 impl<S: Services> PluginHookHandler<S> {
     /// Create a new dispatcher backed by the given [`Services`] handle.
     pub fn new(services: Arc<S>) -> Self {
-        Self {
-            services,
-            once_fired: Arc::new(Mutex::new(HashSet::new())),
-        }
+        Self { services, once_fired: Arc::new(Mutex::new(HashSet::new())) }
     }
 
     /// Dispatch a single lifecycle event, running every matching hook in
@@ -88,13 +86,13 @@ impl<S: Services> PluginHookHandler<S> {
     ///
     /// - `event` — the lifecycle event being fired.
     /// - `tool_name` — the tool name associated with the event, used for
-    ///   matcher evaluation. `None` for events without a tool scope
-    ///   (e.g. `SessionStart`), which is equivalent to an empty string
-    ///   (any matcher that isn't an exact-string match still fires).
+    ///   matcher evaluation. `None` for events without a tool scope (e.g.
+    ///   `SessionStart`), which is equivalent to an empty string (any matcher
+    ///   that isn't an exact-string match still fires).
     /// - `tool_input` — the tool input JSON, used by the `if` condition
     ///   matcher. `None` for events without tool input.
-    /// - `input` — the fully-populated [`HookInput`] written to each
-    ///   hook's stdin / posted as the HTTP body.
+    /// - `input` — the fully-populated [`HookInput`] written to each hook's
+    ///   stdin / posted as the HTTP body.
     ///
     /// # Errors
     ///
@@ -126,24 +124,16 @@ impl<S: Services> PluginHookHandler<S> {
         {
             let mut once_fired = self.once_fired.lock().await;
             for (matcher_index, matcher_with_source) in matchers.iter().enumerate() {
-                let matcher_pattern = matcher_with_source
-                    .matcher
-                    .matcher
-                    .as_deref()
-                    .unwrap_or("");
+                let matcher_pattern = matcher_with_source.matcher.matcher.as_deref().unwrap_or("");
                 if !matches_pattern(matcher_pattern, effective_tool_name) {
                     continue;
                 }
 
-                for (hook_index, hook_cmd) in
-                    matcher_with_source.matcher.hooks.iter().enumerate()
-                {
-                    if let Some(cond) = condition_for(hook_cmd) {
-                        if !matches_condition(cond, effective_tool_name, effective_tool_input)
-                        {
+                for (hook_index, hook_cmd) in matcher_with_source.matcher.hooks.iter().enumerate() {
+                    if let Some(cond) = condition_for(hook_cmd)
+                        && !matches_condition(cond, effective_tool_name, effective_tool_input) {
                             continue;
                         }
-                    }
 
                     if is_once(hook_cmd) {
                         let id = HookId {
@@ -179,19 +169,13 @@ impl<S: Services> PluginHookHandler<S> {
                         // Phase 3 doesn't populate the per-hook env map —
                         // plugin-specific env injection lands in Phase 4 when
                         // the full env builder is wired through.
-                        executor
-                            .execute_shell(shell, &input, HashMap::new())
-                            .await
+                        executor.execute_shell(shell, &input, HashMap::new()).await
                     }
-                    HookCommand::Http(ref http) => {
-                        executor.execute_http(http, &input).await
-                    }
+                    HookCommand::Http(ref http) => executor.execute_http(http, &input).await,
                     HookCommand::Prompt(ref prompt) => {
                         executor.execute_prompt(prompt, &input).await
                     }
-                    HookCommand::Agent(ref agent) => {
-                        executor.execute_agent(agent, &input).await
-                    }
+                    HookCommand::Agent(ref agent) => executor.execute_agent(agent, &input).await,
                 }
             }
         });
@@ -433,9 +417,7 @@ impl<S: Services> EventHandle<EventData<SessionEndPayload>> for PluginHookHandle
         let input = build_hook_input(
             event,
             "SessionEnd",
-            HookInputPayload::SessionEnd {
-                reason: event.payload.reason.as_wire_str().to_string(),
-            },
+            HookInputPayload::SessionEnd { reason: event.payload.reason.as_wire_str().to_string() },
         );
         let aggregated = self
             .dispatch(HookEventName::SessionEnd, None, None, input)
@@ -817,12 +799,7 @@ impl<S: Services> EventHandle<EventData<WorktreeCreatePayload>> for PluginHookHa
         // WorktreeCreate matchers filter on the worktree name so plugins
         // can namespace their VCS adapters per project layout.
         let aggregated = self
-            .dispatch(
-                HookEventName::WorktreeCreate,
-                Some(&name),
-                None,
-                input,
-            )
+            .dispatch(HookEventName::WorktreeCreate, Some(&name), None, input)
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -840,18 +817,11 @@ impl<S: Services> EventHandle<EventData<WorktreeRemovePayload>> for PluginHookHa
         let input = build_hook_input(
             event,
             "WorktreeRemove",
-            HookInputPayload::WorktreeRemove {
-                worktree_path: event.payload.worktree_path.clone(),
-            },
+            HookInputPayload::WorktreeRemove { worktree_path: event.payload.worktree_path.clone() },
         );
         // WorktreeRemove matchers filter on the worktree's absolute path.
         let aggregated = self
-            .dispatch(
-                HookEventName::WorktreeRemove,
-                Some(&path_str),
-                None,
-                input,
-            )
+            .dispatch(HookEventName::WorktreeRemove, Some(&path_str), None, input)
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -963,9 +933,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use forge_domain::{
-        HookEventName, HookInput, HookInputBase, HookInputPayload, HookOutcome,
-    };
+    use forge_domain::{HookEventName, HookInput, HookInputBase, HookInputPayload, HookOutcome};
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -1051,20 +1019,15 @@ mod tests {
             {
                 let mut once_fired = self.once_fired.lock().await;
                 for (mi, matcher_with_source) in matchers.iter().enumerate() {
-                    let pat = matcher_with_source
-                        .matcher
-                        .matcher
-                        .as_deref()
-                        .unwrap_or("");
+                    let pat = matcher_with_source.matcher.matcher.as_deref().unwrap_or("");
                     if !matches_pattern(pat, tn) {
                         continue;
                     }
                     for (hi, cmd) in matcher_with_source.matcher.hooks.iter().enumerate() {
-                        if let Some(c) = condition_for(cmd) {
-                            if !matches_condition(c, tn, ti) {
+                        if let Some(c) = condition_for(cmd)
+                            && !matches_condition(c, tn, ti) {
                                 continue;
                             }
-                        }
                         if is_once(cmd) {
                             let id = HookId {
                                 event: event.clone(),
@@ -1084,11 +1047,7 @@ mod tests {
 
             let mut aggregated = AggregatedHookResult::default();
             for (_cmd, _src) in pending {
-                self.executor
-                    .calls
-                    .lock()
-                    .await
-                    .push("hit".to_string());
+                self.executor.calls.lock().await.push("hit".to_string());
                 aggregated.merge(StubExecutor::canned_success());
             }
             aggregated

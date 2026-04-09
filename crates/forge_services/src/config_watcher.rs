@@ -20,23 +20,22 @@
 //!
 //! # Design notes
 //!
-//! - **Internal write suppression.** Every time Forge itself writes a
-//!   watched config file it calls [`ConfigWatcher::mark_internal_write`]
-//!   first. When the filesystem notification finally arrives, the fire
-//!   loop (not yet implemented) will consult
-//!   [`ConfigWatcher::is_internal_write`] and skip the event if the
-//!   timestamp is still within the 5-second suppression window. This
-//!   stops Forge from firing its own `ConfigChange` hook for saves it
-//!   made itself.
-//! - **Debouncing.** Raw `notify` events are noisy — a single `Save`
-//!   from a text editor can produce half a dozen create/modify/rename
-//!   events. `notify-debouncer-full` coalesces them into a single
-//!   event per file per debounce tick.
+//! - **Internal write suppression.** Every time Forge itself writes a watched
+//!   config file it calls [`ConfigWatcher::mark_internal_write`] first. When
+//!   the filesystem notification finally arrives, the fire loop (not yet
+//!   implemented) will consult [`ConfigWatcher::is_internal_write`] and skip
+//!   the event if the timestamp is still within the 5-second suppression
+//!   window. This stops Forge from firing its own `ConfigChange` hook for saves
+//!   it made itself.
+//! - **Debouncing.** Raw `notify` events are noisy — a single `Save` from a
+//!   text editor can produce half a dozen create/modify/rename events.
+//!   `notify-debouncer-full` coalesces them into a single event per file per
+//!   debounce tick.
 //! - **Classification.** Plugin hooks filter on the wire string of
-//!   [`forge_domain::ConfigSource`] (e.g. `"user_settings"`,
-//!   `"plugins"`), so the watcher must know how to translate a raw
-//!   absolute path back into a source. [`ConfigWatcher::classify_path`]
-//!   does that mapping based on Forge's directory layout.
+//!   [`forge_domain::ConfigSource`] (e.g. `"user_settings"`, `"plugins"`), so
+//!   the watcher must know how to translate a raw absolute path back into a
+//!   source. [`ConfigWatcher::classify_path`] does that mapping based on
+//!   Forge's directory layout.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -101,9 +100,9 @@ impl ConfigWatcher {
     /// # Arguments
     ///
     /// - `_callback` — user-supplied closure invoked once per debounced
-    ///   [`ConfigChange`] event. Phase 6C accepts the callback to lock
-    ///   the public API shape but does not yet invoke it, since the
-    ///   debouncer wiring is deferred.
+    ///   [`ConfigChange`] event. Phase 6C accepts the callback to lock the
+    ///   public API shape but does not yet invoke it, since the debouncer
+    ///   wiring is deferred.
     ///
     /// # Errors
     ///
@@ -261,10 +260,7 @@ mod tests {
         {
             let mut guard = watcher.recent_internal_writes.lock().await;
             // 10 seconds ago — comfortably outside the 5-second window.
-            guard.insert(
-                path.clone(),
-                Instant::now() - Duration::from_secs(10),
-            );
+            guard.insert(path.clone(), Instant::now() - Duration::from_secs(10));
         }
 
         assert!(!watcher.is_internal_write(&path).await);

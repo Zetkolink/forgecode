@@ -541,9 +541,7 @@ impl<
         self.plugin_repository.load_plugins().await
     }
 
-    async fn load_plugins_with_errors(
-        &self,
-    ) -> anyhow::Result<forge_domain::PluginLoadResult> {
+    async fn load_plugins_with_errors(&self) -> anyhow::Result<forge_domain::PluginLoadResult> {
         self.plugin_repository.load_plugins_with_errors().await
     }
 }

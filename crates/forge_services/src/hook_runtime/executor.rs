@@ -48,8 +48,8 @@ impl<F> ForgeHookExecutor<F> {
             infra,
             shell: ForgeShellHookExecutor::default(),
             http: ForgeHttpHookExecutor::default(),
-            prompt: ForgePromptHookExecutor::default(),
-            agent: ForgeAgentHookExecutor::default(),
+            prompt: ForgePromptHookExecutor,
+            agent: ForgeAgentHookExecutor,
         }
     }
 }
@@ -185,10 +185,7 @@ mod tests {
             status_message: None,
             once: false,
         };
-        let result = exec
-            .execute_prompt(&config, &sample_input())
-            .await
-            .unwrap();
+        let result = exec.execute_prompt(&config, &sample_input()).await.unwrap();
         // The stub always returns NonBlockingError with "not yet supported".
         assert_eq!(result.outcome, HookOutcome::NonBlockingError);
         assert!(result.raw_stderr.contains("not yet supported"));
@@ -206,10 +203,7 @@ mod tests {
             status_message: None,
             once: false,
         };
-        let result = exec
-            .execute_agent(&config, &sample_input())
-            .await
-            .unwrap();
+        let result = exec.execute_agent(&config, &sample_input()).await.unwrap();
         assert_eq!(result.outcome, HookOutcome::NonBlockingError);
         assert!(result.raw_stderr.contains("not yet supported"));
     }

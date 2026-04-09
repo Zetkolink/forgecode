@@ -287,14 +287,9 @@ impl ForgeCommandManager {
             "/index" => Ok(SlashCommand::Index),
             "/plugin" => {
                 // /plugin <subcommand> [name]
-                let sub = parameters
-                    .first()
-                    .copied()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Usage: /plugin <list|enable|disable|info|reload> [name]"
-                        )
-                    })?;
+                let sub = parameters.first().copied().ok_or_else(|| {
+                    anyhow::anyhow!("Usage: /plugin <list|enable|disable|info|reload> [name]")
+                })?;
 
                 let rest = &parameters[1..];
                 let subcommand = match sub {
@@ -520,8 +515,10 @@ pub enum SlashCommand {
 /// `info <name>`, and `reload`. `install` is intentionally deferred — see
 /// the Phase 9 plan document for the `install` flow specification.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PluginSubcommand {
     /// `:plugin list` — show all discovered plugins.
+    #[default]
     List,
     /// `:plugin enable <name>` — mark a plugin as enabled in config.
     Enable { name: String },
@@ -533,11 +530,6 @@ pub enum PluginSubcommand {
     Reload,
 }
 
-impl Default for PluginSubcommand {
-    fn default() -> Self {
-        Self::List
-    }
-}
 
 impl SlashCommand {
     pub fn name(&self) -> &str {
@@ -1421,9 +1413,7 @@ mod tests {
         let actual = fixture.parse("/plugin enable prettier-format").unwrap();
         assert_eq!(
             actual,
-            SlashCommand::Plugin(PluginSubcommand::Enable {
-                name: "prettier-format".to_string()
-            })
+            SlashCommand::Plugin(PluginSubcommand::Enable { name: "prettier-format".to_string() })
         );
     }
 

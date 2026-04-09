@@ -964,10 +964,10 @@ async fn test_skill_listing_reminder_delta_across_two_turns() {
 //   - PreCompact / PostCompact — these fire from the compaction path, which
 //     currently bypasses the `Hook` trait (see `compaction.rs` / `app.rs`).
 //     Coverage belongs in those modules, not this orch_spec harness.
-//   - StopFailure — requires the inner `run_inner` loop to return an Err,
-//     which the default harness hooks do not produce. A future test can
-//     install a failing hook and assert StopFailure fires, but Phase 4
-//     Part 2b-iii only needs to wire the fire site (done in orch.rs).
+//   - StopFailure — requires the inner `run_inner` loop to return an Err, which
+//     the default harness hooks do not produce. A future test can install a
+//     failing hook and assert StopFailure fires, but Phase 4 Part 2b-iii only
+//     needs to wire the fire site (done in orch.rs).
 
 #[tokio::test]
 async fn test_session_start_fires_at_run_start() {
@@ -1124,8 +1124,7 @@ async fn test_pre_tool_use_fires_before_tool_call() {
         .hook(probe_hook)
         .mock_tool_call_responses(vec![(tool_call.clone(), tool_result)])
         .mock_assistant_responses(vec![
-            ChatCompletionMessage::assistant("Reading file")
-                .tool_calls(vec![tool_call.into()]),
+            ChatCompletionMessage::assistant("Reading file").tool_calls(vec![tool_call.into()]),
             ChatCompletionMessage::assistant("File read successfully")
                 .finish_reason(FinishReason::Stop),
         ]);
@@ -1168,8 +1167,7 @@ async fn test_post_tool_use_fires_on_successful_tool_call() {
         .hook(probe_hook)
         .mock_tool_call_responses(vec![(tool_call.clone(), tool_result)])
         .mock_assistant_responses(vec![
-            ChatCompletionMessage::assistant("Reading file")
-                .tool_calls(vec![tool_call.into()]),
+            ChatCompletionMessage::assistant("Reading file").tool_calls(vec![tool_call.into()]),
             ChatCompletionMessage::assistant("File read successfully")
                 .finish_reason(FinishReason::Stop),
         ]);
@@ -1197,8 +1195,7 @@ async fn test_post_tool_use_failure_fires_on_errored_tool_call() {
     let probe_hook = Hook::default()
         .on_post_tool_use_failure({
             let captured = failure_captured.clone();
-            move |e: &EventData<PostToolUseFailurePayload>,
-                  _c: &mut forge_domain::Conversation| {
+            move |e: &EventData<PostToolUseFailurePayload>, _c: &mut forge_domain::Conversation| {
                 let captured = captured.clone();
                 let payload = e.payload.clone();
                 async move {
@@ -1227,10 +1224,8 @@ async fn test_post_tool_use_failure_fires_on_errored_tool_call() {
         .hook(probe_hook)
         .mock_tool_call_responses(vec![(tool_call.clone(), tool_result)])
         .mock_assistant_responses(vec![
-            ChatCompletionMessage::assistant("Reading file")
-                .tool_calls(vec![tool_call.into()]),
-            ChatCompletionMessage::assistant("Done")
-                .finish_reason(FinishReason::Stop),
+            ChatCompletionMessage::assistant("Reading file").tool_calls(vec![tool_call.into()]),
+            ChatCompletionMessage::assistant("Done").finish_reason(FinishReason::Stop),
         ]);
 
     ctx.run("Read a missing file").await.unwrap();

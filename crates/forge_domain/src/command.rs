@@ -6,8 +6,10 @@ use serde::{Deserialize, Serialize};
 /// listing pipeline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[derive(Default)]
 pub enum CommandSource {
     /// Compiled into the Forge binary.
+    #[default]
     Builtin,
     /// Contributed by an installed plugin.
     Plugin {
@@ -22,11 +24,6 @@ pub enum CommandSource {
     ProjectCwd,
 }
 
-impl Default for CommandSource {
-    fn default() -> Self {
-        Self::Builtin
-    }
-}
 
 /// A user-defined command loaded from a Markdown file with YAML frontmatter.
 ///
@@ -77,9 +74,8 @@ mod tests {
 
     #[test]
     fn test_command_with_source_plugin() {
-        let fixture = Command::default().with_source(CommandSource::Plugin {
-            plugin_name: "demo".into(),
-        });
+        let fixture =
+            Command::default().with_source(CommandSource::Plugin { plugin_name: "demo".into() });
         assert_eq!(
             fixture.source,
             CommandSource::Plugin { plugin_name: "demo".into() }

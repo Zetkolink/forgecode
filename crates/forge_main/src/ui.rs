@@ -132,14 +132,8 @@ fn format_plugin_components(plugin: &forge_domain::LoadedPlugin) -> String {
     let commands = plugin.commands_paths.len();
     let agents = plugin.agents_paths.len();
     let hooks = if plugin.hooks_config.is_some() { 1 } else { 0 };
-    let mcp = plugin
-        .mcp_servers
-        .as_ref()
-        .map(|m| m.len())
-        .unwrap_or(0);
-    format!(
-        "{skills} skills, {commands} cmds, {hooks} hooks, {agents} agents, {mcp} mcp"
-    )
+    let mcp = plugin.mcp_servers.as_ref().map(|m| m.len()).unwrap_or(0);
+    format!("{skills} skills, {commands} cmds, {hooks} hooks, {agents} agents, {mcp} mcp")
 }
 
 pub struct UI<A: ConsoleWriter, F: Fn(ForgeConfig) -> A> {
@@ -4335,8 +4329,8 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
     ///
     /// Phase 9 exposes five operations:
     /// - `list`: render all discovered plugins plus any load errors
-    /// - `enable <name>` / `disable <name>`: persist the enable flag to
-    ///   the user's `.forge.toml` and reload components
+    /// - `enable <name>` / `disable <name>`: persist the enable flag to the
+    ///   user's `.forge.toml` and reload components
     /// - `info <name>`: show manifest + component summary
     /// - `reload`: invalidate the plugin cache and reload components
     async fn on_plugin_command(&mut self, sub: PluginSubcommand) -> Result<()> {
@@ -4373,11 +4367,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         if !result.plugins.is_empty() {
             info = info.add_title("PLUGINS");
             for plugin in result.plugins.iter() {
-                let version = plugin
-                    .manifest
-                    .version
-                    .as_deref()
-                    .unwrap_or(markers::EMPTY);
+                let version = plugin.manifest.version.as_deref().unwrap_or(markers::EMPTY);
                 let source = format_plugin_source(plugin.source);
                 let enabled = if plugin.enabled { "✓" } else { "✗" };
                 let components = format_plugin_components(plugin);
@@ -4448,7 +4438,9 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             .find(|p| p.name == name)
             .ok_or_else(|| anyhow::anyhow!("Plugin '{name}' not found."))?;
 
-        let mut info = Info::new().add_title("PLUGIN").add_key_value("Name", &plugin.name);
+        let mut info = Info::new()
+            .add_title("PLUGIN")
+            .add_key_value("Name", &plugin.name);
 
         if let Some(version) = plugin.manifest.version.as_deref() {
             info = info.add_key_value("Version", version);
@@ -4469,10 +4461,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         info = info
             .add_key_value("Path", plugin.path.display().to_string())
             .add_key_value("Source", format_plugin_source(plugin.source))
-            .add_key_value(
-                "Enabled",
-                if plugin.enabled { "yes" } else { "no" },
-            );
+            .add_key_value("Enabled", if plugin.enabled { "yes" } else { "no" });
 
         let skills_count: usize = plugin.skills_paths.len();
         let commands_count: usize = plugin.commands_paths.len();
@@ -4482,11 +4471,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         } else {
             "none"
         };
-        let mcp_count = plugin
-            .mcp_servers
-            .as_ref()
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let mcp_count = plugin.mcp_servers.as_ref().map(|m| m.len()).unwrap_or(0);
 
         info = info
             .add_title("COMPONENTS")

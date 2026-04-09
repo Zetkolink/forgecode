@@ -6,14 +6,17 @@
 //! input side is snake_case (`session_id`, `tool_name`, ...) while the
 //! output side is camelCase (`hookSpecificOutput`, `permissionDecision`,
 //! ...). Both sides also use literal JSON keys that collide with Rust
-//! keywords (`async`, `continue`, `if`), which we handle with `#[serde(rename = ...)]`.
+//! keywords (`async`, `continue`, `if`), which we handle with `#[serde(rename =
+//! ...)]`.
 //!
 //! The types in this module define only the **shapes**. Actual subprocess
 //! execution, streaming, and timeout enforcement live in later phases.
 //!
 //! References:
-//! - Claude Code event schemas (input): `claude-code/src/entrypoints/sdk/coreSchemas.ts:387-796`
-//! - Claude Code output schemas: `claude-code/src/entrypoints/sdk/coreSchemas.ts:799-974`
+//! - Claude Code event schemas (input):
+//!   `claude-code/src/entrypoints/sdk/coreSchemas.ts:387-796`
+//! - Claude Code output schemas:
+//!   `claude-code/src/entrypoints/sdk/coreSchemas.ts:799-974`
 
 use std::path::PathBuf;
 
@@ -228,10 +231,10 @@ pub enum HookInputPayload {
 /// Hook output as read from a subprocess's stdout.
 ///
 /// A hook may respond in one of two shapes:
-/// - [`AsyncHookOutput`] — short ack indicating the hook will complete in
-///   the background.
-/// - [`SyncHookOutput`] — the full response with decision, continuation,
-///   and event-specific augmentations.
+/// - [`AsyncHookOutput`] — short ack indicating the hook will complete in the
+///   background.
+/// - [`SyncHookOutput`] — the full response with decision, continuation, and
+///   event-specific augmentations.
 ///
 /// `#[serde(untagged)]` picks the variant by structural matching. The
 /// `Async` variant is listed first so a payload containing `"async": true`
@@ -418,9 +421,7 @@ mod tests {
     fn test_hook_input_serializes_user_prompt_submit() {
         let input = HookInput {
             base: sample_base("UserPromptSubmit"),
-            payload: HookInputPayload::UserPromptSubmit {
-                prompt: "Hello forge".to_string(),
-            },
+            payload: HookInputPayload::UserPromptSubmit { prompt: "Hello forge".to_string() },
         };
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["hook_event_name"], "UserPromptSubmit");
@@ -465,14 +466,8 @@ mod tests {
             HookOutput::Sync(sync) => {
                 assert_eq!(sync.should_continue, Some(true));
                 match sync.hook_specific_output {
-                    Some(HookSpecificOutput::PreToolUse {
-                        permission_decision,
-                        ..
-                    }) => {
-                        assert_eq!(
-                            permission_decision,
-                            Some(PermissionDecision::Allow)
-                        );
+                    Some(HookSpecificOutput::PreToolUse { permission_decision, .. }) => {
+                        assert_eq!(permission_decision, Some(PermissionDecision::Allow));
                     }
                     other => panic!("expected PreToolUse specific output, got {other:?}"),
                 }
@@ -511,10 +506,7 @@ mod tests {
                     updated_mcp_tool_output,
                 }) => {
                     assert_eq!(additional_context.as_deref(), Some("cached result"));
-                    assert_eq!(
-                        updated_mcp_tool_output.unwrap()["content"],
-                        "override"
-                    );
+                    assert_eq!(updated_mcp_tool_output.unwrap()["content"], "override");
                 }
                 other => panic!("expected PostToolUse specific output, got {other:?}"),
             },
@@ -535,9 +527,7 @@ mod tests {
         match actual {
             HookOutput::Sync(sync) => match sync.hook_specific_output {
                 Some(HookSpecificOutput::SessionStart {
-                    additional_context,
-                    watch_paths,
-                    ..
+                    additional_context, watch_paths, ..
                 }) => {
                     assert_eq!(additional_context.as_deref(), Some("loaded context"));
                     assert_eq!(
@@ -790,9 +780,7 @@ mod tests {
     fn test_hook_input_worktree_create_wire_format() {
         let input = HookInput {
             base: sample_base("WorktreeCreate"),
-            payload: HookInputPayload::WorktreeCreate {
-                name: "feature-auth".to_string(),
-            },
+            payload: HookInputPayload::WorktreeCreate { name: "feature-auth".to_string() },
         };
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["hook_event_name"], "WorktreeCreate");

@@ -134,8 +134,8 @@ impl EventHandle<EventData<StopPayload>> for PendingTodosHandler {
 #[cfg(test)]
 mod tests {
     use forge_domain::{
-        Agent, Context, Conversation, EventData, EventHandle, Metrics, ModelId, StopPayload,
-        Todo, TodoStatus,
+        Agent, Context, Conversation, EventData, EventHandle, Metrics, ModelId, StopPayload, Todo,
+        TodoStatus,
     };
     use pretty_assertions::assert_eq;
 

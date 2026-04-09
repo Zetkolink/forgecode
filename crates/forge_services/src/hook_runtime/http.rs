@@ -4,9 +4,8 @@
 //! `claude-code/src/utils/hooks/execHttpHook.ts`:
 //!
 //! 1. Serialize the [`HookInput`] as JSON.
-//! 2. POST the body to `config.url` with headers from `config.headers`
-//!    (after `$VAR` / `${VAR}` substitution limited to
-//!    `config.allowed_env_vars`).
+//! 2. POST the body to `config.url` with headers from `config.headers` (after
+//!    `$VAR` / `${VAR}` substitution limited to `config.allowed_env_vars`).
 //! 3. Enforce the per-hook timeout (default 30 s).
 //! 4. Parse the response body as [`HookOutput`] JSON if possible, otherwise
 //!    record the plain text as `raw_stdout`.
@@ -184,22 +183,20 @@ where
     while i < bytes.len() {
         if bytes[i] == b'$' {
             // Try ${VAR}
-            if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-                if let Some(end) = value[i + 2..].find('}') {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'{'
+                && let Some(end) = value[i + 2..].find('}') {
                     let name = &value[i + 2..i + 2 + end];
-                    if allowed.iter().any(|a| *a == name) {
-                        if let Some(val) = env_lookup(name) {
+                    if allowed.contains(&name)
+                        && let Some(val) = env_lookup(name) {
                             result.push_str(&val);
                             i += 2 + end + 1;
                             continue;
                         }
-                    }
                     // Not allowed or lookup failed — leave literal.
                     result.push_str(&value[i..i + 2 + end + 1]);
                     i += 2 + end + 1;
                     continue;
                 }
-            }
 
             // Try $VAR (alnum + underscore).
             let name_start = i + 1;
@@ -211,13 +208,12 @@ where
             }
             if name_end > name_start {
                 let name = &value[name_start..name_end];
-                if allowed.iter().any(|a| *a == name) {
-                    if let Some(val) = env_lookup(name) {
+                if allowed.contains(&name)
+                    && let Some(val) = env_lookup(name) {
                         result.push_str(&val);
                         i = name_end;
                         continue;
                     }
-                }
                 // Not allowed — leave literal.
                 result.push_str(&value[i..name_end]);
                 i = name_end;
@@ -429,7 +425,10 @@ mod tests {
         env_map.insert("FORBIDDEN".to_string(), "leaked".to_string());
         let lookup = map_env_lookup(env_map);
 
-        let result = executor.execute(&config, &sample_input(), lookup).await.unwrap();
+        let result = executor
+            .execute(&config, &sample_input(), lookup)
+            .await
+            .unwrap();
         assert_eq!(result.outcome, HookOutcome::Success);
     }
 

@@ -583,9 +583,7 @@ pub trait PluginLoader: Send + Sync {
     /// Backed by the same cache as [`list_plugins`](Self::list_plugins),
     /// so calling both in sequence on the same state costs exactly one
     /// filesystem scan.
-    async fn list_plugins_with_errors(
-        &self,
-    ) -> anyhow::Result<forge_domain::PluginLoadResult>;
+    async fn list_plugins_with_errors(&self) -> anyhow::Result<forge_domain::PluginLoadResult>;
 
     /// Drops any cached plugin data so the next call to
     /// [`list_plugins`](Self::list_plugins) re-reads the filesystem.
@@ -1205,8 +1203,8 @@ impl<I: Services> InvocableCommandsProvider for I {
 #[async_trait::async_trait]
 impl<I: Services> PluginComponentsReloader for I {
     async fn reload_plugin_components(&self) -> anyhow::Result<()> {
-        // 1. Plugin loader cache first so subsequent component reloads
-        //    observe fresh plugin discovery results.
+        // 1. Plugin loader cache first so subsequent component reloads observe fresh
+        //    plugin discovery results.
         self.plugin_loader().invalidate_cache().await;
 
         // 2. Skill fetch cache.
@@ -1228,9 +1226,7 @@ impl<I: Services> PluginLoader for I {
         self.plugin_loader().list_plugins().await
     }
 
-    async fn list_plugins_with_errors(
-        &self,
-    ) -> anyhow::Result<forge_domain::PluginLoadResult> {
+    async fn list_plugins_with_errors(&self) -> anyhow::Result<forge_domain::PluginLoadResult> {
         self.plugin_loader().list_plugins_with_errors().await
     }
 

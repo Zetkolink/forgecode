@@ -658,10 +658,7 @@ impl Hook {
     }
 
     /// Sets the Stop event handler.
-    pub fn on_stop(
-        mut self,
-        handler: impl EventHandle<EventData<StopPayload>> + 'static,
-    ) -> Self {
+    pub fn on_stop(mut self, handler: impl EventHandle<EventData<StopPayload>> + 'static) -> Self {
         self.on_stop = Box::new(handler);
         self
     }
@@ -886,9 +883,7 @@ impl Hook {
             on_post_tool_use_failure: self
                 .on_post_tool_use_failure
                 .and(other.on_post_tool_use_failure),
-            on_user_prompt_submit: self
-                .on_user_prompt_submit
-                .and(other.on_user_prompt_submit),
+            on_user_prompt_submit: self.on_user_prompt_submit.and(other.on_user_prompt_submit),
             on_session_start: self.on_session_start.and(other.on_session_start),
             on_session_end: self.on_session_end.and(other.on_session_end),
             on_stop: self.on_stop.and(other.on_stop),
@@ -903,18 +898,14 @@ impl Hook {
                 .and(other.on_instructions_loaded),
             on_subagent_start: self.on_subagent_start.and(other.on_subagent_start),
             on_subagent_stop: self.on_subagent_stop.and(other.on_subagent_stop),
-            on_permission_request: self
-                .on_permission_request
-                .and(other.on_permission_request),
+            on_permission_request: self.on_permission_request.and(other.on_permission_request),
             on_permission_denied: self.on_permission_denied.and(other.on_permission_denied),
             on_cwd_changed: self.on_cwd_changed.and(other.on_cwd_changed),
             on_file_changed: self.on_file_changed.and(other.on_file_changed),
             on_worktree_create: self.on_worktree_create.and(other.on_worktree_create),
             on_worktree_remove: self.on_worktree_remove.and(other.on_worktree_remove),
             on_elicitation: self.on_elicitation.and(other.on_elicitation),
-            on_elicitation_result: self
-                .on_elicitation_result
-                .and(other.on_elicitation_result),
+            on_elicitation_result: self.on_elicitation_result.and(other.on_elicitation_result),
         }
     }
 }
@@ -976,9 +967,7 @@ impl EventHandle<LifecycleEvent> for Hook {
                 self.on_config_change.handle(data, conversation).await
             }
             LifecycleEvent::InstructionsLoaded(data) => {
-                self.on_instructions_loaded
-                    .handle(data, conversation)
-                    .await
+                self.on_instructions_loaded.handle(data, conversation).await
             }
             LifecycleEvent::SubagentStart(data) => {
                 self.on_subagent_start.handle(data, conversation).await
@@ -1859,8 +1848,7 @@ mod tests {
         let fired = std::sync::Arc::new(std::sync::Mutex::new(0u32));
         let hook = Hook::default().on_pre_tool_use({
             let fired = fired.clone();
-            move |_event: &EventData<PreToolUsePayload>,
-                  _conversation: &mut Conversation| {
+            move |_event: &EventData<PreToolUsePayload>, _conversation: &mut Conversation| {
                 let fired = fired.clone();
                 async move {
                     *fired.lock().unwrap() += 1;
@@ -1889,10 +1877,9 @@ mod tests {
     #[tokio::test]
     async fn test_hook_dispatches_new_variants_to_correct_slots() {
         use crate::{
-            PostCompactPayload, PostToolUseFailurePayload, PostToolUsePayload,
-            PreCompactPayload, PreToolUsePayload, SessionEndPayload, SessionEndReason,
-            SessionStartPayload, SessionStartSource, StopFailurePayload, StopPayload,
-            UserPromptSubmitPayload,
+            PostCompactPayload, PostToolUseFailurePayload, PostToolUsePayload, PreCompactPayload,
+            PreToolUsePayload, SessionEndPayload, SessionEndReason, SessionStartPayload,
+            SessionStartSource, StopFailurePayload, StopPayload, UserPromptSubmitPayload,
         };
 
         let tag = std::sync::Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
@@ -1921,8 +1908,7 @@ mod tests {
             })
             .on_post_tool_use_failure({
                 let tag = tag.clone();
-                move |_e: &EventData<PostToolUseFailurePayload>,
-                      _c: &mut Conversation| {
+                move |_e: &EventData<PostToolUseFailurePayload>, _c: &mut Conversation| {
                     let tag = tag.clone();
                     async move {
                         tag.lock().unwrap().push("post_tool_use_failure");
@@ -1932,8 +1918,7 @@ mod tests {
             })
             .on_user_prompt_submit({
                 let tag = tag.clone();
-                move |_e: &EventData<UserPromptSubmitPayload>,
-                      _c: &mut Conversation| {
+                move |_e: &EventData<UserPromptSubmitPayload>, _c: &mut Conversation| {
                     let tag = tag.clone();
                     async move {
                         tag.lock().unwrap().push("user_prompt_submit");
@@ -2061,10 +2046,7 @@ mod tests {
             LifecycleEvent::StopFailure(EventData::new(
                 agent.clone(),
                 mid.clone(),
-                StopFailurePayload {
-                    error: "x".to_string(),
-                    last_assistant_message: None,
-                },
+                StopFailurePayload { error: "x".to_string(), last_assistant_message: None },
             )),
             LifecycleEvent::PreCompact(EventData::new(
                 agent.clone(),

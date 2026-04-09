@@ -142,9 +142,7 @@ impl Runner {
         // `TestContext::hook(...)` can observe any of the 16 Hook
         // slots firing during orchestration.
         let default_hook = Hook::default()
-            .on_request(
-                DoomLoopDetector::default().and(SkillListingHandler::new(services.clone())),
-            )
+            .on_request(DoomLoopDetector::default().and(SkillListingHandler::new(services.clone())))
             .on_stop(PendingTodosHandler::new());
         let merged_hook = if let Some(test_hook) = setup.hook.take() {
             default_hook.zip(test_hook)
@@ -270,9 +268,7 @@ impl SkillFetchService for Runner {
 /// the unified listing degenerates to `list_skills()`-converted invocables.
 #[async_trait::async_trait]
 impl InvocableCommandsProvider for Runner {
-    async fn list_invocable_commands(
-        &self,
-    ) -> anyhow::Result<Vec<forge_domain::InvocableCommand>> {
+    async fn list_invocable_commands(&self) -> anyhow::Result<Vec<forge_domain::InvocableCommand>> {
         let skills = self.mock_skills.snapshot().await;
         Ok(skills
             .iter()

@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use forge_app::domain::{
-    LoadedPlugin, McpServerConfig, PluginComponentPath, PluginHooksConfig, PluginHooksManifestField,
-    PluginLoadError, PluginLoadResult, PluginManifest, PluginRepository, PluginSource,
+    LoadedPlugin, McpServerConfig, PluginComponentPath, PluginHooksConfig,
+    PluginHooksManifestField, PluginLoadError, PluginLoadResult, PluginManifest, PluginRepository,
+    PluginSource,
 };
 use forge_app::{DirectoryReaderInfra, EnvironmentInfra, FileInfoInfra, FileReaderInfra};
 use forge_config::PluginSetting;
@@ -177,15 +178,8 @@ where
                     // Capture the directory name (if any) as a best-effort
                     // plugin identifier; callers render this alongside the
                     // error message in `:plugin list`.
-                    let plugin_name = path
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .map(String::from);
-                    errors.push(PluginLoadError {
-                        plugin_name,
-                        path,
-                        error: format!("{e:#}"),
-                    });
+                    let plugin_name = path.file_name().and_then(|s| s.to_str()).map(String::from);
+                    errors.push(PluginLoadError { plugin_name, path, error: format!("{e:#}") });
                 }
             }
         }
@@ -562,8 +556,7 @@ mod tests {
     #[tokio::test]
     async fn test_scan_root_loads_claude_code_plugin_fixture() {
         // Fixture: a real on-disk Claude Code-style plugin layout.
-        let fixture_root =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/plugins");
+        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/plugins");
 
         let repo = fixture_plugin_repo();
         let (plugins, errors) = repo
@@ -591,7 +584,10 @@ mod tests {
             )
         );
         assert_eq!(plugin.source, PluginSource::Project);
-        assert!(plugin.enabled, "plugins default to enabled before config overrides");
+        assert!(
+            plugin.enabled,
+            "plugins default to enabled before config overrides"
+        );
         assert!(!plugin.is_builtin);
 
         // Author should come through the detailed form.

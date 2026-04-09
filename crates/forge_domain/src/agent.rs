@@ -107,8 +107,10 @@ pub fn estimate_token_count(count: usize) -> usize {
 /// pipeline can track provenance uniformly across the three asset types.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[derive(Default)]
 pub enum AgentSource {
     /// Compiled into the Forge binary.
+    #[default]
     Builtin,
     /// Contributed by an installed plugin.
     Plugin {
@@ -123,11 +125,6 @@ pub enum AgentSource {
     ProjectCwd,
 }
 
-impl Default for AgentSource {
-    fn default() -> Self {
-        Self::Builtin
-    }
-}
 
 /// Runtime agent representation with required model and provider
 #[derive(Debug, Clone, PartialEq, Setters, Serialize, Deserialize, JsonSchema)]
@@ -300,9 +297,8 @@ mod tests {
 
     #[test]
     fn test_agent_with_source_plugin() {
-        let fixture = fixture_agent().with_source(AgentSource::Plugin {
-            plugin_name: "demo".into(),
-        });
+        let fixture =
+            fixture_agent().with_source(AgentSource::Plugin { plugin_name: "demo".into() });
         assert_eq!(
             fixture.source,
             AgentSource::Plugin { plugin_name: "demo".into() }

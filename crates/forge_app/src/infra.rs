@@ -442,11 +442,11 @@ pub trait GrpcInfra: Send + Sync {
 /// [`HookExecResult`] regardless of the underlying transport.
 ///
 /// Implementations are responsible for:
-/// - Serializing the [`HookInput`] into the appropriate wire format
-///   (stdin JSON, HTTP POST body, or prompt argument).
+/// - Serializing the [`HookInput`] into the appropriate wire format (stdin
+///   JSON, HTTP POST body, or prompt argument).
 /// - Enforcing the per-hook timeout.
-/// - Attempting to parse the response as a [`HookOutput`] and falling
-///   back to plain text when parsing fails.
+/// - Attempting to parse the response as a [`HookOutput`] and falling back to
+///   plain text when parsing fails.
 /// - Translating exit codes / HTTP statuses / model errors into a
 ///   [`HookOutcome`] using Claude Code's semantics.
 ///

@@ -202,15 +202,11 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
                     .and(DoomLoopDetector::default())
                     .and(skill_listing_handler),
             )
-            .on_response(
-                tracing_handler
-                    .clone()
-                    .and(CompactionHandler::new(
-                        agent.clone(),
-                        environment.clone(),
-                        plugin_handler.clone(),
-                    )),
-            )
+            .on_response(tracing_handler.clone().and(CompactionHandler::new(
+                agent.clone(),
+                environment.clone(),
+                plugin_handler.clone(),
+            )))
             .on_toolcall_start(tracing_handler.clone())
             .on_toolcall_end(tracing_handler.clone().and(skill_cache_invalidator))
             .on_end(on_end_hook)
@@ -342,10 +338,8 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         let cwd = environment.cwd.clone();
 
         conversation.reset_hook_result();
-        let pre_payload = PreCompactPayload {
-            trigger: CompactTrigger::Manual,
-            custom_instructions: None,
-        };
+        let pre_payload =
+            PreCompactPayload { trigger: CompactTrigger::Manual, custom_instructions: None };
         let pre_event_data = EventData::with_context(
             agent.clone(),
             agent.model.clone(),

@@ -295,9 +295,7 @@ impl<
                 }
             };
             command.name = namespaced_name;
-            command.source = CommandSource::Plugin {
-                plugin_name: plugin_name.to_string(),
-            };
+            command.source = CommandSource::Plugin { plugin_name: plugin_name.to_string() };
             commands.push(command);
         }
 
@@ -327,7 +325,10 @@ fn plugin_namespaced_command_name(plugin_name: &str, rel_path: &Path) -> String 
     if let Some(last) = components.last_mut() {
         // Strip the trailing `.md` extension from the filename before
         // joining, keeping directory names as-is.
-        if let Some(stripped) = last.strip_suffix(".md").or_else(|| last.strip_suffix(".MD")) {
+        if let Some(stripped) = last
+            .strip_suffix(".md")
+            .or_else(|| last.strip_suffix(".MD"))
+        {
             *last = stripped.to_string();
         }
     }
@@ -612,10 +613,7 @@ mod tests {
 
     impl MockPluginRepository {
         fn new(plugins: Vec<LoadedPlugin>) -> Self {
-            Self {
-                plugins,
-                load_count: std::sync::atomic::AtomicUsize::new(0),
-            }
+            Self { plugins, load_count: std::sync::atomic::AtomicUsize::new(0) }
         }
 
         fn load_count(&self) -> usize {
@@ -639,10 +637,7 @@ mod tests {
     fn fixture_plugin(name: &str, enabled: bool, commands_path: PathBuf) -> LoadedPlugin {
         LoadedPlugin {
             name: name.to_string(),
-            manifest: PluginManifest {
-                name: Some(name.to_string()),
-                ..Default::default()
-            },
+            manifest: PluginManifest { name: Some(name.to_string()), ..Default::default() },
             path: PathBuf::from(format!("/fake/{name}")),
             source: PluginSource::Global,
             enabled,
@@ -818,11 +813,7 @@ mod tests {
                 // `WalkedFile::is_dir` treats paths ending in `/` as
                 // directories; mirror that convention here.
                 let rel = format!("{rel_raw}/");
-                out.push(forge_app::WalkedFile {
-                    path: rel,
-                    file_name: Some(file_name),
-                    size: 0,
-                });
+                out.push(forge_app::WalkedFile { path: rel, file_name: Some(file_name), size: 0 });
                 Box::pin(walk_dir_recursive(root, &path, out)).await?;
             } else {
                 out.push(forge_app::WalkedFile {
@@ -867,8 +858,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_plugin_commands_top_level_and_nested_namespace() {
-        let commands_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/fixtures/plugin_commands");
+        let commands_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/plugin_commands");
         let plugin = fixture_plugin("demo", true, commands_dir);
         let service = fixture_command_loader_with_plugins(vec![plugin]);
 
@@ -879,8 +870,7 @@ mod tests {
         //   commands/git/commit.md         -> demo:git:commit
         //   commands/review/deep/critical.md -> demo:review:deep:critical
         //   commands/nested.md             -> demo:nested
-        let names: std::collections::HashSet<_> =
-            loaded.iter().map(|c| c.name.clone()).collect();
+        let names: std::collections::HashSet<_> = loaded.iter().map(|c| c.name.clone()).collect();
         assert!(names.contains("demo:deploy"), "names={names:?}");
         assert!(names.contains("demo:git:commit"), "names={names:?}");
         assert!(
@@ -902,8 +892,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_plugin_commands_skips_disabled_plugins() {
-        let commands_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/fixtures/plugin_commands");
+        let commands_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/plugin_commands");
         let plugin = fixture_plugin("demo", false, commands_dir);
         let service = fixture_command_loader_with_plugins(vec![plugin]);
 
@@ -927,8 +917,8 @@ mod tests {
         // Fixture: with a single plugin source, repeated `get_commands`
         // calls must hit the plugin repository exactly once thanks to the
         // RwLock-based cache.
-        let commands_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/fixtures/plugin_commands");
+        let commands_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/plugin_commands");
         let plugin = fixture_plugin("demo", true, commands_dir);
         let mock = Arc::new(MockPluginRepository::new(vec![plugin]));
         let service = fixture_command_loader_with_mock(mock.clone());
@@ -947,8 +937,8 @@ mod tests {
     async fn test_reload_clears_command_cache() {
         // Fixture: prime the cache, then call `reload`, and verify the
         // next `get_commands` call hits the plugin repository again.
-        let commands_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/fixtures/plugin_commands");
+        let commands_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/plugin_commands");
         let plugin = fixture_plugin("demo", true, commands_dir);
         let mock = Arc::new(MockPluginRepository::new(vec![plugin]));
         let service = fixture_command_loader_with_mock(mock.clone());

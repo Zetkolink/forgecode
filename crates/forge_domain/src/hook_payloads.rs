@@ -814,10 +814,7 @@ impl From<ConfigChangePayload> for HookInputPayload {
 
 impl From<SubagentStartPayload> for HookInputPayload {
     fn from(p: SubagentStartPayload) -> Self {
-        HookInputPayload::SubagentStart {
-            agent_id: p.agent_id,
-            agent_type: p.agent_type,
-        }
+        HookInputPayload::SubagentStart { agent_id: p.agent_id, agent_type: p.agent_type }
     }
 }
 
@@ -856,10 +853,7 @@ impl From<PermissionDeniedPayload> for HookInputPayload {
 
 impl From<CwdChangedPayload> for HookInputPayload {
     fn from(p: CwdChangedPayload) -> Self {
-        HookInputPayload::CwdChanged {
-            old_cwd: p.old_cwd,
-            new_cwd: p.new_cwd,
-        }
+        HookInputPayload::CwdChanged { old_cwd: p.old_cwd, new_cwd: p.new_cwd }
     }
 }
 
@@ -880,9 +874,7 @@ impl From<WorktreeCreatePayload> for HookInputPayload {
 
 impl From<WorktreeRemovePayload> for HookInputPayload {
     fn from(p: WorktreeRemovePayload) -> Self {
-        HookInputPayload::WorktreeRemove {
-            worktree_path: p.worktree_path,
-        }
+        HookInputPayload::WorktreeRemove { worktree_path: p.worktree_path }
     }
 }
 
@@ -1105,9 +1097,7 @@ mod tests {
         let fixture = NotificationPayload {
             message: "OAuth complete".to_string(),
             title: Some("Authenticated".to_string()),
-            notification_type: NotificationKind::AuthSuccess
-                .as_wire_str()
-                .to_string(),
+            notification_type: NotificationKind::AuthSuccess.as_wire_str().to_string(),
         };
         let actual = serde_json::to_value(&fixture).unwrap();
         assert_eq!(actual["message"], "OAuth complete");
@@ -1136,11 +1126,7 @@ mod tests {
         };
         let actual: HookInputPayload = fixture.into();
         match actual {
-            HookInputPayload::Notification {
-                message,
-                title,
-                notification_type,
-            } => {
+            HookInputPayload::Notification { message, title, notification_type } => {
                 assert_eq!(message, "idle for a while");
                 assert_eq!(title, None);
                 assert_eq!(notification_type, "idle_prompt");
@@ -1171,10 +1157,8 @@ mod tests {
     #[test]
     fn test_config_change_payload_serialization() {
         // snake_case enum tag for the source and omitted file_path when None.
-        let fixture = ConfigChangePayload {
-            source: ConfigSource::ProjectSettings,
-            file_path: None,
-        };
+        let fixture =
+            ConfigChangePayload { source: ConfigSource::ProjectSettings, file_path: None };
         let actual = serde_json::to_value(&fixture).unwrap();
         assert_eq!(actual["source"], "project_settings");
         assert!(actual.get("file_path").is_none());
@@ -1381,12 +1365,7 @@ mod tests {
         };
         let actual: HookInputPayload = fixture.into();
         match actual {
-            HookInputPayload::PermissionDenied {
-                tool_name,
-                tool_input,
-                tool_use_id,
-                reason,
-            } => {
+            HookInputPayload::PermissionDenied { tool_name, tool_input, tool_use_id, reason } => {
                 assert_eq!(tool_name, "Write");
                 assert_eq!(tool_input["path"], "/etc/passwd");
                 assert_eq!(tool_use_id, "toolu_01");
@@ -1441,18 +1420,14 @@ mod tests {
 
     #[test]
     fn test_worktree_create_payload_serializes_with_name_field() {
-        let fixture = WorktreeCreatePayload {
-            name: "feature-branch".to_string(),
-        };
+        let fixture = WorktreeCreatePayload { name: "feature-branch".to_string() };
         let json = serde_json::to_value(&fixture).unwrap();
         assert_eq!(json, json!({ "name": "feature-branch" }));
     }
 
     #[test]
     fn test_worktree_create_payload_into_hook_input_payload() {
-        let fixture = WorktreeCreatePayload {
-            name: "refactor-auth".to_string(),
-        };
+        let fixture = WorktreeCreatePayload { name: "refactor-auth".to_string() };
         let actual: HookInputPayload = fixture.into();
         match actual {
             HookInputPayload::WorktreeCreate { name } => {
@@ -1464,18 +1439,16 @@ mod tests {
 
     #[test]
     fn test_worktree_remove_payload_serializes_with_worktree_path_field() {
-        let fixture = WorktreeRemovePayload {
-            worktree_path: std::path::PathBuf::from("/tmp/wt/feature"),
-        };
+        let fixture =
+            WorktreeRemovePayload { worktree_path: std::path::PathBuf::from("/tmp/wt/feature") };
         let json = serde_json::to_value(&fixture).unwrap();
         assert_eq!(json, json!({ "worktree_path": "/tmp/wt/feature" }));
     }
 
     #[test]
     fn test_worktree_remove_payload_into_hook_input_payload() {
-        let fixture = WorktreeRemovePayload {
-            worktree_path: std::path::PathBuf::from("/tmp/wt/feature"),
-        };
+        let fixture =
+            WorktreeRemovePayload { worktree_path: std::path::PathBuf::from("/tmp/wt/feature") };
         let actual: HookInputPayload = fixture.into();
         match actual {
             HookInputPayload::WorktreeRemove { worktree_path } => {
@@ -1560,13 +1533,7 @@ mod tests {
         };
         let actual: HookInputPayload = fixture.into();
         match actual {
-            HookInputPayload::Elicitation {
-                server_name,
-                message,
-                requested_schema,
-                mode,
-                url,
-            } => {
+            HookInputPayload::Elicitation { server_name, message, requested_schema, mode, url } => {
                 assert_eq!(server_name, "github");
                 assert_eq!(message, "Provide a PR title");
                 assert!(requested_schema.is_some());
@@ -1592,13 +1559,7 @@ mod tests {
         };
         let actual: HookInputPayload = fixture.into();
         match actual {
-            HookInputPayload::Elicitation {
-                server_name,
-                requested_schema,
-                mode,
-                url,
-                ..
-            } => {
+            HookInputPayload::Elicitation { server_name, requested_schema, mode, url, .. } => {
                 assert_eq!(server_name, "oauth-server");
                 assert!(requested_schema.is_none());
                 assert_eq!(mode.as_deref(), Some("url"));
@@ -1617,11 +1578,7 @@ mod tests {
         };
         let actual: HookInputPayload = fixture.into();
         match actual {
-            HookInputPayload::ElicitationResult {
-                server_name,
-                action,
-                content,
-            } => {
+            HookInputPayload::ElicitationResult { server_name, action, content } => {
                 assert_eq!(server_name, "github");
                 assert_eq!(action, "accept");
                 assert_eq!(content.unwrap()["title"], "My PR");

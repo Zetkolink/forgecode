@@ -175,8 +175,8 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                 .await?;
 
             // Consume PreToolUse hook_result:
-            //  1. blocking_error OR permission_behavior==Deny → synthesize error
-            //     ToolResult and skip services.call()
+            //  1. blocking_error OR permission_behavior==Deny → synthesize error ToolResult
+            //     and skip services.call()
             //  2. additional_contexts → push as <system_reminder> into context
             //  3. updated_input → override tool_call.arguments for this call
             let pre_hook_result = std::mem::take(&mut self.conversation.hook_result);
@@ -188,11 +188,8 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                 for extra in &pre_hook_result.additional_contexts {
                     let wrapped = Element::new("system_reminder").text(extra);
                     ctx.messages.push(
-                        ContextMessage::system_reminder(
-                            wrapped,
-                            Some(self.agent.model.clone()),
-                        )
-                        .into(),
+                        ContextMessage::system_reminder(wrapped, Some(self.agent.model.clone()))
+                            .into(),
                     );
                 }
             }
@@ -202,19 +199,17 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                 pre_hook_result.permission_behavior,
                 Some(PermissionBehavior::Deny)
             );
-            let block_reason: Option<String> =
-                if let Some(err) = pre_hook_result.blocking_error {
-                    Some(err.message)
-                } else if is_denied {
-                    Some("Tool call denied by plugin hook".to_string())
-                } else {
-                    None
-                };
+            let block_reason: Option<String> = if let Some(err) = pre_hook_result.blocking_error {
+                Some(err.message)
+            } else if is_denied {
+                Some("Tool call denied by plugin hook".to_string())
+            } else {
+                None
+            };
 
             let tool_result = if let Some(reason) = block_reason {
                 // Synthesize a failure ToolResult without calling services.call
-                ToolResult::from((*tool_call).clone())
-                    .failure(anyhow::anyhow!("{}", reason))
+                ToolResult::from((*tool_call).clone()).failure(anyhow::anyhow!("{}", reason))
             } else {
                 // Apply updated_input if present
                 let effective_call = if let Some(updated) = pre_hook_result.updated_input {
@@ -270,8 +265,7 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                 ));
                 self.hook.handle(&event, &mut self.conversation).await?;
             } else {
-                let tool_response =
-                    serde_json::to_value(&tool_result.output).unwrap_or_default();
+                let tool_response = serde_json::to_value(&tool_result.output).unwrap_or_default();
                 let post_payload = PostToolUsePayload {
                     tool_name: tool_call.name.as_str().to_string(),
                     tool_input,
@@ -300,11 +294,8 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                 for extra in &post_hook_result.additional_contexts {
                     let wrapped = Element::new("system_reminder").text(extra);
                     ctx.messages.push(
-                        ContextMessage::system_reminder(
-                            wrapped,
-                            Some(self.agent.model.clone()),
-                        )
-                        .into(),
+                        ContextMessage::system_reminder(wrapped, Some(self.agent.model.clone()))
+                            .into(),
                     );
                 }
             }
@@ -507,9 +498,9 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
         if !session_start_hook_result.additional_contexts.is_empty() {
             for extra in &session_start_hook_result.additional_contexts {
                 let wrapped = Element::new("system_reminder").text(extra);
-                context.messages.push(
-                    ContextMessage::system_reminder(wrapped, Some(model_id.clone())).into(),
-                );
+                context
+                    .messages
+                    .push(ContextMessage::system_reminder(wrapped, Some(model_id.clone())).into());
             }
         }
 
@@ -562,33 +553,26 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
             {
                 self.conversation.reset_hook_result();
                 let prompt_payload = UserPromptSubmitPayload { prompt: prompt_text };
-                let prompt_event = LifecycleEvent::UserPromptSubmit(
-                    EventData::with_context(
-                        self.agent.clone(),
-                        model_id.clone(),
-                        session_id.clone(),
-                        transcript_path.clone(),
-                        cwd.clone(),
-                        prompt_payload,
-                    ),
-                );
+                let prompt_event = LifecycleEvent::UserPromptSubmit(EventData::with_context(
+                    self.agent.clone(),
+                    model_id.clone(),
+                    session_id.clone(),
+                    transcript_path.clone(),
+                    cwd.clone(),
+                    prompt_payload,
+                ));
                 self.hook
                     .handle(&prompt_event, &mut self.conversation)
                     .await?;
 
-                let prompt_hook_result =
-                    std::mem::take(&mut self.conversation.hook_result);
+                let prompt_hook_result = std::mem::take(&mut self.conversation.hook_result);
 
                 // Inject additional_contexts as <system_reminder> messages
                 if !prompt_hook_result.additional_contexts.is_empty() {
                     for extra in &prompt_hook_result.additional_contexts {
                         let wrapped = Element::new("system_reminder").text(extra);
                         context.messages.push(
-                            ContextMessage::system_reminder(
-                                wrapped,
-                                Some(model_id.clone()),
-                            )
-                            .into(),
+                            ContextMessage::system_reminder(wrapped, Some(model_id.clone())).into(),
                         );
                     }
                     // Sync back before the Request event runs
@@ -819,11 +803,7 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                     for extra in &stop_hook_result.additional_contexts {
                         let wrapped = Element::new("system_reminder").text(extra);
                         ctx.messages.push(
-                            ContextMessage::system_reminder(
-                                wrapped,
-                                Some(model_id.clone()),
-                            )
-                            .into(),
+                            ContextMessage::system_reminder(wrapped, Some(model_id.clone())).into(),
                         );
                     }
                 }

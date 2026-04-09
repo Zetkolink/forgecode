@@ -391,10 +391,8 @@ mod tests {
         use crate::{HookBlockingError, PermissionBehavior};
 
         let mut conversation = Conversation::generate();
-        conversation.hook_result.blocking_error = Some(HookBlockingError {
-            message: "denied".to_string(),
-            command: "echo".to_string(),
-        });
+        conversation.hook_result.blocking_error =
+            Some(HookBlockingError { message: "denied".to_string(), command: "echo".to_string() });
         conversation.hook_result.permission_behavior = Some(PermissionBehavior::Deny);
         conversation
             .hook_result
@@ -413,10 +411,8 @@ mod tests {
         use crate::HookBlockingError;
 
         let mut conversation = Conversation::generate();
-        conversation.hook_result.blocking_error = Some(HookBlockingError {
-            message: "denied".to_string(),
-            command: "echo".to_string(),
-        });
+        conversation.hook_result.blocking_error =
+            Some(HookBlockingError { message: "denied".to_string(), command: "echo".to_string() });
 
         let json = serde_json::to_value(&conversation).unwrap();
 

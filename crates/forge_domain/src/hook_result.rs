@@ -6,11 +6,11 @@
 //! are folded into an [`AggregatedHookResult`] using the policy described
 //! in `claude-code/src/utils/hooks.ts:2733-2881`:
 //!
-//! - **`blocking_error`**: first hook to block wins. Other hooks still run
-//!   so their side effects complete, but the first blocking error is the
-//!   one propagated to the LLM.
-//! - **`permission_behavior`**: first non-`None` value wins. Later hooks
-//!   cannot relax a `Deny` or override an `Ask`.
+//! - **`blocking_error`**: first hook to block wins. Other hooks still run so
+//!   their side effects complete, but the first blocking error is the one
+//!   propagated to the LLM.
+//! - **`permission_behavior`**: first non-`None` value wins. Later hooks cannot
+//!   relax a `Deny` or override an `Ask`.
 //! - **`updated_input`**: last-write-wins. Later hooks see the aggregate of
 //!   earlier ones, but the last one to set a value overwrites prior values.
 //! - **`additional_contexts`** / **`system_messages`**: accumulated in
@@ -67,22 +67,22 @@ impl AggregatedHookResult {
     ///
     /// The merge policy matches Claude Code's aggregator:
     ///
-    /// - The **first** `Blocking` outcome wins — once `blocking_error` is
-    ///   set, subsequent blocks are ignored (so stderr from the first
-    ///   blocker is what the LLM sees).
+    /// - The **first** `Blocking` outcome wins — once `blocking_error` is set,
+    ///   subsequent blocks are ignored (so stderr from the first blocker is
+    ///   what the LLM sees).
     /// - `prevent_continuation` latches to `true` as soon as any hook sets
     ///   `continue: false`. `stop_reason` takes the last non-`None` value.
-    /// - `system_messages` and `additional_contexts` accumulate in
-    ///   invocation order.
+    /// - `system_messages` and `additional_contexts` accumulate in invocation
+    ///   order.
     /// - `permission_behavior` is first-wins across all hooks.
-    /// - `updated_input` is **last-write-wins** — each hook sees the raw
-    ///   input; the last write overwrites earlier ones.
+    /// - `updated_input` is **last-write-wins** — each hook sees the raw input;
+    ///   the last write overwrites earlier ones.
     /// - `updated_mcp_tool_output` is also last-write-wins.
     /// - `watch_paths` accumulates.
-    /// - When a hook exits `Success` with plain-text stdout (no JSON
-    ///   output), the trimmed stdout becomes an `additional_context`
-    ///   entry — this matches Claude Code's behaviour for shell hooks
-    ///   that `echo` a plain message.
+    /// - When a hook exits `Success` with plain-text stdout (no JSON output),
+    ///   the trimmed stdout becomes an `additional_context` entry — this
+    ///   matches Claude Code's behaviour for shell hooks that `echo` a plain
+    ///   message.
     pub fn merge(&mut self, exec: HookExecResult) {
         // Classify `Blocking` before consuming `output` below.
         if exec.outcome == HookOutcome::Blocking && self.blocking_error.is_none() {
@@ -116,9 +116,7 @@ impl AggregatedHookResult {
 
             // `decision: block` also counts as a blocking outcome if the
             // shell executor's classification didn't already flip it.
-            if matches!(sync.decision, Some(HookDecision::Block))
-                && self.blocking_error.is_none()
-            {
+            if matches!(sync.decision, Some(HookDecision::Block)) && self.blocking_error.is_none() {
                 self.blocking_error = Some(HookBlockingError {
                     message: sync
                         .reason
@@ -250,17 +248,14 @@ pub struct HookExecResult {
 
 /// High-level classification of a hook execution.
 ///
-/// - [`Success`](HookOutcome::Success) — exit 0 or explicit
-///   `decision: approve`; the hook's output (if any) is merged into the
-///   aggregated result normally.
-/// - [`Blocking`](HookOutcome::Blocking) — exit 2 or explicit
-///   `decision: block`; the first such outcome becomes the aggregate
-///   `blocking_error`.
-/// - [`NonBlockingError`](HookOutcome::NonBlockingError) — any other
-///   non-zero exit. Surfaced to the user as a warning but doesn't block
-///   the agent loop.
-/// - [`Cancelled`](HookOutcome::Cancelled) — the hook timed out and was
-///   killed.
+/// - [`Success`](HookOutcome::Success) — exit 0 or explicit `decision:
+///   approve`; the hook's output (if any) is merged into the aggregated result
+///   normally.
+/// - [`Blocking`](HookOutcome::Blocking) — exit 2 or explicit `decision:
+///   block`; the first such outcome becomes the aggregate `blocking_error`.
+/// - [`NonBlockingError`](HookOutcome::NonBlockingError) — any other non-zero
+///   exit. Surfaced to the user as a warning but doesn't block the agent loop.
+/// - [`Cancelled`](HookOutcome::Cancelled) — the hook timed out and was killed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookOutcome {
     Success,
@@ -393,7 +388,11 @@ mod tests {
 
         assert_eq!(
             agg.additional_contexts,
-            vec!["first".to_string(), "second".to_string(), "third".to_string()]
+            vec![
+                "first".to_string(),
+                "second".to_string(),
+                "third".to_string()
+            ]
         );
     }
 

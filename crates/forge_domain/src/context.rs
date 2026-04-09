@@ -992,8 +992,7 @@ mod tests {
 
     #[test]
     fn test_is_system_reminder_rejects_assistant_message() {
-        let actual =
-            ContextMessage::assistant("Done", None, None, None).is_system_reminder();
+        let actual = ContextMessage::assistant("Done", None, None, None).is_system_reminder();
         assert!(!actual);
     }
 

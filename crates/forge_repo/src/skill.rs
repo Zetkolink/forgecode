@@ -30,8 +30,8 @@ use serde::Deserialize;
 /// - **Built-in skills**: Embedded in application binary
 /// - **Plugin skills**: `<plugin-root>/skills/<skill-name>/SKILL.md`, loaded
 ///   only for plugins whose `enabled` flag is `true`. Plugin skills are
-///   namespaced as `{plugin_name}:{skill_dir_name}` to avoid collisions
-///   across plugins.
+///   namespaced as `{plugin_name}:{skill_dir_name}` to avoid collisions across
+///   plugins.
 /// - **Global skills**: `~/forge/skills/<skill-name>/SKILL.md`
 /// - **Agents skills**: `~/.agents/skills/<skill-name>/SKILL.md`
 /// - **CWD skills**: `./.forge/skills/<skill-name>/SKILL.md` (relative to
@@ -504,10 +504,7 @@ mod tests {
     fn fixture_plugin(name: &str, enabled: bool, skills_path: PathBuf) -> LoadedPlugin {
         LoadedPlugin {
             name: name.to_string(),
-            manifest: PluginManifest {
-                name: Some(name.to_string()),
-                ..Default::default()
-            },
+            manifest: PluginManifest { name: Some(name.to_string()), ..Default::default() },
             path: PathBuf::from(format!("/fake/{name}")),
             source: PluginSource::Global,
             enabled,
@@ -565,8 +562,7 @@ mod tests {
         let skills = vec![
             Skill::new("demo:foo", "plugin body", "plugin desc")
                 .with_source(SkillSource::Plugin { plugin_name: "demo".into() }),
-            Skill::new("demo:foo", "user body", "user desc")
-                .with_source(SkillSource::GlobalUser),
+            Skill::new("demo:foo", "user body", "user desc").with_source(SkillSource::GlobalUser),
         ];
 
         let actual = resolve_skill_conflicts(skills);
@@ -578,10 +574,7 @@ mod tests {
     #[test]
     fn test_load_builtin_skills() {
         // Fixture
-        let repo = ForgeSkillRepository {
-            infra: Arc::new(()),
-            plugin_repository: None,
-        };
+        let repo = ForgeSkillRepository { infra: Arc::new(()), plugin_repository: None };
 
         // Act
         let actual = repo.load_builtin_skills();
@@ -718,15 +711,8 @@ Body content for the extended frontmatter test.
             Some("Invoke when the user asks for deep analysis")
         );
         assert_eq!(
-            actual.allowed_tools.as_ref().map(Vec::as_slice),
-            Some(
-                [
-                    "read".to_string(),
-                    "write".to_string(),
-                    "shell".to_string()
-                ]
-                .as_slice()
-            )
+            actual.allowed_tools.as_deref(),
+            Some(["read".to_string(), "write".to_string(), "shell".to_string()].as_slice())
         );
         assert!(actual.disable_model_invocation);
         assert!(!actual.user_invocable);
@@ -866,7 +852,10 @@ Body.
         let repo = fixture_skill_repo_with_plugins(vec![plugin]);
 
         let actual = repo.load_plugin_skills().await;
-        assert!(actual.is_empty(), "disabled plugin skills should be skipped");
+        assert!(
+            actual.is_empty(),
+            "disabled plugin skills should be skipped"
+        );
     }
 
     #[tokio::test]

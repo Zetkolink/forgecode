@@ -100,9 +100,7 @@ impl<R: PluginRepository + Send + Sync + 'static> PluginLoader for ForgePluginLo
 mod tests {
     use std::sync::Mutex;
 
-    use forge_domain::{
-        LoadedPlugin, PluginLoadError, PluginLoadResult, PluginRepository,
-    };
+    use forge_domain::{LoadedPlugin, PluginLoadError, PluginLoadResult, PluginRepository};
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -123,10 +121,7 @@ mod tests {
         }
 
         fn with_result(result: PluginLoadResult) -> Self {
-            Self {
-                result: Mutex::new(result),
-                load_calls: Mutex::new(0),
-            }
+            Self { result: Mutex::new(result), load_calls: Mutex::new(0) }
         }
 
         fn load_call_count(&self) -> u32 {

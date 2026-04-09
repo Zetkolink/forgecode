@@ -10,7 +10,8 @@
 //! live in later phases.
 //!
 //! References:
-//! - Claude Code event enum: `claude-code/src/entrypoints/sdk/coreSchemas.ts:355-383`
+//! - Claude Code event enum:
+//!   `claude-code/src/entrypoints/sdk/coreSchemas.ts:355-383`
 //! - Claude Code hook config: `claude-code/src/schemas/hooks.ts:32-213`
 
 use std::collections::BTreeMap;
@@ -39,9 +40,7 @@ pub struct HooksConfig(pub BTreeMap<HookEventName, Vec<HookMatcher>>);
 /// Uses Rust's default PascalCase enum serialization, which matches Claude
 /// Code's wire format. `Ord` / `PartialOrd` are derived so the enum can be
 /// used as a key in the `BTreeMap` inside [`HooksConfig`].
-#[derive(
-    Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub enum HookEventName {
     PreToolUse,
     PostToolUse,
@@ -304,15 +303,12 @@ mod tests {
 
         // prompt
         let prompt: HookCommand =
-            serde_json::from_str(r#"{"type":"prompt","prompt":"Summarize the diff"}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"type":"prompt","prompt":"Summarize the diff"}"#).unwrap();
         assert!(matches!(prompt, HookCommand::Prompt(_)));
 
         // http
-        let http: HookCommand = serde_json::from_str(
-            r#"{"type":"http","url":"https://example.com/webhook"}"#,
-        )
-        .unwrap();
+        let http: HookCommand =
+            serde_json::from_str(r#"{"type":"http","url":"https://example.com/webhook"}"#).unwrap();
         assert!(matches!(http, HookCommand::Http(_)));
 
         // agent

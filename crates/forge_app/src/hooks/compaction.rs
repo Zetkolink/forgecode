@@ -81,10 +81,8 @@ where
                 // Fire PreCompact — plugin hooks can block the compaction
                 // via blocking_error.
                 conversation.reset_hook_result();
-                let pre_payload = PreCompactPayload {
-                    trigger: CompactTrigger::Auto,
-                    custom_instructions: None,
-                };
+                let pre_payload =
+                    PreCompactPayload { trigger: CompactTrigger::Auto, custom_instructions: None };
                 let pre_event = LifecycleEvent::PreCompact(EventData::with_context(
                     self.agent.clone(),
                     self.agent.model.clone(),

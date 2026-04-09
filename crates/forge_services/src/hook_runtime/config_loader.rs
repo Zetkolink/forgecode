@@ -6,9 +6,9 @@
 //!
 //! 1. **User global** — `~/forge/hooks.json` (via `Environment::base_path`).
 //! 2. **Project** — `./.forge/hooks.json` (via `Environment::cwd`).
-//! 3. **Plugin** — every enabled plugin's `manifest.hooks` field, which
-//!    may be an inline object, a relative path to a JSON file, or a
-//!    mixed array of both (see [`forge_domain::PluginHooksManifestField`]).
+//! 3. **Plugin** — every enabled plugin's `manifest.hooks` field, which may be
+//!    an inline object, a relative path to a JSON file, or a mixed array of
+//!    both (see [`forge_domain::PluginHooksManifestField`]).
 //!
 //! All three sources are **additive** — matchers from all three live in
 //! the same per-event list. The dispatcher walks the combined list in
@@ -32,9 +32,7 @@ use forge_app::hook_runtime::{
     HookConfigLoaderService, HookConfigSource, HookMatcherWithSource, MergedHooksConfig,
 };
 use forge_app::{EnvironmentInfra, FileInfoInfra, FileReaderInfra};
-use forge_domain::{
-    HooksConfig, LoadedPlugin, PluginHooksManifestField, PluginRepository,
-};
+use forge_domain::{HooksConfig, LoadedPlugin, PluginHooksManifestField, PluginRepository};
 use tokio::sync::RwLock;
 
 /// Extension helper for [`MergedHooksConfig`] that owns the merge logic.
@@ -93,7 +91,13 @@ where
         // 1. User-global: ~/forge/hooks.json
         let user_path = env.base_path.join("hooks.json");
         if let Some(config) = self.read_hooks_json(&user_path).await? {
-            extend_from(&mut merged, config, HookConfigSource::UserGlobal, None, None);
+            extend_from(
+                &mut merged,
+                config,
+                HookConfigSource::UserGlobal,
+                None,
+                None,
+            );
         }
 
         // 2. Project: ./.forge/hooks.json
@@ -121,8 +125,8 @@ where
     ///
     /// Handles all three variants of [`PluginHooksManifestField`]:
     ///
-    /// - `Path("hooks/hooks.json")` — resolve relative to plugin root and
-    ///   read the file.
+    /// - `Path("hooks/hooks.json")` — resolve relative to plugin root and read
+    ///   the file.
     /// - `Inline(...)` — re-serialise and re-parse the `serde_json::Value`
     ///   placeholder into a proper [`HooksConfig`].
     /// - `Array([...])` — recursively merge each element.
@@ -147,9 +151,7 @@ where
         plugin: &'a LoadedPlugin,
         field: &'a PluginHooksManifestField,
         merged: &'a mut MergedHooksConfig,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
             match field {
                 PluginHooksManifestField::Path(rel) => {
@@ -191,20 +193,13 @@ where
     /// Read a `hooks.json` file at `path` and parse it into a
     /// [`HooksConfig`]. Returns `Ok(None)` when the file is missing (the
     /// common case — most projects don't have a `hooks.json`).
-    async fn read_hooks_json(
-        &self,
-        path: &Path,
-    ) -> anyhow::Result<Option<HooksConfig>> {
+    async fn read_hooks_json(&self, path: &Path) -> anyhow::Result<Option<HooksConfig>> {
         if !self.infra.exists(path).await? {
             return Ok(None);
         }
         let raw = self.infra.read_utf8(path).await?;
         let parsed: HooksConfig = serde_json::from_str(&raw).map_err(|e| {
-            anyhow::anyhow!(
-                "failed to parse hooks.json at {}: {}",
-                path.display(),
-                e
-            )
+            anyhow::anyhow!("failed to parse hooks.json at {}: {}", path.display(), e)
         })?;
         Ok(Some(parsed))
     }
@@ -251,16 +246,13 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
-    use forge_app::{
-        DirectoryReaderInfra, EnvironmentInfra, FileInfoInfra, FileReaderInfra,
-    };
+    use forge_app::{DirectoryReaderInfra, EnvironmentInfra, FileInfoInfra, FileReaderInfra};
     use forge_domain::{
         ConfigOperation, Environment, FileInfo, HookCommand, HookEventName, LoadedPlugin,
         PluginHooksConfig, PluginHooksManifestField, PluginLoadResult, PluginManifest,
         PluginRepository, PluginSource,
     };
-    use futures::Stream;
-    use futures::stream;
+    use futures::{Stream, stream};
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
@@ -297,10 +289,7 @@ mod tests {
             Ok(forge_config::ForgeConfig::default())
         }
 
-        async fn update_environment(
-            &self,
-            _ops: Vec<ConfigOperation>,
-        ) -> anyhow::Result<()> {
+        async fn update_environment(&self, _ops: Vec<ConfigOperation>) -> anyhow::Result<()> {
             Ok(())
         }
 
@@ -481,11 +470,7 @@ mod tests {
         std::fs::create_dir_all(&base).unwrap();
         std::fs::create_dir_all(&cwd).unwrap();
         std::fs::create_dir_all(plugin_root.join("hooks")).unwrap();
-        std::fs::write(
-            plugin_root.join("hooks/hooks.json"),
-            sample_hooks_json(),
-        )
-        .unwrap();
+        std::fs::write(plugin_root.join("hooks/hooks.json"), sample_hooks_json()).unwrap();
 
         let plugin = LoadedPlugin {
             name: "demo".to_string(),
@@ -508,8 +493,7 @@ mod tests {
         };
 
         let infra = Arc::new(TestInfra::new(base, cwd));
-        let repo: Arc<dyn PluginRepository> =
-            Arc::new(TestPluginRepository::with(vec![plugin]));
+        let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::with(vec![plugin]));
         let loader = ForgeHookConfigLoader::new(infra, repo);
 
         let merged = loader.load().await.unwrap();
@@ -535,9 +519,7 @@ mod tests {
             name: "inline-demo".to_string(),
             manifest: PluginManifest {
                 name: Some("inline-demo".to_string()),
-                hooks: Some(PluginHooksManifestField::Inline(PluginHooksConfig {
-                    raw,
-                })),
+                hooks: Some(PluginHooksManifestField::Inline(PluginHooksConfig { raw })),
                 ..Default::default()
             },
             path: temp.path().join("plugins/inline-demo"),
@@ -552,8 +534,7 @@ mod tests {
         };
 
         let infra = Arc::new(TestInfra::new(base, cwd));
-        let repo: Arc<dyn PluginRepository> =
-            Arc::new(TestPluginRepository::with(vec![plugin]));
+        let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::with(vec![plugin]));
         let loader = ForgeHookConfigLoader::new(infra, repo);
 
         let merged = loader.load().await.unwrap();
@@ -609,8 +590,7 @@ mod tests {
         };
 
         let infra = Arc::new(TestInfra::new(base, cwd));
-        let repo: Arc<dyn PluginRepository> =
-            Arc::new(TestPluginRepository::with(vec![plugin]));
+        let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::with(vec![plugin]));
         let loader = ForgeHookConfigLoader::new(infra, repo);
 
         let merged = loader.load().await.unwrap();

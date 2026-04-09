@@ -109,8 +109,7 @@ where
             let plugin_root = plugin.path.display().to_string();
 
             for (server_name, server_cfg) in plugin_servers {
-                let namespaced: ServerName =
-                    format!("{}:{}", plugin.name, server_name).into();
+                let namespaced: ServerName = format!("{}:{}", plugin.name, server_name).into();
 
                 // Inject plugin-awareness env vars into stdio subprocesses.
                 // HTTP servers fall through unchanged.
@@ -302,10 +301,7 @@ mod tests {
     ) -> LoadedPlugin {
         LoadedPlugin {
             name: name.to_string(),
-            manifest: PluginManifest {
-                name: Some(name.to_string()),
-                ..Default::default()
-            },
+            manifest: PluginManifest { name: Some(name.to_string()), ..Default::default() },
             path: PathBuf::from(format!("/tmp/plugins/{name}")),
             source: PluginSource::Global,
             enabled,
@@ -330,8 +326,7 @@ mod tests {
 
     fn manager_with(plugins: Vec<LoadedPlugin>) -> ForgeMcpManager<StubInfra> {
         let infra = Arc::new(StubInfra::new(PathBuf::from("/workspace/test")));
-        let repo: Arc<dyn PluginRepository> =
-            Arc::new(MockPluginRepository::with(plugins));
+        let repo: Arc<dyn PluginRepository> = Arc::new(MockPluginRepository::with(plugins));
         ForgeMcpManager { infra, plugin_repository: Some(repo) }
     }
 
@@ -479,10 +474,7 @@ mod tests {
             Some("/custom"),
             "existing FORGE_PLUGIN_ROOT should be preserved"
         );
-        assert_eq!(
-            stdio.env.get("USER_VAR").map(String::as_str),
-            Some("x")
-        );
+        assert_eq!(stdio.env.get("USER_VAR").map(String::as_str), Some("x"));
         // But FORGE_PROJECT_DIR should still be injected because it
         // wasn't present.
         assert_eq!(

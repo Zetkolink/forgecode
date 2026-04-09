@@ -4,13 +4,13 @@
 //!
 //! 1. [`matches_pattern`] — evaluates the `matcher` field of a
 //!    [`forge_domain::HookMatcher`] against a tool name. Supports exact
-//!    strings, wildcards, pipe-separated alternatives, and regexes.
-//!    Source of truth: `claude-code/src/utils/hooks.ts:1346-1390`.
+//!    strings, wildcards, pipe-separated alternatives, and regexes. Source of
+//!    truth: `claude-code/src/utils/hooks.ts:1346-1390`.
 //!
 //! 2. [`matches_condition`] — evaluates the `if` field of a hook command
 //!    against the current `tool_name` and `tool_input`. Uses the
-//!    permission-rule syntax `ToolName(argument_pattern)` (e.g.
-//!    `"Bash(git *)"`). Mirrors Claude Code's permission rule engine.
+//!    permission-rule syntax `ToolName(argument_pattern)` (e.g. `"Bash(git
+//!    *)"`). Mirrors Claude Code's permission rule engine.
 //!
 //! Both matchers are pure and side-effect free. Unknown/empty conditions
 //! always match so that misconfigured rules don't silently block hooks.
@@ -28,10 +28,10 @@ use regex::Regex;
 ///
 /// Order of checks (mirrors Claude Code):
 /// 1. Empty or `"*"` → matches everything.
-/// 2. Regex-like pattern (detected heuristically via special characters)
-///    → compiled with the `regex` crate and tested. Checked before the
-///    pipe-list branch so that a regex alternation like `^(Read|Write)$`
-///    isn't mis-split into exact alternatives.
+/// 2. Regex-like pattern (detected heuristically via special characters) →
+///    compiled with the `regex` crate and tested. Checked before the pipe-list
+///    branch so that a regex alternation like `^(Read|Write)$` isn't mis-split
+///    into exact alternatives.
 /// 3. Pipe-separated list (`"Write|Edit|Bash"`) → any exact alternative
 ///    matches.
 /// 4. Exact case-sensitive match.
@@ -46,16 +46,14 @@ pub fn matches_pattern(pattern: &str, tool_name: &str) -> bool {
         return true;
     }
 
-    // 2. Regex. Heuristic: if the pattern contains any regex special
-    //    char that wouldn't appear in a plain identifier or a simple
-    //    pipe-list, treat it as a regex. This must run before the
-    //    pipe-split branch so that `^(Read|Write)$` is handled as a
-    //    regex rather than split into two alternatives.
-    if contains_regex_metachars(trimmed) {
-        if let Ok(re) = Regex::new(trimmed) {
+    // 2. Regex. Heuristic: if the pattern contains any regex special char that
+    //    wouldn't appear in a plain identifier or a simple pipe-list, treat it as a
+    //    regex. This must run before the pipe-split branch so that `^(Read|Write)$`
+    //    is handled as a regex rather than split into two alternatives.
+    if contains_regex_metachars(trimmed)
+        && let Ok(re) = Regex::new(trimmed) {
             return re.is_match(tool_name);
         }
-    }
 
     // 3. Pipe list — any exact alternative matches.
     if trimmed.contains('|') {
@@ -74,24 +72,19 @@ pub fn matches_pattern(pattern: &str, tool_name: &str) -> bool {
 ///
 /// The condition may be one of two forms:
 /// - `"ToolName"` — matches whenever `tool_name` equals the name.
-/// - `"ToolName(argument_pattern)"` — matches when the tool name equals
-///   the name AND a tool-specific argument extracted from `tool_input`
-///   matches `argument_pattern` using glob-style matching.
+/// - `"ToolName(argument_pattern)"` — matches when the tool name equals the
+///   name AND a tool-specific argument extracted from `tool_input` matches
+///   `argument_pattern` using glob-style matching.
 ///
 /// Argument extraction rules (per Claude Code):
 /// - `Bash` — the argument is `tool_input["command"]`.
-/// - `Read` / `Write` / `Edit` / `MultiEdit` / `NotebookEdit` — the
-///   argument is `tool_input["file_path"]` or `tool_input["path"]`
-///   (whichever exists).
+/// - `Read` / `Write` / `Edit` / `MultiEdit` / `NotebookEdit` — the argument is
+///   `tool_input["file_path"]` or `tool_input["path"]` (whichever exists).
 /// - Any other tool — the argument is the JSON-serialized `tool_input`.
 ///
 /// An empty or unparseable condition always matches so that a typo in a
 /// plugin's `hooks.json` doesn't silently swallow hook events.
-pub fn matches_condition(
-    condition: &str,
-    tool_name: &str,
-    tool_input: &serde_json::Value,
-) -> bool {
+pub fn matches_condition(condition: &str, tool_name: &str, tool_input: &serde_json::Value) -> bool {
     let trimmed = condition.trim();
     if trimmed.is_empty() {
         return true;
@@ -154,9 +147,12 @@ fn glob_match(pattern: &str, target: &str) -> bool {
 /// Cheap heuristic: does this string contain a character that would only
 /// appear in a regex, not in a plain tool name?
 fn contains_regex_metachars(pattern: &str) -> bool {
-    pattern
-        .chars()
-        .any(|c| matches!(c, '^' | '$' | '[' | ']' | '(' | ')' | '\\' | '.' | '+' | '?' | '{' | '}'))
+    pattern.chars().any(|c| {
+        matches!(
+            c,
+            '^' | '$' | '[' | ']' | '(' | ')' | '\\' | '.' | '+' | '?' | '{' | '}'
+        )
+    })
 }
 
 #[cfg(test)]

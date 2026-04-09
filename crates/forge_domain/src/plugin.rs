@@ -439,10 +439,7 @@ mod tests {
     fn fixture_loaded_plugin(name: &str) -> LoadedPlugin {
         LoadedPlugin {
             name: name.to_string(),
-            manifest: PluginManifest {
-                name: Some(name.to_string()),
-                ..Default::default()
-            },
+            manifest: PluginManifest { name: Some(name.to_string()), ..Default::default() },
             path: PathBuf::from(format!("/fake/{name}")),
             source: PluginSource::Global,
             enabled: true,
@@ -484,8 +481,7 @@ mod tests {
 
     #[test]
     fn test_plugin_load_result_has_errors_reports_non_empty_errors() {
-        let result_ok =
-            PluginLoadResult::new(vec![fixture_loaded_plugin("alpha")], Vec::new());
+        let result_ok = PluginLoadResult::new(vec![fixture_loaded_plugin("alpha")], Vec::new());
         assert!(!result_ok.has_errors());
 
         let result_err = PluginLoadResult::new(

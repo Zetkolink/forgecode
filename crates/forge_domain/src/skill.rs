@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 /// `:plugin list`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[derive(Default)]
 pub enum SkillSource {
     /// Compiled into the Forge binary.
+    #[default]
     Builtin,
     /// Contributed by an installed plugin.
     Plugin {
@@ -25,11 +27,6 @@ pub enum SkillSource {
     ProjectCwd,
 }
 
-impl Default for SkillSource {
-    fn default() -> Self {
-        Self::Builtin
-    }
-}
 
 /// Represents a reusable skill with a name, file path, and prompt content
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Setters, JsonSchema)]
@@ -189,9 +186,8 @@ mod tests {
     #[test]
     fn test_skill_with_source_plugin() {
         // Fixture
-        let fixture = Skill::new("s", "p", "d").with_source(SkillSource::Plugin {
-            plugin_name: "demo".into(),
-        });
+        let fixture = Skill::new("s", "p", "d")
+            .with_source(SkillSource::Plugin { plugin_name: "demo".into() });
 
         // Assert
         assert_eq!(
@@ -275,12 +271,9 @@ mod tests {
             .when_to_use("when the user asks")
             .allowed_tools(vec!["read".to_string(), "write".to_string()]);
 
+        assert_eq!(fixture.when_to_use.as_deref(), Some("when the user asks"));
         assert_eq!(
-            fixture.when_to_use.as_deref(),
-            Some("when the user asks")
-        );
-        assert_eq!(
-            fixture.allowed_tools.as_ref().map(Vec::as_slice),
+            fixture.allowed_tools.as_deref(),
             Some(["read".to_string(), "write".to_string()].as_slice())
         );
     }

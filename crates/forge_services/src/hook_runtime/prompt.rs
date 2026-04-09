@@ -43,8 +43,7 @@ impl ForgePromptHookExecutor {
             outcome: HookOutcome::NonBlockingError,
             output: None,
             raw_stdout: String::new(),
-            raw_stderr: "Prompt hooks are not yet supported in this build of Forge"
-                .to_string(),
+            raw_stderr: "Prompt hooks are not yet supported in this build of Forge".to_string(),
             exit_code: None,
         })
     }
@@ -71,9 +70,7 @@ mod tests {
                 agent_type: None,
                 hook_event_name: "UserPromptSubmit".to_string(),
             },
-            payload: HookInputPayload::UserPromptSubmit {
-                prompt: "hello".to_string(),
-            },
+            payload: HookInputPayload::UserPromptSubmit { prompt: "hello".to_string() },
         }
     }
 

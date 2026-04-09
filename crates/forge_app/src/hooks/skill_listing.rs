@@ -34,8 +34,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use forge_domain::{
-    AgentId, ContextMessage, Conversation, ConversationId, EventData, EventHandle, InvocableCommand,
-    RequestPayload,
+    AgentId, ContextMessage, Conversation, ConversationId, EventData, EventHandle,
+    InvocableCommand, RequestPayload,
 };
 use forge_template::Element;
 use tokio::sync::Mutex;
@@ -202,9 +202,9 @@ impl DeltaCache {
     /// Used in two scenarios:
     /// - `SessionEnd` cleanup, to prevent the cache from growing unbounded
     ///   across restart / resume cycles.
-    /// - Plugin hot-reload (Phase 2): when a plugin is enabled or disabled
-    ///   the skill catalog may change and every agent in the conversation
-    ///   needs to see a fresh announcement on the next turn.
+    /// - Plugin hot-reload (Phase 2): when a plugin is enabled or disabled the
+    ///   skill catalog may change and every agent in the conversation needs to
+    ///   see a fresh announcement on the next turn.
     ///
     /// Removes every `(conversation_id, *)` entry regardless of which agent
     /// had previously been announced to.
@@ -733,9 +733,7 @@ mod tests {
         let _ = cache
             .delta(ConversationId::generate(), agent.clone(), &items)
             .await;
-        let actual = cache
-            .delta(ConversationId::generate(), agent, &items)
-            .await;
+        let actual = cache.delta(ConversationId::generate(), agent, &items).await;
 
         assert_eq!(actual, items);
     }
@@ -751,9 +749,7 @@ mod tests {
 
         let _ = cache.delta(conv, AgentId::new("forge"), &items).await;
         let _ = cache.delta(conv, AgentId::new("sage"), &items).await;
-        let _ = cache
-            .delta(other_conv, AgentId::new("forge"), &items)
-            .await;
+        let _ = cache.delta(other_conv, AgentId::new("forge"), &items).await;
 
         cache.forget(conv).await;
 
@@ -764,9 +760,7 @@ mod tests {
         assert_eq!(sage_after, items);
 
         // The unrelated conversation must still be cached.
-        let other_after = cache
-            .delta(other_conv, AgentId::new("forge"), &items)
-            .await;
+        let other_after = cache.delta(other_conv, AgentId::new("forge"), &items).await;
         assert!(other_after.is_empty());
     }
 
@@ -864,8 +858,8 @@ mod tests {
 
     /// Minimal mock service that returns a fixed skill list, counts
     /// invocations, and doubles as a direct [`InvocableCommandsProvider`] so
-    /// the tests do not have to go through the full [`Services`](crate::Services)
-    /// aggregate.
+    /// the tests do not have to go through the full
+    /// [`Services`](crate::Services) aggregate.
     struct MockSkillService {
         skills: Vec<Skill>,
         calls: AtomicUsize,

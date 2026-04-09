@@ -3,21 +3,20 @@
 //! Implements the wire protocol described in
 //! `claude-code/src/utils/hooks.ts:747-1335`:
 //!
-//! 1. Serialize the [`HookInput`] to JSON (snake_case fields matching
-//!    the Claude Code wire format exactly).
-//! 2. Spawn `bash -c <command>` (or `powershell -Command <command>`
-//!    on Windows, if the config requests it).
-//! 3. Write the JSON + a trailing `\n` to stdin. The newline is
-//!    **critical** — shell hooks that use `read -r` patterns rely on
-//!    it to complete their read loop.
-//! 4. Close stdin immediately so the hook can exit without a partial
-//!    read.
-//! 5. Wait for the child with a timeout. Default timeout is 30 seconds
-//!    to match Claude Code's `TOOL_HOOK_EXECUTION_TIMEOUT_MS`.
-//! 6. Attempt to parse stdout as a [`HookOutput`] JSON document; fall
-//!    back to treating the output as plain text when parsing fails.
-//! 7. Classify the outcome using the JSON `decision` field when
-//!    present, otherwise the raw exit code.
+//! 1. Serialize the [`HookInput`] to JSON (snake_case fields matching the
+//!    Claude Code wire format exactly).
+//! 2. Spawn `bash -c <command>` (or `powershell -Command <command>` on Windows,
+//!    if the config requests it).
+//! 3. Write the JSON + a trailing `\n` to stdin. The newline is **critical** —
+//!    shell hooks that use `read -r` patterns rely on it to complete their read
+//!    loop.
+//! 4. Close stdin immediately so the hook can exit without a partial read.
+//! 5. Wait for the child with a timeout. Default timeout is 30 seconds to match
+//!    Claude Code's `TOOL_HOOK_EXECUTION_TIMEOUT_MS`.
+//! 6. Attempt to parse stdout as a [`HookOutput`] JSON document; fall back to
+//!    treating the output as plain text when parsing fails.
+//! 7. Classify the outcome using the JSON `decision` field when present,
+//!    otherwise the raw exit code.
 //!
 //! The executor is stateless: `async` / `asyncRewake` modes and `once`
 //! semantics are added in Phase 3 Part 3 once the dispatcher exists.
@@ -83,10 +82,9 @@ impl ForgeShellHookExecutor {
         // 2. Substitute ${VAR} references in the command string.
         let command = substitute_variables(&config.command, &env_vars);
 
-        // 3. Pick shell based on config (default bash on Unix, powershell
-        //    on Windows is handled implicitly by the fallback on Windows
-        //    builds; Part 2 defaults to bash everywhere because the test
-        //    suite is gated to unix).
+        // 3. Pick shell based on config (default bash on Unix, powershell on Windows is
+        //    handled implicitly by the fallback on Windows builds; Part 2 defaults to
+        //    bash everywhere because the test suite is gated to unix).
         let (program, shell_flag) = match config.shell {
             Some(ShellType::Powershell) => ("powershell", "-Command"),
             Some(ShellType::Bash) | None => ("bash", "-c"),
@@ -106,8 +104,7 @@ impl ForgeShellHookExecutor {
 
         let mut child = cmd.spawn()?;
 
-        // 4. Write JSON + "\n" to stdin, then drop the handle so the
-        //    hook sees EOF.
+        // 4. Write JSON + "\n" to stdin, then drop the handle so the hook sees EOF.
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(input_json.as_bytes()).await?;
             stdin.write_all(b"\n").await?;
@@ -131,10 +128,7 @@ impl ForgeShellHookExecutor {
                     outcome: HookOutcome::Cancelled,
                     output: None,
                     raw_stdout: String::new(),
-                    raw_stderr: format!(
-                        "hook timed out after {}s",
-                        timeout_duration.as_secs()
-                    ),
+                    raw_stderr: format!("hook timed out after {}s", timeout_duration.as_secs()),
                     exit_code: None,
                 });
             }
@@ -167,8 +161,8 @@ impl ForgeShellHookExecutor {
 /// Decide the [`HookOutcome`] using (in priority order):
 ///
 /// 1. A parsed [`SyncHookOutput`]'s `decision` field, if `Block`.
-/// 2. The raw exit code: `0` → `Success`, `2` → `Blocking`, other
-///    non-zero / missing → `NonBlockingError`.
+/// 2. The raw exit code: `0` → `Success`, `2` → `Blocking`, other non-zero /
+///    missing → `NonBlockingError`.
 fn classify_outcome(exit_code: Option<i32>, output: Option<&HookOutput>) -> HookOutcome {
     if let Some(HookOutput::Sync(SyncHookOutput { decision: Some(dec), .. })) = output
         && matches!(dec, HookDecision::Block)
@@ -252,9 +246,7 @@ mod tests {
     #[tokio::test]
     async fn test_hook_with_json_stdout_parses_to_hook_output() {
         let executor = ForgeShellHookExecutor::new();
-        let config = shell_hook(
-            r#"echo '{"continue": true, "systemMessage": "from hook"}'"#,
-        );
+        let config = shell_hook(r#"echo '{"continue": true, "systemMessage": "from hook"}'"#);
         let result = executor
             .execute(&config, &sample_input(), HashMap::new())
             .await
@@ -378,10 +370,7 @@ mod tests {
         let config = shell_hook(&command);
 
         let mut env = HashMap::new();
-        env.insert(
-            "FORGE_PLUGIN_ROOT".to_string(),
-            "/plugins/demo".to_string(),
-        );
+        env.insert("FORGE_PLUGIN_ROOT".to_string(), "/plugins/demo".to_string());
 
         executor
             .execute(&config, &sample_input(), env)
@@ -395,8 +384,7 @@ mod tests {
     #[tokio::test]
     async fn test_hook_timeout_produces_cancelled() {
         // Use a very short timeout and a long-running hook.
-        let executor =
-            ForgeShellHookExecutor::with_default_timeout(Duration::from_millis(100));
+        let executor = ForgeShellHookExecutor::with_default_timeout(Duration::from_millis(100));
         let config = shell_hook("sleep 5");
         let result = executor
             .execute(&config, &sample_input(), HashMap::new())
