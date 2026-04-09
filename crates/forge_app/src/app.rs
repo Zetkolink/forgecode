@@ -94,11 +94,8 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         // logged inside `fire_instructions_loaded_hook` and never
         // propagated to the chat pipeline.
         for loaded in &loaded_instructions {
-            crate::lifecycle_fires::fire_instructions_loaded_hook(
-                services.clone(),
-                loaded.clone(),
-            )
-            .await;
+            crate::lifecycle_fires::fire_instructions_loaded_hook(services.clone(), loaded.clone())
+                .await;
         }
 
         // Prepare agents with user configuration

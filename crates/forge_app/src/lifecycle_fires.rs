@@ -362,8 +362,9 @@ pub async fn fire_config_change_hook<S: Services>(
 /// instructions file that was just loaded into the agent's context.
 ///
 /// Used by `ForgeApp::chat` to dispatch one hook event per AGENTS.md
-/// file returned by [`crate::CustomInstructionsService::get_custom_instructions_detailed`].
-/// Pass 1 of Wave D only fires with
+/// file returned by
+/// [`crate::CustomInstructionsService::get_custom_instructions_detailed`]. Pass
+/// 1 of Wave D only fires with
 /// [`forge_domain::InstructionsLoadReason::SessionStart`]; the nested
 /// traversal, conditional-rule, `@include` and post-compact reasons
 /// are deferred to Pass 2.
@@ -434,14 +435,16 @@ pub async fn fire_instructions_loaded_hook<S: Services>(
         parent_file_path: loaded.parent_file_path,
     };
 
-    let event =
-        EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+    let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
 
     let plugin_handler = PluginHookHandler::new(services.clone());
-    if let Err(err) = <PluginHookHandler<S> as EventHandle<
-        EventData<InstructionsLoadedPayload>,
-    >>::handle(&plugin_handler, &event, &mut scratch)
-    .await
+    if let Err(err) =
+        <PluginHookHandler<S> as EventHandle<EventData<InstructionsLoadedPayload>>>::handle(
+            &plugin_handler,
+            &event,
+            &mut scratch,
+        )
+        .await
     {
         warn!(
             error = %err,

@@ -6,10 +6,9 @@ use derive_setters::Setters;
 use forge_domain::{
     AgentId, AnyProvider, Attachment, AuthContextRequest, AuthContextResponse, AuthMethod,
     ChatCompletionMessage, CommandOutput, Context, Conversation, ConversationId, File, FileInfo,
-    FileStatus, Image, InvocableCommand, LoadedInstructions, McpConfig, McpServers, Model,
-    ModelId, Node, NotificationKind, Provider, ProviderId, ResultStream, Scope, SearchParams,
-    SyncProgress, SyntaxError, Template, ToolCallFull, ToolOutput, WorkspaceAuth, WorkspaceId,
-    WorkspaceInfo,
+    FileStatus, Image, InvocableCommand, LoadedInstructions, McpConfig, McpServers, Model, ModelId,
+    Node, NotificationKind, Provider, ProviderId, ResultStream, Scope, SearchParams, SyncProgress,
+    SyntaxError, Template, ToolCallFull, ToolOutput, WorkspaceAuth, WorkspaceId, WorkspaceInfo,
 };
 use reqwest::Response;
 use reqwest::header::HeaderMap;

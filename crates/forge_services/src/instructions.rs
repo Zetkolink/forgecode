@@ -22,7 +22,9 @@ use gray_matter::engine::YAML;
 /// all of that metadata back to the caller. Pass 1 tags every load
 /// reason as [`InstructionsLoadReason::SessionStart`]; the nested
 /// traversal, conditional-rule and `@include` reasons are deferred to
-/// Pass 2 per `plans/2026-04-09-claude-code-plugins-v4/07-phase-6-t2-infrastructure.md:343`.
+/// Pass 2 per
+/// `plans/2026-04-09-claude-code-plugins-v4/07-phase-6-t2-infrastructure.md:
+/// 343`.
 #[derive(Clone)]
 pub struct ForgeCustomInstructionsService<F> {
     infra: Arc<F>,
@@ -197,9 +199,7 @@ mod tests {
 
     use async_trait::async_trait;
     use forge_app::domain::Environment;
-    use forge_app::{
-        CommandInfra, CustomInstructionsService, EnvironmentInfra, FileReaderInfra,
-    };
+    use forge_app::{CommandInfra, CustomInstructionsService, EnvironmentInfra, FileReaderInfra};
     use forge_domain::{
         CommandOutput, ConfigOperation, FileInfo, InstructionsLoadReason, MemoryType,
     };
@@ -423,8 +423,8 @@ mod tests {
         // `paths` glob. Pass 1 does not act on the glob, but it must
         // parse and surface it via `globs`.
         let content = "---\npaths:\n  - \"*.py\"\n---\nbody";
-        let infra = MockInfra::new(base_path(), cwd())
-            .with_file(base_path().join("AGENTS.md"), content);
+        let infra =
+            MockInfra::new(base_path(), cwd()).with_file(base_path().join("AGENTS.md"), content);
         let service = ForgeCustomInstructionsService::new(std::sync::Arc::new(infra));
 
         // Act.
@@ -456,8 +456,8 @@ mod tests {
     async fn test_file_without_frontmatter_has_none_frontmatter() {
         // Fixture — a plain markdown file with no YAML block at all.
         let body = "# Plain AGENTS\n\nNothing fancy.";
-        let infra = MockInfra::new(base_path(), cwd())
-            .with_file(base_path().join("AGENTS.md"), body);
+        let infra =
+            MockInfra::new(base_path(), cwd()).with_file(base_path().join("AGENTS.md"), body);
         let service = ForgeCustomInstructionsService::new(std::sync::Arc::new(infra));
 
         // Act.
