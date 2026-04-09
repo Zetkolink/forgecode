@@ -13,11 +13,11 @@
 //!
 //! - a 1-second debounce window (matches Claude Code's
 //!   `awaitWriteFinish.stabilityThreshold: 1000`),
-//! - 5-second internal-write suppression so Forge's own saves do not
-//!   round-trip through the hook system,
-//! - a 1.7-second atomic-save grace period so a `unlink → add` pair
-//!   (Vim, VSCode, etc.) fires one `Modify`-equivalent event instead of
-//!   a spurious delete followed by a create.
+//! - 5-second internal-write suppression so Forge's own saves do not round-trip
+//!   through the hook system,
+//! - a 1.7-second atomic-save grace period so a `unlink → add` pair (Vim,
+//!   VSCode, etc.) fires one `Modify`-equivalent event instead of a spurious
+//!   delete followed by a create.
 //!
 //! Wiring the watcher into `ForgeAPI`/`ForgeServices` (and firing the
 //! actual `ConfigChange` plugin hook) is handled by Wave C Part 2.
@@ -34,13 +34,13 @@
 //!   text editor can produce half a dozen create/modify/rename events.
 //!   `notify-debouncer-full` coalesces them into a single event per file per
 //!   debounce tick.
-//! - **Atomic saves.** Editors like Vim and VSCode save via a
-//!   `unlink → rename` sequence. On `Remove` we stash the path in
-//!   `pending_unlinks` and spawn a short-lived `std::thread` that waits
-//!   ~1.7 seconds and, if no `Create` has consumed the entry in that
-//!   window, fires a `Remove`-equivalent `ConfigChange`. If a `Create`
-//!   arrives first we remove the pending entry and fire a single
-//!   `Modify`-equivalent `ConfigChange` for the entire atomic save.
+//! - **Atomic saves.** Editors like Vim and VSCode save via a `unlink → rename`
+//!   sequence. On `Remove` we stash the path in `pending_unlinks` and spawn a
+//!   short-lived `std::thread` that waits ~1.7 seconds and, if no `Create` has
+//!   consumed the entry in that window, fires a `Remove`-equivalent
+//!   `ConfigChange`. If a `Create` arrives first we remove the pending entry
+//!   and fire a single `Modify`-equivalent `ConfigChange` for the entire atomic
+//!   save.
 //! - **Classification.** Plugin hooks filter on the wire string of
 //!   [`forge_domain::ConfigSource`] (e.g. `"user_settings"`, `"plugins"`), so
 //!   the watcher must know how to translate a raw absolute path back into a
@@ -54,14 +54,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use forge_domain::ConfigSource;
-use notify_debouncer_full::notify::{self, EventKind, RecommendedWatcher};
-use notify_debouncer_full::{
-    new_debouncer, DebounceEventResult, Debouncer, RecommendedCache,
-};
-
 /// Re-export of `notify::RecursiveMode` so callers don't have to import
 /// from `notify_debouncer_full::notify` directly.
 pub use notify_debouncer_full::notify::RecursiveMode;
+use notify_debouncer_full::notify::{self, EventKind, RecommendedWatcher};
+use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 
 /// How long after a `mark_internal_write` call the path stays
 /// suppressed. Matches Claude Code's 5-second window.
@@ -164,26 +161,22 @@ impl ConfigWatcher {
     ///
     /// # Arguments
     ///
-    /// - `watch_paths` — `(path, recursive_mode)` pairs to install
-    ///   watchers over. Missing or unreadable paths are logged at
-    ///   `debug` level and skipped so e.g. a non-existent
-    ///   `~/forge/plugins/` directory on first startup does not abort
-    ///   the whole watcher. An empty list is valid and produces a
-    ///   watcher that simply never fires.
+    /// - `watch_paths` — `(path, recursive_mode)` pairs to install watchers
+    ///   over. Missing or unreadable paths are logged at `debug` level and
+    ///   skipped so e.g. a non-existent `~/forge/plugins/` directory on first
+    ///   startup does not abort the whole watcher. An empty list is valid and
+    ///   produces a watcher that simply never fires.
     /// - `callback` — user-supplied closure invoked once per debounced
-    ///   [`ConfigChange`] event. Runs on the debouncer's background
-    ///   thread (or on a short-lived `std::thread` for delayed
-    ///   deletes), so it must be `Send + Sync + 'static`.
+    ///   [`ConfigChange`] event. Runs on the debouncer's background thread (or
+    ///   on a short-lived `std::thread` for delayed deletes), so it must be
+    ///   `Send + Sync + 'static`.
     ///
     /// # Errors
     ///
     /// Returns an error if `notify-debouncer-full` cannot start the
     /// debouncer thread (rare — indicates an OS-level notify setup
     /// failure). Individual `watch()` failures are logged and skipped.
-    pub fn new<F>(
-        watch_paths: Vec<(PathBuf, RecursiveMode)>,
-        callback: F,
-    ) -> Result<Self>
+    pub fn new<F>(watch_paths: Vec<(PathBuf, RecursiveMode)>, callback: F) -> Result<Self>
     where
         F: Fn(ConfigChange) + Send + Sync + 'static,
     {
@@ -239,10 +232,7 @@ impl ConfigWatcher {
             }
         }
 
-        Ok(Self {
-            recent_internal_writes,
-            _debouncer: Some(debouncer),
-        })
+        Ok(Self { recent_internal_writes, _debouncer: Some(debouncer) })
     }
 
     /// Record that Forge itself is about to write `path`, so any
@@ -326,11 +316,10 @@ impl ConfigWatcher {
 /// last [`INTERNAL_WRITE_WINDOW`]. Synchronous helper so the debouncer
 /// callback can call it without needing a tokio runtime. Checks both
 /// the as-received path and its canonicalized form.
-fn is_internal_write_sync(
-    recent: &Mutex<HashMap<PathBuf, Instant>>,
-    path: &Path,
-) -> bool {
-    let guard = recent.lock().expect("recent_internal_writes mutex poisoned");
+fn is_internal_write_sync(recent: &Mutex<HashMap<PathBuf, Instant>>, path: &Path) -> bool {
+    let guard = recent
+        .lock()
+        .expect("recent_internal_writes mutex poisoned");
     let hit = |p: &Path| {
         guard
             .get(p)
@@ -360,10 +349,7 @@ fn fire_change(state: &ConfigWatcherState, path: PathBuf) {
 
     // Per-path dispatch cooldown.
     {
-        let mut guard = state
-            .last_fired
-            .lock()
-            .expect("last_fired mutex poisoned");
+        let mut guard = state.last_fired.lock().expect("last_fired mutex poisoned");
         if let Some(last) = guard.get(&path)
             && last.elapsed() < DISPATCH_COOLDOWN
         {
@@ -386,13 +372,13 @@ fn fire_change(state: &ConfigWatcherState, path: PathBuf) {
 /// Per-event behaviour:
 ///
 /// - `Remove(_)` — stash `(path, now)` in `pending_unlinks` and spawn a
-///   short-lived `std::thread` that waits [`ATOMIC_SAVE_GRACE`] and,
-///   if the entry is still present (no matching `Create` arrived),
-///   removes it and fires a `ConfigChange`. If a `Create` consumed the
-///   entry first, the delayed thread finds it gone and does nothing.
-/// - `Create(_)` — if a matching `pending_unlinks` entry exists within
-///   the grace window, remove it and fire ONE `ConfigChange` (the
-///   atomic-save collapse). Otherwise fire a fresh `ConfigChange`.
+///   short-lived `std::thread` that waits [`ATOMIC_SAVE_GRACE`] and, if the
+///   entry is still present (no matching `Create` arrived), removes it and
+///   fires a `ConfigChange`. If a `Create` consumed the entry first, the
+///   delayed thread finds it gone and does nothing.
+/// - `Create(_)` — if a matching `pending_unlinks` entry exists within the
+///   grace window, remove it and fire ONE `ConfigChange` (the atomic-save
+///   collapse). Otherwise fire a fresh `ConfigChange`.
 /// - `Modify(_)` — fire directly (after internal-write check).
 /// - Anything else — ignored.
 fn handle_event(state: &Arc<ConfigWatcherState>, event: &notify::Event) {
@@ -585,9 +571,7 @@ mod tests {
 
     /// Helper: build a watcher that captures all dispatched events
     /// into a shared `Vec<ConfigChange>`.
-    fn capturing_watcher(
-        dir: &Path,
-    ) -> (ConfigWatcher, Arc<Mutex<Vec<ConfigChange>>>) {
+    fn capturing_watcher(dir: &Path) -> (ConfigWatcher, Arc<Mutex<Vec<ConfigChange>>>) {
         let captured: Arc<Mutex<Vec<ConfigChange>>> = Arc::new(Mutex::new(Vec::new()));
         let captured_clone = captured.clone();
         let watcher = ConfigWatcher::new(
@@ -635,7 +619,10 @@ mod tests {
         );
         let matched = events.iter().any(|e| {
             e.source == ConfigSource::UserSettings
-                && e.file_path.file_name().map(|n| n == ".forge.toml").unwrap_or(false)
+                && e.file_path
+                    .file_name()
+                    .map(|n| n == ".forge.toml")
+                    .unwrap_or(false)
         });
         assert!(
             matched,

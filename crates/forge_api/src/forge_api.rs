@@ -21,8 +21,8 @@ use futures::stream::BoxStream;
 use tracing::warn;
 use url::Url;
 
-use crate::config_watcher_handle::ConfigWatcherHandle;
 use crate::API;
+use crate::config_watcher_handle::ConfigWatcherHandle;
 
 pub struct ForgeAPI<S, F> {
     services: Arc<S>,
@@ -73,12 +73,11 @@ impl ForgeAPI<ForgeServices<ForgeRepo<ForgeInfra>>, ForgeRepo<ForgeInfra>> {
         // `ConfigChange` lifecycle hook. The watch paths are derived
         // from the live `Environment`:
         //
-        // - `base_path` (NonRecursive) covers `~/forge/.forge.toml`
-        //   and any other top-level config files that sit directly
-        //   inside the Forge config directory.
-        // - `plugin_path` (Recursive) covers `~/forge/plugins/**` so
-        //   any add/remove/edit inside an installed plugin fires a
-        //   `ConfigChange { source: Plugins, .. }` event.
+        // - `base_path` (NonRecursive) covers `~/forge/.forge.toml` and any other
+        //   top-level config files that sit directly inside the Forge config directory.
+        // - `plugin_path` (Recursive) covers `~/forge/plugins/**` so any
+        //   add/remove/edit inside an installed plugin fires a `ConfigChange { source:
+        //   Plugins, .. }` event.
         //
         // The watcher itself skips paths that do not exist yet
         // (logged at `debug!`), so we can blindly include
@@ -104,11 +103,7 @@ impl ForgeAPI<ForgeServices<ForgeRepo<ForgeInfra>>, ForgeRepo<ForgeInfra>> {
             }
         };
 
-        ForgeAPI {
-            services: app,
-            infra: repo,
-            _config_watcher: config_watcher,
-        }
+        ForgeAPI { services: app, infra: repo, _config_watcher: config_watcher }
     }
 
     pub async fn get_skills_internal(&self) -> Result<Vec<Skill>> {

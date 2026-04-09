@@ -5,15 +5,13 @@
 //! plugin-hook dispatcher. It lives in `forge_api` rather than
 //! `forge_app` because:
 //!
-//! - `forge_app` is a dependency of `forge_services` (the concrete
-//!   service aggregate depends on the app traits), so `forge_app`
-//!   *cannot* import `forge_services::ConfigWatcher` without creating a
-//!   dependency cycle.
-//! - The hook dispatcher itself ([`forge_app::hooks::PluginHookHandler`])
-//!   is crate-private to `forge_app`, so callers outside `forge_app`
-//!   cannot build the callback directly — they must go through the
-//!   `fire_config_change_hook` free function that `forge_app`
-//!   publicly re-exports.
+//! - `forge_app` is a dependency of `forge_services` (the concrete service
+//!   aggregate depends on the app traits), so `forge_app` *cannot* import
+//!   `forge_services::ConfigWatcher` without creating a dependency cycle.
+//! - The hook dispatcher itself ([`forge_app::hooks::PluginHookHandler`]) is
+//!   crate-private to `forge_app`, so callers outside `forge_app` cannot build
+//!   the callback directly — they must go through the `fire_config_change_hook`
+//!   free function that `forge_app` publicly re-exports.
 //!
 //! `forge_api` is the natural meeting point: it already depends on both
 //! `forge_app` and `forge_services`, so the callback we build here can
@@ -67,14 +65,13 @@ impl ConfigWatcherHandle {
     ///
     /// # Error handling
     ///
-    /// - If no tokio runtime is active when `spawn` is called (e.g. in
-    ///   unit tests that construct a `ForgeAPI` without `#[tokio::test]`),
-    ///   we log a `warn!` and return a no-op handle. The handle is
-    ///   still `Ok(...)` so `ForgeAPI::init` does not have to
-    ///   special-case the test path.
-    /// - If [`ConfigWatcher::new`] fails (rare — indicates an OS-level
-    ///   `notify` setup failure), the error is propagated so the
-    ///   caller can decide whether to construct the API anyway.
+    /// - If no tokio runtime is active when `spawn` is called (e.g. in unit
+    ///   tests that construct a `ForgeAPI` without `#[tokio::test]`), we log a
+    ///   `warn!` and return a no-op handle. The handle is still `Ok(...)` so
+    ///   `ForgeAPI::init` does not have to special-case the test path.
+    /// - If [`ConfigWatcher::new`] fails (rare — indicates an OS-level `notify`
+    ///   setup failure), the error is propagated so the caller can decide
+    ///   whether to construct the API anyway.
     pub fn spawn<S: Services + 'static>(
         services: Arc<S>,
         watch_paths: Vec<(PathBuf, RecursiveMode)>,
@@ -107,12 +104,8 @@ impl ConfigWatcherHandle {
                 "ConfigWatcher callback received change"
             );
             runtime.spawn(async move {
-                fire_config_change_hook(
-                    services_for_task,
-                    change.source,
-                    Some(change.file_path),
-                )
-                .await;
+                fire_config_change_hook(services_for_task, change.source, Some(change.file_path))
+                    .await;
             });
         };
 

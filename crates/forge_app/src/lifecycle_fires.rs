@@ -301,7 +301,12 @@ pub async fn fire_config_change_hook<S: Services>(
     };
     let agent = match agent {
         Some(a) => a,
-        None => match services.get_agents().await.ok().and_then(|a| a.into_iter().next()) {
+        None => match services
+            .get_agents()
+            .await
+            .ok()
+            .and_then(|a| a.into_iter().next())
+        {
             Some(a) => a,
             None => {
                 debug!("no agent available — skipping ConfigChange hook fire");
@@ -322,8 +327,7 @@ pub async fn fire_config_change_hook<S: Services>(
     let cwd = environment.cwd.clone();
 
     let payload = ConfigChangePayload { source, file_path };
-    let event =
-        EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+    let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
 
     let plugin_handler = PluginHookHandler::new(services.clone());
     if let Err(err) = <PluginHookHandler<S> as EventHandle<EventData<ConfigChangePayload>>>::handle(
