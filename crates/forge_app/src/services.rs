@@ -493,6 +493,32 @@ pub trait PolicyService: Send + Sync {
     ) -> anyhow::Result<PolicyDecision>;
 }
 
+/// Plugin loader service: wraps [`forge_domain::PluginRepository`] with
+/// in-memory memoization and exposes Claude-Code-style plugin discovery to
+/// upstream consumers (hooks, command loader, skill loader).
+///
+/// The first call to [`list_plugins`](Self::list_plugins) performs a full
+/// disk scan; subsequent calls return a cached copy until
+/// [`invalidate_cache`](Self::invalidate_cache) is invoked.
+///
+/// Invalidation is triggered explicitly by slash commands such as
+/// `:plugin reload` or `:plugin enable/disable` once those land in Phase 9.
+/// For now only the discovery path is exercised; consumers in Phase 2 can
+/// safely call `list_plugins` as often as they need.
+#[async_trait::async_trait]
+pub trait PluginLoader: Send + Sync {
+    /// Returns every plugin discovered on disk, after applying the
+    /// `[plugins]` overrides from `~/forge/.forge.toml`.
+    ///
+    /// The returned list is cloned from an internal `Arc`, so consumers
+    /// can mutate their own copy without affecting the cache.
+    async fn list_plugins(&self) -> anyhow::Result<Vec<forge_domain::LoadedPlugin>>;
+
+    /// Drops any cached plugin data so the next call to
+    /// [`list_plugins`](Self::list_plugins) re-reads the filesystem.
+    async fn invalidate_cache(&self);
+}
+
 /// Skill fetch service
 #[async_trait::async_trait]
 pub trait SkillFetchService: Send + Sync {
@@ -575,6 +601,7 @@ pub trait Services: Send + Sync + 'static + Clone + EnvironmentInfra {
     type ProviderAuthService: ProviderAuthService;
     type WorkspaceService: WorkspaceService;
     type SkillFetchService: SkillFetchService;
+    type PluginLoader: PluginLoader;
 
     fn provider_service(&self) -> &Self::ProviderService;
     fn config_service(&self) -> &Self::AppConfigService;
@@ -603,6 +630,7 @@ pub trait Services: Send + Sync + 'static + Clone + EnvironmentInfra {
     fn provider_auth_service(&self) -> &Self::ProviderAuthService;
     fn workspace_service(&self) -> &Self::WorkspaceService;
     fn skill_fetch_service(&self) -> &Self::SkillFetchService;
+    fn plugin_loader(&self) -> &Self::PluginLoader;
 }
 
 #[async_trait::async_trait]
@@ -998,6 +1026,17 @@ impl<I: Services> SkillFetchService for I {
 
     async fn invalidate_cache(&self) {
         self.skill_fetch_service().invalidate_cache().await
+    }
+}
+
+#[async_trait::async_trait]
+impl<I: Services> PluginLoader for I {
+    async fn list_plugins(&self) -> anyhow::Result<Vec<forge_domain::LoadedPlugin>> {
+        self.plugin_loader().list_plugins().await
+    }
+
+    async fn invalidate_cache(&self) {
+        self.plugin_loader().invalidate_cache().await
     }
 }
 

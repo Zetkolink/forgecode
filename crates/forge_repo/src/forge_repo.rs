@@ -11,9 +11,9 @@ use forge_app::{
 use forge_domain::{
     AnyProvider, AuthCredential, ChatCompletionMessage, ChatRepository, CommandOutput, Context,
     Conversation, ConversationId, ConversationRepository, Environment, FileInfo,
-    FuzzySearchRepository, McpServerConfig, MigrationResult, Model, ModelId, Provider, ProviderId,
-    ProviderRepository, ResultStream, SearchMatch, Skill, SkillRepository, Snapshot,
-    SnapshotRepository,
+    FuzzySearchRepository, LoadedPlugin, McpServerConfig, MigrationResult, Model, ModelId,
+    PluginRepository, Provider, ProviderId, ProviderRepository, ResultStream, SearchMatch, Skill,
+    SkillRepository, Snapshot, SnapshotRepository,
 };
 // Re-export CacacheStorage from forge_infra
 pub use forge_infra::CacacheStorage;
@@ -28,6 +28,7 @@ use crate::conversation::ConversationRepositoryImpl;
 use crate::database::{DatabasePool, PoolConfig};
 use crate::fs_snap::ForgeFileSnapshotService;
 use crate::fuzzy_search::ForgeFuzzySearchRepository;
+use crate::plugin::ForgePluginRepository;
 use crate::provider::{ForgeChatRepository, ForgeProviderRepository};
 use crate::skill::ForgeSkillRepository;
 use crate::validation::ForgeValidationRepository;
@@ -47,6 +48,7 @@ pub struct ForgeRepo<F> {
     codebase_repo: Arc<ForgeContextEngineRepository<F>>,
     agent_repository: Arc<ForgeAgentRepository<F>>,
     skill_repository: Arc<ForgeSkillRepository<F>>,
+    plugin_repository: Arc<ForgePluginRepository<F>>,
     validation_repository: Arc<ForgeValidationRepository<F>>,
     fuzzy_search_repository: Arc<ForgeFuzzySearchRepository<F>>,
 }
@@ -80,6 +82,7 @@ impl<
         let codebase_repo = Arc::new(ForgeContextEngineRepository::new(infra.clone()));
         let agent_repository = Arc::new(ForgeAgentRepository::new(infra.clone()));
         let skill_repository = Arc::new(ForgeSkillRepository::new(infra.clone()));
+        let plugin_repository = Arc::new(ForgePluginRepository::new(infra.clone()));
         let validation_repository = Arc::new(ForgeValidationRepository::new(infra.clone()));
         let fuzzy_search_repository = Arc::new(ForgeFuzzySearchRepository::new(infra.clone()));
         Self {
@@ -92,6 +95,7 @@ impl<
             codebase_repo,
             agent_repository,
             skill_repository,
+            plugin_repository,
             validation_repository,
             fuzzy_search_repository,
         }
@@ -509,6 +513,21 @@ impl<F: FileInfoInfra + EnvironmentInfra + FileReaderInfra + WalkerInfra + Send 
 {
     async fn load_skills(&self) -> anyhow::Result<Vec<Skill>> {
         self.skill_repository.load_skills().await
+    }
+}
+
+#[async_trait::async_trait]
+impl<
+    F: EnvironmentInfra<Config = forge_config::ForgeConfig>
+        + FileReaderInfra
+        + FileInfoInfra
+        + DirectoryReaderInfra
+        + Send
+        + Sync,
+> PluginRepository for ForgeRepo<F>
+{
+    async fn load_plugins(&self) -> anyhow::Result<Vec<LoadedPlugin>> {
+        self.plugin_repository.load_plugins().await
     }
 }
 

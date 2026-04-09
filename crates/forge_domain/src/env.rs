@@ -131,6 +131,24 @@ impl Environment {
         self.cwd.join(".forge/skills")
     }
 
+    /// Returns the global plugins directory path (~/forge/plugins)
+    ///
+    /// This is the default location for user-installed plugins. Each
+    /// subdirectory is a plugin root containing a `plugin.json` (or
+    /// `.forge-plugin/plugin.json` / `.claude-plugin/plugin.json`) manifest.
+    pub fn plugin_path(&self) -> PathBuf {
+        self.base_path.join("plugins")
+    }
+
+    /// Returns the project-local plugins directory path (.forge/plugins)
+    ///
+    /// Plugins discovered here are scoped to the current workspace and take
+    /// precedence over plugins from `plugin_path()` when there is a name
+    /// conflict.
+    pub fn plugin_cwd_path(&self) -> PathBuf {
+        self.cwd.join(".forge/plugins")
+    }
+
     /// Returns the global commands directory path (base_path/commands)
     pub fn command_path(&self) -> PathBuf {
         self.base_path.join("commands")
@@ -379,5 +397,45 @@ mod tests {
         let expected = PathBuf::from("/home/user/.forge/provider.json");
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_plugin_path() {
+        let fixture: Environment = Faker.fake();
+        let fixture = fixture.base_path(PathBuf::from("/home/user/forge"));
+
+        let actual = fixture.plugin_path();
+        let expected = PathBuf::from("/home/user/forge/plugins");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_plugin_cwd_path() {
+        let fixture: Environment = Faker.fake();
+        let fixture = fixture.cwd(PathBuf::from("/projects/my-app"));
+
+        let actual = fixture.plugin_cwd_path();
+        let expected = PathBuf::from("/projects/my-app/.forge/plugins");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_plugin_paths_independent() {
+        let fixture: Environment = Faker.fake();
+        let fixture = fixture
+            .cwd(PathBuf::from("/projects/my-app"))
+            .base_path(PathBuf::from("/home/user/forge"));
+
+        let global_path = fixture.plugin_path();
+        let local_path = fixture.plugin_cwd_path();
+
+        let expected_global = PathBuf::from("/home/user/forge/plugins");
+        let expected_local = PathBuf::from("/projects/my-app/.forge/plugins");
+
+        assert_eq!(global_path, expected_global);
+        assert_eq!(local_path, expected_local);
+        assert_ne!(global_path, local_path);
     }
 }

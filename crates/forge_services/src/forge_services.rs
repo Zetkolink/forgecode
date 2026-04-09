@@ -6,8 +6,9 @@ use forge_app::{
     McpServerInfra, Services, StrategyFactory, UserInfra, WalkerInfra,
 };
 use forge_domain::{
-    ChatRepository, ConversationRepository, FuzzySearchRepository, ProviderRepository,
-    SkillRepository, SnapshotRepository, ValidationRepository, WorkspaceIndexRepository,
+    ChatRepository, ConversationRepository, FuzzySearchRepository, PluginRepository,
+    ProviderRepository, SkillRepository, SnapshotRepository, ValidationRepository,
+    WorkspaceIndexRepository,
 };
 
 use crate::ForgeProviderAuthService;
@@ -26,7 +27,8 @@ use crate::provider_service::ForgeProviderService;
 use crate::template::ForgeTemplateService;
 use crate::tool_services::{
     ForgeFetch, ForgeFollowup, ForgeFsPatch, ForgeFsRead, ForgeFsRemove, ForgeFsSearch,
-    ForgeFsUndo, ForgeFsWrite, ForgeImageRead, ForgePlanCreate, ForgeShell, ForgeSkillFetch,
+    ForgeFsUndo, ForgeFsWrite, ForgeImageRead, ForgePlanCreate, ForgePluginLoader, ForgeShell,
+    ForgeSkillFetch,
 };
 
 type McpService<F> = ForgeMcpService<ForgeMcpManager<F>, F, <F as McpServerInfra>::Client>;
@@ -82,6 +84,7 @@ pub struct ForgeServices<
     provider_auth_service: ForgeProviderAuthService<F>,
     workspace_service: Arc<crate::context_engine::ForgeWorkspaceService<F, FdDefault<F>>>,
     skill_service: Arc<ForgeSkillFetch<F>>,
+    plugin_loader_service: Arc<ForgePluginLoader<F>>,
     infra: Arc<F>,
 }
 
@@ -104,6 +107,7 @@ impl<
         + WorkspaceIndexRepository
         + AgentRepository
         + SkillRepository
+        + PluginRepository
         + ValidationRepository,
 > ForgeServices<F>
 {
@@ -140,6 +144,7 @@ impl<
             discovery,
         ));
         let skill_service = Arc::new(ForgeSkillFetch::new(infra.clone()));
+        let plugin_loader_service = Arc::new(ForgePluginLoader::new(infra.clone()));
 
         Self {
             conversation_service,
@@ -168,6 +173,7 @@ impl<
             provider_auth_service,
             workspace_service,
             skill_service,
+            plugin_loader_service,
             chat_service,
             infra,
         }
@@ -195,6 +201,7 @@ impl<
         + ProviderRepository
         + AgentRepository
         + SkillRepository
+        + PluginRepository
         + StrategyFactory
         + WorkspaceIndexRepository
         + ValidationRepository
@@ -234,6 +241,7 @@ impl<
     type ProviderService = ForgeProviderService<F>;
     type WorkspaceService = crate::context_engine::ForgeWorkspaceService<F, FdDefault<F>>;
     type SkillFetchService = ForgeSkillFetch<F>;
+    type PluginLoader = ForgePluginLoader<F>;
 
     fn config_service(&self) -> &Self::AppConfigService {
         &self.config_service
@@ -332,6 +340,10 @@ impl<
     }
     fn skill_fetch_service(&self) -> &Self::SkillFetchService {
         &self.skill_service
+    }
+
+    fn plugin_loader(&self) -> &Self::PluginLoader {
+        &self.plugin_loader_service
     }
 
     fn provider_service(&self) -> &Self::ProviderService {

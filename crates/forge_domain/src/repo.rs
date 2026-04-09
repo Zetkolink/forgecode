@@ -5,8 +5,8 @@ use url::Url;
 
 use crate::{
     AnyProvider, AuthCredential, ChatCompletionMessage, Context, Conversation, ConversationId,
-    MigrationResult, Model, ModelId, Provider, ProviderId, ProviderTemplate, ResultStream,
-    SearchMatch, Skill, Snapshot, WorkspaceAuth, WorkspaceId,
+    LoadedPlugin, MigrationResult, Model, ModelId, Provider, ProviderId, ProviderTemplate,
+    ResultStream, SearchMatch, Skill, Snapshot, WorkspaceAuth, WorkspaceId,
 };
 
 /// Repository for managing file snapshots
@@ -183,6 +183,24 @@ pub trait SkillRepository: Send + Sync {
     /// # Errors
     /// Returns an error if skill loading fails
     async fn load_skills(&self) -> Result<Vec<Skill>>;
+}
+
+/// Repository for discovering Forge plugins on disk.
+///
+/// Implementations scan the global (`~/forge/plugins/`) and project-local
+/// (`./.forge/plugins/`) directories for plugin manifests, parse them, and
+/// return runtime [`LoadedPlugin`] descriptors. Errors encountered while
+/// loading individual plugins must be reported via tracing without aborting
+/// the whole discovery — that gives the CLI a chance to show "broken plugin"
+/// entries instead of failing to start.
+#[async_trait::async_trait]
+pub trait PluginRepository: Send + Sync {
+    /// Discovers all available plugins from configured directories.
+    ///
+    /// # Errors
+    /// Returns an error only if a top-level filesystem operation fails.
+    /// Per-plugin parsing errors are logged and skipped.
+    async fn load_plugins(&self) -> Result<Vec<LoadedPlugin>>;
 }
 
 /// Repository for validating file syntax

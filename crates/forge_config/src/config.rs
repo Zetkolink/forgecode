@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use derive_setters::Setters;
@@ -96,6 +96,39 @@ pub struct ProviderEntry {
     /// `["api_key"]` when omitted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub auth_methods: Vec<ProviderAuthMethod>,
+}
+
+/// Per-plugin user-facing settings.
+///
+/// Stored in `.forge.toml` under the `[plugins.<name>]` table. Plugins are
+/// always opt-out: a plugin discovered on disk but absent from this map is
+/// considered enabled. Set `enabled = false` to disable an installed plugin
+/// without removing its files.
+///
+/// ```toml
+/// [plugins.my-plugin]
+/// enabled = true
+///
+/// [plugins."untrusted-experiment"]
+/// enabled = false
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Dummy)]
+#[serde(rename_all = "snake_case")]
+pub struct PluginSetting {
+    /// Whether this plugin is currently active. Defaults to `true` when
+    /// the field is omitted, matching Claude Code's plugin enable model.
+    #[serde(default = "default_plugin_enabled")]
+    pub enabled: bool,
+}
+
+impl Default for PluginSetting {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+const fn default_plugin_enabled() -> bool {
+    true
 }
 
 /// Top-level Forge configuration merged from all sources (defaults, file,
@@ -281,6 +314,14 @@ pub struct ForgeConfig {
     /// when a task ends and reminds the LLM about them.
     #[serde(default)]
     pub verify_todos: bool,
+
+    /// Per-plugin enable/disable overrides keyed by plugin name.
+    ///
+    /// Plugins discovered on disk but not listed here default to enabled.
+    /// Use this map to opt out of an installed plugin without removing its
+    /// files (`enabled = false`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<BTreeMap<String, PluginSetting>>,
 }
 
 impl ForgeConfig {
