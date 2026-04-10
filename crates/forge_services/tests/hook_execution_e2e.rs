@@ -57,11 +57,10 @@ mod e2e {
 
         fn is_blocking(&self) -> bool {
             // Exit code 2 = blocking, or parsed JSON decision = Block.
-            if let Some(HookOutput::Sync(ref sync)) = self.parsed_output {
-                if sync.decision == Some(forge_domain::HookDecision::Block) {
+            if let Some(HookOutput::Sync(ref sync)) = self.parsed_output
+                && sync.decision == Some(forge_domain::HookDecision::Block) {
                     return true;
                 }
-            }
             self.exit_code == Some(2)
         }
     }
@@ -105,13 +104,11 @@ mod e2e {
             stdin.write_all(b"\n").await.expect("write newline");
         }
 
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            child.wait_with_output(),
-        )
-        .await
-        .expect("hook timed out")
-        .expect("hook wait failed");
+        let output =
+            tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output())
+                .await
+                .expect("hook timed out")
+                .expect("hook wait failed");
 
         let raw_stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let raw_stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -123,12 +120,7 @@ mod e2e {
             None
         };
 
-        ShellExecResult {
-            exit_code,
-            raw_stdout,
-            raw_stderr,
-            parsed_output,
-        }
+        ShellExecResult { exit_code, raw_stdout, raw_stderr, parsed_output }
     }
 
     /// Substitute `${VAR}` references in a command string.
