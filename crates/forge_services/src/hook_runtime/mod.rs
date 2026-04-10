@@ -4,7 +4,6 @@
 //! This module is split into sub-modules by executor kind plus the
 //! dispatch plumbing that wires them together:
 //!
-//! - [`matcher`] — pure matcher evaluation for `matcher` and `if` fields.
 //! - [`env`] — builds the `HashMap<String, String>` of `FORGE_*` env vars
 //!   injected into every shell hook subprocess.
 //! - [`shell`] — the `tokio::process::Command` shell executor.
@@ -36,7 +35,6 @@ pub mod config_loader;
 pub mod env;
 pub mod executor;
 pub mod http;
-pub mod matcher;
 pub mod prompt;
 pub mod shell;
 

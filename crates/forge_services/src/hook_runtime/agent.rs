@@ -24,11 +24,6 @@ use crate::hook_runtime::HookOutcome;
 pub struct ForgeAgentHookExecutor;
 
 impl ForgeAgentHookExecutor {
-    /// Create a new stub executor.
-    pub fn new() -> Self {
-        Self
-    }
-
     /// Returns a `NonBlockingError` result with a "not yet supported"
     /// stderr message. Signature matches the future fully-featured
     /// implementation so the dispatcher contract is stable.
@@ -89,7 +84,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_hook_executor_returns_stub_result() {
-        let executor = ForgeAgentHookExecutor::new();
+        let executor = ForgeAgentHookExecutor;
         let result = executor
             .execute(&agent_hook(), &sample_input())
             .await

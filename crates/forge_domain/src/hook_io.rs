@@ -117,6 +117,8 @@ pub enum HookInputPayload {
     StopFailure {
         error: String,
         #[serde(skip_serializing_if = "Option::is_none")]
+        error_details: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         last_assistant_message: Option<String>,
     },
     PreCompact {
@@ -139,7 +141,7 @@ pub enum HookInputPayload {
     },
     ConfigChange {
         source: String,
-        #[serde(skip_serializing_if = "Option::is_none", rename = "filePath")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         file_path: Option<std::path::PathBuf>,
     },
     SubagentStart {
@@ -149,20 +151,14 @@ pub enum HookInputPayload {
     SubagentStop {
         agent_id: String,
         agent_type: String,
-        #[serde(rename = "agentTranscriptPath")]
         agent_transcript_path: PathBuf,
-        #[serde(rename = "stopHookActive")]
         stop_hook_active: bool,
-        #[serde(
-            skip_serializing_if = "Option::is_none",
-            rename = "lastAssistantMessage"
-        )]
+        #[serde(skip_serializing_if = "Option::is_none")]
         last_assistant_message: Option<String>,
     },
     PermissionRequest {
         tool_name: String,
         tool_input: serde_json::Value,
-        #[serde(rename = "permissionSuggestions")]
         permission_suggestions: Vec<crate::PermissionUpdate>,
     },
     PermissionDenied {
@@ -172,13 +168,10 @@ pub enum HookInputPayload {
         reason: String,
     },
     CwdChanged {
-        #[serde(rename = "oldCwd")]
         old_cwd: PathBuf,
-        #[serde(rename = "newCwd")]
         new_cwd: PathBuf,
     },
     FileChanged {
-        #[serde(rename = "filePath")]
         file_path: PathBuf,
         event: String,
     },
@@ -186,40 +179,42 @@ pub enum HookInputPayload {
         name: String,
     },
     WorktreeRemove {
-        #[serde(rename = "worktreePath")]
         worktree_path: PathBuf,
     },
     InstructionsLoaded {
-        #[serde(rename = "filePath")]
         file_path: PathBuf,
-        #[serde(rename = "memoryType")]
         memory_type: String,
-        #[serde(rename = "loadReason")]
         load_reason: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         globs: Option<Vec<String>>,
-        #[serde(skip_serializing_if = "Option::is_none", rename = "triggerFilePath")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         trigger_file_path: Option<PathBuf>,
-        #[serde(skip_serializing_if = "Option::is_none", rename = "parentFilePath")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         parent_file_path: Option<PathBuf>,
     },
     Elicitation {
-        #[serde(rename = "serverName")]
+        #[serde(rename = "mcp_server_name")]
         server_name: String,
         message: String,
-        #[serde(skip_serializing_if = "Option::is_none", rename = "requestedSchema")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         requested_schema: Option<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         url: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        elicitation_id: Option<String>,
     },
     ElicitationResult {
-        #[serde(rename = "serverName")]
+        #[serde(rename = "mcp_server_name")]
         server_name: String,
         action: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        elicitation_id: Option<String>,
     },
     /// Fallback for event payload shapes we haven't modeled yet — including
     /// deferred v4 events like `TeammateIdle`. The raw JSON is preserved.
@@ -327,7 +322,7 @@ pub enum HookSpecificOutput {
     PostToolUse {
         #[serde(default, rename = "additionalContext")]
         additional_context: Option<String>,
-        #[serde(default, rename = "updatedMcpToolOutput")]
+        #[serde(default, rename = "updatedMCPToolOutput")]
         updated_mcp_tool_output: Option<serde_json::Value>,
     },
     UserPromptSubmit {
@@ -364,6 +359,10 @@ pub enum HookSpecificOutput {
         /// permission prompt (e.g. after refreshing credentials).
         #[serde(default)]
         retry: Option<bool>,
+        /// Claude Code nested decision object. When present, fields are
+        /// extracted from within the decision variant during merge.
+        #[serde(default)]
+        decision: Option<PermissionRequestDecision>,
     },
     /// Plugin-driven output for a `WorktreeCreate` event. Mirrors
     /// Claude Code's wire shape (`claude-code/src/utils/hooks.ts:4956`)
@@ -374,6 +373,65 @@ pub enum HookSpecificOutput {
     WorktreeCreate {
         #[serde(default, rename = "worktreePath")]
         worktree_path: Option<PathBuf>,
+    },
+    Setup {
+        #[serde(default, rename = "additionalContext")]
+        additional_context: Option<String>,
+    },
+    SubagentStart {
+        #[serde(default, rename = "additionalContext")]
+        additional_context: Option<String>,
+    },
+    PostToolUseFailure {
+        #[serde(default, rename = "additionalContext")]
+        additional_context: Option<String>,
+    },
+    PermissionDenied {
+        #[serde(default)]
+        retry: Option<bool>,
+    },
+    Notification {
+        #[serde(default, rename = "additionalContext")]
+        additional_context: Option<String>,
+    },
+    Elicitation {
+        #[serde(default)]
+        action: Option<String>,
+        #[serde(default)]
+        content: Option<serde_json::Value>,
+    },
+    ElicitationResult {
+        #[serde(default)]
+        action: Option<String>,
+        #[serde(default)]
+        content: Option<serde_json::Value>,
+    },
+    CwdChanged {
+        #[serde(default, rename = "watchPaths")]
+        watch_paths: Option<Vec<PathBuf>>,
+    },
+    FileChanged {
+        #[serde(default, rename = "watchPaths")]
+        watch_paths: Option<Vec<PathBuf>>,
+    },
+}
+
+/// Nested permission decision object matching Claude Code's
+/// `PermissionRequestHookSpecificOutputSchema`. Tagged on `"behavior"`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "behavior", rename_all = "lowercase")]
+pub enum PermissionRequestDecision {
+    Allow {
+        #[serde(default, rename = "updatedInput")]
+        updated_input: Option<serde_json::Value>,
+        #[serde(default, rename = "updatedPermissions")]
+        updated_permissions: Option<serde_json::Value>,
+    },
+    Deny {
+        #[serde(default)]
+        message: Option<String>,
+        #[serde(default)]
+        interrupt: Option<bool>,
     },
 }
 
@@ -528,7 +586,7 @@ mod tests {
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",
                 "additionalContext": "cached result",
-                "updatedMcpToolOutput": {"content": "override"}
+                "updatedMCPToolOutput": {"content": "override"}
             }
         }"#;
         let actual: HookOutput = serde_json::from_str(fixture).unwrap();
@@ -573,6 +631,7 @@ mod tests {
                     updated_permissions,
                     interrupt,
                     retry,
+                    ..
                 }) => {
                     assert_eq!(permission_decision, Some(PermissionDecision::Allow));
                     assert_eq!(
@@ -680,8 +739,6 @@ mod tests {
 
     #[test]
     fn test_hook_input_config_change_wire_format() {
-        // filePath is camelCase on the wire even though the input side is
-        // otherwise snake_case — matches Claude Code's schema asymmetry.
         let input = HookInput {
             base: sample_base("ConfigChange"),
             payload: HookInputPayload::ConfigChange {
@@ -692,9 +749,9 @@ mod tests {
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["hook_event_name"], "ConfigChange");
         assert_eq!(json["source"], "user_settings");
-        assert_eq!(json["filePath"], "/home/u/.forge/config.toml");
-        // snake_case variant must NOT appear when camelCase is used.
-        assert!(json.get("file_path").is_none());
+        assert_eq!(json["file_path"], "/home/u/.forge/config.toml");
+        // camelCase variant must NOT appear.
+        assert!(json.get("filePath").is_none());
     }
 
     #[test]
@@ -708,7 +765,6 @@ mod tests {
         };
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["source"], "plugins");
-        assert!(json.get("filePath").is_none());
         assert!(json.get("file_path").is_none());
     }
 
@@ -730,10 +786,9 @@ mod tests {
     }
 
     #[test]
-    fn test_hook_input_subagent_stop_wire_format_uses_camel_case_renames() {
-        // `agentTranscriptPath` / `stopHookActive` / `lastAssistantMessage`
-        // are camelCase on the wire even though the enclosing struct is
-        // otherwise snake_case. Matches Claude Code's schema asymmetry.
+    fn test_hook_input_subagent_stop_wire_format_uses_snake_case() {
+        // All fields are snake_case on the wire — handled by enum-level
+        // `rename_all = "snake_case"`.
         let input = HookInput {
             base: sample_base("SubagentStop"),
             payload: HookInputPayload::SubagentStop {
@@ -748,13 +803,13 @@ mod tests {
         assert_eq!(json["hook_event_name"], "SubagentStop");
         assert_eq!(json["agent_id"], "sub-2");
         assert_eq!(json["agent_type"], "forge");
-        assert_eq!(json["agentTranscriptPath"], "/tmp/sub-2.jsonl");
-        assert_eq!(json["stopHookActive"], true);
-        assert_eq!(json["lastAssistantMessage"], "ok");
-        // snake_case variants must NOT leak onto the wire.
-        assert!(json.get("agent_transcript_path").is_none());
-        assert!(json.get("stop_hook_active").is_none());
-        assert!(json.get("last_assistant_message").is_none());
+        assert_eq!(json["agent_transcript_path"], "/tmp/sub-2.jsonl");
+        assert_eq!(json["stop_hook_active"], true);
+        assert_eq!(json["last_assistant_message"], "ok");
+        // camelCase variants must NOT appear on the wire.
+        assert!(json.get("agentTranscriptPath").is_none());
+        assert!(json.get("stopHookActive").is_none());
+        assert!(json.get("lastAssistantMessage").is_none());
     }
 
     #[test]
@@ -770,7 +825,6 @@ mod tests {
             },
         };
         let json = serde_json::to_value(&input).unwrap();
-        assert!(json.get("lastAssistantMessage").is_none());
         assert!(json.get("last_assistant_message").is_none());
     }
 
@@ -795,13 +849,13 @@ mod tests {
         assert_eq!(json["hook_event_name"], "PermissionRequest");
         assert_eq!(json["tool_name"], "Bash");
         assert_eq!(json["tool_input"]["command"], "git status");
-        // Field is camelCase on the wire.
-        assert_eq!(json["permissionSuggestions"][0]["behavior"], "allow");
+        // Field is snake_case on the wire.
+        assert_eq!(json["permission_suggestions"][0]["behavior"], "allow");
         assert_eq!(
-            json["permissionSuggestions"][0]["destination"],
+            json["permission_suggestions"][0]["destination"],
             "projectSettings"
         );
-        assert!(json.get("permission_suggestions").is_none());
+        assert!(json.get("permissionSuggestions").is_none());
     }
 
     #[test]
@@ -833,8 +887,8 @@ mod tests {
         };
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["hook_event_name"], "CwdChanged");
-        assert_eq!(json["oldCwd"], "/tmp/a");
-        assert_eq!(json["newCwd"], "/tmp/b");
+        assert_eq!(json["old_cwd"], "/tmp/a");
+        assert_eq!(json["new_cwd"], "/tmp/b");
     }
 
     #[test]
@@ -848,7 +902,7 @@ mod tests {
         };
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["hook_event_name"], "FileChanged");
-        assert_eq!(json["filePath"], "/tmp/file.rs");
+        assert_eq!(json["file_path"], "/tmp/file.rs");
         assert_eq!(json["event"], "change");
     }
 
@@ -873,7 +927,7 @@ mod tests {
         };
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["hook_event_name"], "WorktreeRemove");
-        assert_eq!(json["worktreePath"], "/tmp/wt/feature");
+        assert_eq!(json["worktree_path"], "/tmp/wt/feature");
     }
 
     /// Wave E-2c-i: parsing a `WorktreeCreate` hook's JSON stdout
@@ -936,10 +990,6 @@ mod tests {
 
     #[test]
     fn test_hook_input_instructions_loaded_wire_format() {
-        // `filePath`, `memoryType`, `loadReason`, `triggerFilePath`, and
-        // `parentFilePath` are camelCase on the wire even though the
-        // enclosing struct is otherwise snake_case. Matches Claude
-        // Code's schema asymmetry.
         let input = HookInput {
             base: sample_base("InstructionsLoaded"),
             payload: HookInputPayload::InstructionsLoaded {
@@ -953,17 +1003,13 @@ mod tests {
         };
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["hook_event_name"], "InstructionsLoaded");
-        assert_eq!(json["filePath"], "/repo/AGENTS.md");
-        assert_eq!(json["memoryType"], "project");
-        assert_eq!(json["loadReason"], "session_start");
+        assert_eq!(json["file_path"], "/repo/AGENTS.md");
+        assert_eq!(json["memory_type"], "project");
+        assert_eq!(json["load_reason"], "session_start");
         assert_eq!(json["globs"][0], "**/*.rs");
-        // snake_case variants must NOT appear on the wire.
-        assert!(json.get("file_path").is_none());
-        assert!(json.get("memory_type").is_none());
-        assert!(json.get("load_reason").is_none());
         // None optional fields are omitted.
-        assert!(json.get("triggerFilePath").is_none());
-        assert!(json.get("parentFilePath").is_none());
+        assert!(json.get("trigger_file_path").is_none());
+        assert!(json.get("parent_file_path").is_none());
     }
 
     // ---- Phase 8D: Elicitation + ElicitationResult wire tests ----
@@ -981,17 +1027,19 @@ mod tests {
                 })),
                 mode: Some("form".to_string()),
                 url: None,
+                elicitation_id: None,
             },
         };
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["hook_event_name"], "Elicitation");
-        assert_eq!(json["serverName"], "github");
+        assert_eq!(json["mcp_server_name"], "github");
         assert_eq!(json["message"], "Provide a PR title");
-        assert_eq!(json["requestedSchema"]["type"], "object");
+        assert_eq!(json["requested_schema"]["type"], "object");
         assert_eq!(json["mode"], "form");
-        // snake_case variants must NOT appear on the wire.
+        // The old camelCase alias must NOT appear on the wire.
+        assert!(json.get("serverName").is_none());
         assert!(json.get("server_name").is_none());
-        assert!(json.get("requested_schema").is_none());
+        assert!(json.get("requestedSchema").is_none());
         // url is None and must be omitted.
         assert!(json.get("url").is_none());
     }
@@ -1004,13 +1052,33 @@ mod tests {
                 server_name: "github".to_string(),
                 action: "accept".to_string(),
                 content: Some(json!({"title": "My PR"})),
+                mode: None,
+                elicitation_id: None,
             },
         };
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["hook_event_name"], "ElicitationResult");
-        assert_eq!(json["serverName"], "github");
+        assert_eq!(json["mcp_server_name"], "github");
         assert_eq!(json["action"], "accept");
         assert_eq!(json["content"]["title"], "My PR");
+        // The old camelCase alias must NOT appear on the wire.
+        assert!(json.get("serverName").is_none());
         assert!(json.get("server_name").is_none());
+    }
+
+    #[test]
+    fn test_hook_input_elicitation_result_includes_mode() {
+        let input = HookInput {
+            base: sample_base("ElicitationResult"),
+            payload: HookInputPayload::ElicitationResult {
+                server_name: "github".to_string(),
+                action: "accept".to_string(),
+                content: None,
+                mode: Some("form".to_string()),
+                elicitation_id: None,
+            },
+        };
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["mode"], "form");
     }
 }

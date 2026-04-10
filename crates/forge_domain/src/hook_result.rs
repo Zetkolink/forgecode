@@ -9,8 +9,9 @@
 //! - **`blocking_error`**: first hook to block wins. Other hooks still run so
 //!   their side effects complete, but the first blocking error is the one
 //!   propagated to the LLM.
-//! - **`permission_behavior`**: first non-`None` value wins. Later hooks cannot
-//!   relax a `Deny` or override an `Ask`.
+//! - **`permission_behavior`**: deny > ask > allow precedence. `Deny` always
+//!   takes priority regardless of order; `Ask` overwrites `Allow` but not
+//!   `Deny`; `Allow` only applies if nothing was set yet.
 //! - **`updated_input`**: last-write-wins. Later hooks see the aggregate of
 //!   earlier ones, but the last one to set a value overwrites prior values.
 //! - **`updated_permissions`**: last-write-wins, mirrors `updated_input`. Set
@@ -29,7 +30,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::hook_io::{HookDecision, HookOutput, HookSpecificOutput, PermissionDecision};
+use crate::hook_io::{HookDecision, HookOutput, HookSpecificOutput, PermissionDecision, PermissionRequestDecision};
 
 /// Result of aggregating every hook that ran for a single lifecycle event.
 ///
@@ -96,6 +97,34 @@ pub struct AggregatedHookResult {
 }
 
 impl AggregatedHookResult {
+    /// Apply Claude Code's permission precedence: deny > ask > allow.
+    ///
+    /// - `deny` always takes precedence over any prior value.
+    /// - `ask` takes precedence over `allow` but not `deny`.
+    /// - `allow` only wins if no other behavior has been set.
+    ///
+    /// Reference: `claude-code/src/utils/hooks.ts:2820-2847`
+    fn apply_permission_precedence(&mut self, new: PermissionBehavior) {
+        match new {
+            PermissionBehavior::Deny => {
+                // deny always takes precedence
+                self.permission_behavior = Some(PermissionBehavior::Deny);
+            }
+            PermissionBehavior::Ask => {
+                // ask takes precedence over allow but not deny
+                if self.permission_behavior != Some(PermissionBehavior::Deny) {
+                    self.permission_behavior = Some(PermissionBehavior::Ask);
+                }
+            }
+            PermissionBehavior::Allow => {
+                // allow only if no other behavior set
+                if self.permission_behavior.is_none() {
+                    self.permission_behavior = Some(PermissionBehavior::Allow);
+                }
+            }
+        }
+    }
+
     /// Merge a single executor result into the aggregate.
     ///
     /// The merge policy matches Claude Code's aggregator:
@@ -107,7 +136,8 @@ impl AggregatedHookResult {
     ///   `continue: false`. `stop_reason` takes the last non-`None` value.
     /// - `system_messages` and `additional_contexts` accumulate in invocation
     ///   order.
-    /// - `permission_behavior` is first-wins across all hooks.
+    /// - `permission_behavior` uses deny > ask > allow precedence across all
+    ///   hooks (`claude-code/src/utils/hooks.ts:2820-2847`).
     /// - `updated_input` is **last-write-wins** — each hook sees the raw input;
     ///   the last write overwrites earlier ones.
     /// - `updated_mcp_tool_output` is also last-write-wins.
@@ -147,16 +177,26 @@ impl AggregatedHookResult {
                 self.system_messages.push(msg);
             }
 
-            // `decision: block` also counts as a blocking outcome if the
-            // shell executor's classification didn't already flip it.
-            if matches!(sync.decision, Some(HookDecision::Block)) && self.blocking_error.is_none() {
-                self.blocking_error = Some(HookBlockingError {
-                    message: sync
-                        .reason
-                        .clone()
-                        .unwrap_or_else(|| exec.raw_stderr.trim().to_string()),
-                    command: String::new(),
-                });
+            // Top-level `decision` field maps to permission_behavior and
+            // optionally creates a blocking error. This mirrors Claude Code's
+            // `processHookJSONOutput` at `hooks.ts:525-543`.
+            match sync.decision {
+                Some(HookDecision::Approve) => {
+                    self.apply_permission_precedence(PermissionBehavior::Allow);
+                }
+                Some(HookDecision::Block) => {
+                    self.apply_permission_precedence(PermissionBehavior::Deny);
+                    if self.blocking_error.is_none() {
+                        self.blocking_error = Some(HookBlockingError {
+                            message: sync
+                                .reason
+                                .clone()
+                                .unwrap_or_else(|| exec.raw_stderr.trim().to_string()),
+                            command: String::new(),
+                        });
+                    }
+                }
+                None => {}
             }
 
             match sync.hook_specific_output {
@@ -166,10 +206,8 @@ impl AggregatedHookResult {
                     additional_context,
                     ..
                 }) => {
-                    if self.permission_behavior.is_none()
-                        && let Some(pd) = permission_decision
-                    {
-                        self.permission_behavior = Some(match pd {
+                    if let Some(pd) = permission_decision {
+                        self.apply_permission_precedence(match pd {
                             PermissionDecision::Allow => PermissionBehavior::Allow,
                             PermissionDecision::Deny => PermissionBehavior::Deny,
                             PermissionDecision::Ask => PermissionBehavior::Ask,
@@ -222,27 +260,57 @@ impl AggregatedHookResult {
                     interrupt,
                     retry,
                     permission_decision_reason: _,
+                    decision,
                 }) => {
-                    // First-wins on permission_decision (mirrors PreToolUse).
-                    if self.permission_behavior.is_none()
-                        && let Some(pd) = permission_decision
-                    {
-                        self.permission_behavior = Some(match pd {
+                    // Extract fields from nested `decision` (Claude Code
+                    // shape) when the flat fields are absent.
+                    let effective_decision = permission_decision.or_else(|| {
+                        decision.as_ref().map(|d| match d {
+                            PermissionRequestDecision::Allow { .. } => PermissionDecision::Allow,
+                            PermissionRequestDecision::Deny { .. } => PermissionDecision::Deny,
+                        })
+                    });
+                    let effective_input = updated_input.or_else(|| {
+                        match &decision {
+                            Some(PermissionRequestDecision::Allow { updated_input, .. }) => {
+                                updated_input.clone()
+                            }
+                            _ => None,
+                        }
+                    });
+                    let effective_perms = updated_permissions.or_else(|| {
+                        match &decision {
+                            Some(PermissionRequestDecision::Allow { updated_permissions, .. }) => {
+                                updated_permissions.clone()
+                            }
+                            _ => None,
+                        }
+                    });
+                    let effective_interrupt = interrupt.or_else(|| {
+                        match &decision {
+                            Some(PermissionRequestDecision::Deny { interrupt, .. }) => *interrupt,
+                            _ => None,
+                        }
+                    });
+
+                    // deny > ask > allow precedence (mirrors PreToolUse).
+                    if let Some(pd) = effective_decision {
+                        self.apply_permission_precedence(match pd {
                             PermissionDecision::Allow => PermissionBehavior::Allow,
                             PermissionDecision::Deny => PermissionBehavior::Deny,
                             PermissionDecision::Ask => PermissionBehavior::Ask,
                         });
                     }
                     // Last-write-wins on updated_input.
-                    if let Some(input) = updated_input {
+                    if let Some(input) = effective_input {
                         self.updated_input = Some(input);
                     }
                     // Last-write-wins on updated_permissions.
-                    if let Some(perms) = updated_permissions {
+                    if let Some(perms) = effective_perms {
                         self.updated_permissions = Some(perms);
                     }
                     // Latch to true on interrupt / retry.
-                    if interrupt.unwrap_or(false) {
+                    if effective_interrupt.unwrap_or(false) {
                         self.interrupt = true;
                     }
                     if retry.unwrap_or(false) {
@@ -255,6 +323,39 @@ impl AggregatedHookResult {
                     // does not clear a previously-set path.
                     if let Some(path) = worktree_path {
                         self.worktree_path = Some(path);
+                    }
+                }
+                Some(HookSpecificOutput::Setup { additional_context })
+                | Some(HookSpecificOutput::SubagentStart { additional_context })
+                | Some(HookSpecificOutput::PostToolUseFailure { additional_context })
+                | Some(HookSpecificOutput::Notification { additional_context }) => {
+                    if let Some(ctx) = additional_context {
+                        self.additional_contexts.push(ctx);
+                    }
+                }
+                Some(HookSpecificOutput::PermissionDenied { retry }) => {
+                    if retry.unwrap_or(false) {
+                        self.retry = true;
+                    }
+                }
+                Some(HookSpecificOutput::Elicitation { action, .. })
+                | Some(HookSpecificOutput::ElicitationResult { action, .. }) => {
+                    // Claude Code creates a blocking error when an
+                    // Elicitation/ElicitationResult hook returns
+                    // `action: 'decline'`.
+                    if action.as_deref() == Some("decline") && self.blocking_error.is_none() {
+                        self.blocking_error = Some(HookBlockingError {
+                            message: sync.reason.clone().unwrap_or_else(|| {
+                                "Elicitation denied by hook".to_string()
+                            }),
+                            command: String::new(),
+                        });
+                    }
+                }
+                Some(HookSpecificOutput::CwdChanged { watch_paths })
+                | Some(HookSpecificOutput::FileChanged { watch_paths }) => {
+                    if let Some(paths) = watch_paths {
+                        self.watch_paths.extend(paths);
                     }
                 }
                 None => {}
@@ -539,8 +640,9 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_first_permission_behavior_wins() {
-        // Covers Task 3.23: "first permission_behavior wins".
+    fn test_merge_permission_deny_overrides_allow() {
+        // Claude Code precedence: deny > ask > allow.
+        // Even if the first hook says Allow, a later Deny overrides it.
         let mut agg = AggregatedHookResult::default();
 
         agg.merge(success_with_sync(SyncHookOutput {
@@ -556,6 +658,90 @@ mod tests {
         agg.merge(success_with_sync(SyncHookOutput {
             hook_specific_output: Some(HookSpecificOutput::PreToolUse {
                 permission_decision: Some(PermissionDecision::Deny),
+                permission_decision_reason: None,
+                updated_input: None,
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert_eq!(agg.permission_behavior, Some(PermissionBehavior::Deny));
+    }
+
+    #[test]
+    fn test_merge_permission_ask_overrides_allow_but_not_deny() {
+        // ask takes precedence over allow but not deny.
+        let mut agg = AggregatedHookResult::default();
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: Some(PermissionDecision::Allow),
+                permission_decision_reason: None,
+                updated_input: None,
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: Some(PermissionDecision::Ask),
+                permission_decision_reason: None,
+                updated_input: None,
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert_eq!(agg.permission_behavior, Some(PermissionBehavior::Ask));
+
+        // Now ask should NOT override deny.
+        let mut agg2 = AggregatedHookResult::default();
+
+        agg2.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: Some(PermissionDecision::Deny),
+                permission_decision_reason: None,
+                updated_input: None,
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        agg2.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: Some(PermissionDecision::Ask),
+                permission_decision_reason: None,
+                updated_input: None,
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert_eq!(agg2.permission_behavior, Some(PermissionBehavior::Deny));
+    }
+
+    #[test]
+    fn test_merge_permission_allow_only_wins_if_nothing_set() {
+        // allow only wins when no prior behavior was set.
+        let mut agg = AggregatedHookResult::default();
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: Some(PermissionDecision::Allow),
+                permission_decision_reason: None,
+                updated_input: None,
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert_eq!(agg.permission_behavior, Some(PermissionBehavior::Allow));
+
+        // A second Allow doesn't change anything.
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: Some(PermissionDecision::Allow),
                 permission_decision_reason: None,
                 updated_input: None,
                 additional_context: None,
@@ -568,10 +754,10 @@ mod tests {
 
     // ---- Wave E-1b: PermissionRequest merge tests ----
 
-    /// Two hooks vote Allow then Deny — first-wins, so the aggregate
-    /// stays Allow. Mirrors PreToolUse semantics.
+    /// Two hooks vote Allow then Deny — deny takes precedence per
+    /// Claude Code's deny > ask > allow model.
     #[test]
-    fn test_merge_permission_request_first_wins_on_decision() {
+    fn test_merge_permission_request_deny_overrides_allow() {
         let mut agg = AggregatedHookResult::default();
 
         agg.merge(success_with_sync(SyncHookOutput {
@@ -582,6 +768,7 @@ mod tests {
                 updated_permissions: None,
                 interrupt: None,
                 retry: None,
+                decision: None,
             }),
             ..Default::default()
         }));
@@ -594,11 +781,12 @@ mod tests {
                 updated_permissions: None,
                 interrupt: None,
                 retry: None,
+                decision: None,
             }),
             ..Default::default()
         }));
 
-        assert_eq!(agg.permission_behavior, Some(PermissionBehavior::Allow));
+        assert_eq!(agg.permission_behavior, Some(PermissionBehavior::Deny));
     }
 
     /// Two hooks both set `updated_permissions` — last-write-wins.
@@ -614,6 +802,7 @@ mod tests {
                 updated_permissions: Some(json!({"rules": ["first"]})),
                 interrupt: None,
                 retry: None,
+                decision: None,
             }),
             ..Default::default()
         }));
@@ -626,6 +815,7 @@ mod tests {
                 updated_permissions: Some(json!({"rules": ["second"]})),
                 interrupt: None,
                 retry: None,
+                decision: None,
             }),
             ..Default::default()
         }));
@@ -646,6 +836,7 @@ mod tests {
                 updated_permissions: None,
                 interrupt: Some(true),
                 retry: None,
+                decision: None,
             }),
             ..Default::default()
         }));
@@ -658,6 +849,7 @@ mod tests {
                 updated_permissions: None,
                 interrupt: Some(false),
                 retry: None,
+                decision: None,
             }),
             ..Default::default()
         }));
@@ -678,6 +870,7 @@ mod tests {
                 updated_permissions: None,
                 interrupt: None,
                 retry: Some(true),
+                decision: None,
             }),
             ..Default::default()
         }));
@@ -690,6 +883,7 @@ mod tests {
                 updated_permissions: None,
                 interrupt: None,
                 retry: Some(false),
+                decision: None,
             }),
             ..Default::default()
         }));
@@ -802,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_decision_block_in_sync_output_sets_blocking_error() {
+    fn test_merge_decision_block_in_sync_output_sets_blocking_error_and_deny() {
         let mut agg = AggregatedHookResult::default();
         agg.merge(HookExecResult {
             outcome: HookOutcome::Blocking,
@@ -821,6 +1015,20 @@ mod tests {
         // falls back to stdout which is also empty — so the sync-output
         // branch should fill in the reason.
         assert!(err.message.is_empty() || err.message == "policy violation");
+        // `decision: "block"` also maps to deny per Claude Code.
+        assert_eq!(agg.permission_behavior, Some(PermissionBehavior::Deny));
+    }
+
+    #[test]
+    fn test_merge_decision_approve_sets_permission_allow() {
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(success_with_sync(SyncHookOutput {
+            decision: Some(HookDecision::Approve),
+            ..Default::default()
+        }));
+
+        assert_eq!(agg.permission_behavior, Some(PermissionBehavior::Allow));
+        assert!(agg.blocking_error.is_none());
     }
 
     // ---- Wave E-2c-i: WorktreeCreate merge tests ----
@@ -880,5 +1088,50 @@ mod tests {
     fn test_aggregated_default_has_none_worktree_path() {
         let actual = AggregatedHookResult::default();
         assert!(actual.worktree_path.is_none());
+    }
+
+    #[test]
+    fn test_merge_elicitation_decline_creates_blocking_error() {
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(success_with_sync(SyncHookOutput {
+            reason: Some("user declined".to_string()),
+            hook_specific_output: Some(HookSpecificOutput::Elicitation {
+                action: Some("decline".to_string()),
+                content: None,
+            }),
+            ..Default::default()
+        }));
+
+        let err = agg.blocking_error.as_ref().expect("blocking_error set");
+        assert_eq!(err.message, "user declined");
+    }
+
+    #[test]
+    fn test_merge_elicitation_decline_uses_default_message_when_no_reason() {
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::Elicitation {
+                action: Some("decline".to_string()),
+                content: None,
+            }),
+            ..Default::default()
+        }));
+
+        let err = agg.blocking_error.as_ref().expect("blocking_error set");
+        assert_eq!(err.message, "Elicitation denied by hook");
+    }
+
+    #[test]
+    fn test_merge_elicitation_accept_does_not_create_blocking_error() {
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::Elicitation {
+                action: Some("accept".to_string()),
+                content: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert!(agg.blocking_error.is_none());
     }
 }

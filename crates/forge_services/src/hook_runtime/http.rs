@@ -42,13 +42,9 @@ pub struct ForgeHttpHookExecutor {
 }
 
 impl ForgeHttpHookExecutor {
-    /// Create a new HTTP executor with a default `reqwest::Client`.
-    pub fn new() -> Self {
-        Self { client: Client::new() }
-    }
-
     /// Create an executor with an explicit [`reqwest::Client`]. Useful for
     /// tests that need custom timeout/connection settings.
+    #[cfg(test)]
     pub fn with_client(client: Client) -> Self {
         Self { client }
     }
@@ -303,7 +299,7 @@ mod tests {
             .create_async()
             .await;
 
-        let executor = ForgeHttpHookExecutor::new();
+        let executor = ForgeHttpHookExecutor::default();
         let config = http_hook(&format!("{}/hook", server.url()));
         let result = executor
             .execute(&config, &sample_input(), empty_env)
@@ -345,7 +341,7 @@ mod tests {
             .create_async()
             .await;
 
-        let _executor = ForgeHttpHookExecutor::new();
+        let _executor = ForgeHttpHookExecutor::default();
         let mut config = http_hook(&format!("{}/slow", server.url()));
         config.timeout = Some(1); // 1 second, but mockito will stall longer.
 
@@ -358,7 +354,7 @@ mod tests {
         let _ = executor;
         // Retry with the default executor and config.timeout = 1.
         let start = std::time::Instant::now();
-        let result = ForgeHttpHookExecutor::new()
+        let result = ForgeHttpHookExecutor::default()
             .execute(&config, &sample_input(), empty_env)
             .await
             .unwrap();
@@ -382,7 +378,7 @@ mod tests {
             .create_async()
             .await;
 
-        let executor = ForgeHttpHookExecutor::new();
+        let executor = ForgeHttpHookExecutor::default();
         let config = http_hook(&format!("{}/err", server.url()));
         let result = executor
             .execute(&config, &sample_input(), empty_env)
@@ -406,7 +402,7 @@ mod tests {
             .create_async()
             .await;
 
-        let executor = ForgeHttpHookExecutor::new();
+        let executor = ForgeHttpHookExecutor::default();
 
         let mut headers = BTreeMap::new();
         headers.insert("x-token".to_string(), "${ALLOWED_TOKEN}".to_string());

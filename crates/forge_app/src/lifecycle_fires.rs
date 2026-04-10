@@ -829,6 +829,7 @@ pub async fn fire_elicitation_hook<S: Services>(
         requested_schema,
         mode,
         url,
+        elicitation_id: None,
     };
     let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
 
@@ -907,7 +908,7 @@ pub async fn fire_elicitation_result_hook<S: Services>(
     let transcript_path = environment.transcript_path(&session_id);
     let cwd = environment.cwd.clone();
 
-    let payload = ElicitationResultPayload { server_name: server_name.clone(), action, content };
+    let payload = ElicitationResultPayload { server_name: server_name.clone(), action, content, mode: None, elicitation_id: None };
     let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
 
     let plugin_handler = PluginHookHandler::new(services.clone());

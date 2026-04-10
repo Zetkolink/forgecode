@@ -61,6 +61,7 @@ impl ForgeShellHookExecutor {
 
     /// Create a shell executor with a custom default timeout (used in
     /// tests to avoid sleeping for 30 s on the timeout path).
+    #[cfg(test)]
     pub fn with_default_timeout(default_timeout: Duration) -> Self {
         Self { default_timeout }
     }

@@ -32,7 +32,8 @@ use std::path::Path;
 /// `plugin_options` is a slice of `(key, value)` pairs rather than a
 /// `HashMap` so the caller controls iteration order (useful for
 /// deterministic test assertions).
-pub fn build_hook_env_vars(
+#[allow(dead_code)] // TODO: wire into ForgeHookExecutor dispatcher to populate FORGE_* env vars
+pub(crate) fn build_hook_env_vars(
     project_dir: &Path,
     plugin_root: Option<&Path>,
     plugin_name: Option<&str>,

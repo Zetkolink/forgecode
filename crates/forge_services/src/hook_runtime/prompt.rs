@@ -25,11 +25,6 @@ use crate::hook_runtime::HookOutcome;
 pub struct ForgePromptHookExecutor;
 
 impl ForgePromptHookExecutor {
-    /// Create a new stub executor.
-    pub fn new() -> Self {
-        Self
-    }
-
     /// Returns a `NonBlockingError` result with a clear "not yet
     /// supported" stderr message. The signature matches the future
     /// fully-featured implementation so the dispatcher doesn't need to
@@ -87,7 +82,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_prompt_hook_executor_returns_stub_result() {
-        let executor = ForgePromptHookExecutor::new();
+        let executor = ForgePromptHookExecutor;
         let result = executor
             .execute(&prompt_hook(), &sample_input())
             .await

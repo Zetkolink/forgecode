@@ -2046,7 +2046,7 @@ mod tests {
             LifecycleEvent::StopFailure(EventData::new(
                 agent.clone(),
                 mid.clone(),
-                StopFailurePayload { error: "x".to_string(), last_assistant_message: None },
+                StopFailurePayload { error: "x".to_string(), error_details: None, last_assistant_message: None },
             )),
             LifecycleEvent::PreCompact(EventData::new(
                 agent.clone(),

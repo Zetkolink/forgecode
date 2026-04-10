@@ -186,6 +186,10 @@ pub struct StopPayload {
 pub struct StopFailurePayload {
     /// The error message that caused the halt.
     pub error: String,
+    /// Optional additional details about the error (e.g. HTTP status text).
+    /// Mirrors Claude Code's `error_details: z.string().optional()` field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_details: Option<String>,
     /// Optional last assistant message body.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_assistant_message: Option<String>,
@@ -640,6 +644,11 @@ pub struct ElicitationPayload {
     /// URL to open in the user's browser. Populated in url mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Unique identifier for the elicitation, used to correlate
+    /// `Elicitation` with `ElicitationResult`. Mirrors Claude Code's
+    /// `elicitation_id: z.string().optional()` field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elicitation_id: Option<String>,
 }
 
 /// Payload for the `ElicitationResult` event — fired after the user
@@ -652,6 +661,13 @@ pub struct ElicitationResultPayload {
     /// User-provided form data (form mode only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<serde_json::Value>,
+    /// Elicitation mode — `"form"` or `"url"`. Mirrors Claude Code's
+    /// `mode: z.enum(['form', 'url']).optional()` on ElicitationResult.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Mirrors Claude Code's `elicitation_id: z.string().optional()`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elicitation_id: Option<String>,
 }
 
 // ---------- Conversions to wire payloads ----------
@@ -727,6 +743,7 @@ impl From<StopFailurePayload> for HookInputPayload {
     fn from(p: StopFailurePayload) -> Self {
         HookInputPayload::StopFailure {
             error: p.error,
+            error_details: p.error_details,
             last_assistant_message: p.last_assistant_message,
         }
     }
@@ -862,6 +879,7 @@ impl From<ElicitationPayload> for HookInputPayload {
             requested_schema: p.requested_schema,
             mode: p.mode,
             url: p.url,
+            elicitation_id: p.elicitation_id,
         }
     }
 }
@@ -872,6 +890,8 @@ impl From<ElicitationResultPayload> for HookInputPayload {
             server_name: p.server_name,
             action: p.action,
             content: p.content,
+            mode: p.mode,
+            elicitation_id: p.elicitation_id,
         }
     }
 }
@@ -1472,10 +1492,11 @@ mod tests {
             })),
             mode: Some("form".to_string()),
             url: None,
+            elicitation_id: None,
         };
         let actual: HookInputPayload = fixture.into();
         match actual {
-            HookInputPayload::Elicitation { server_name, message, requested_schema, mode, url } => {
+            HookInputPayload::Elicitation { server_name, message, requested_schema, mode, url, .. } => {
                 assert_eq!(server_name, "github");
                 assert_eq!(message, "Provide a PR title");
                 assert!(requested_schema.is_some());
@@ -1498,6 +1519,7 @@ mod tests {
             requested_schema: None,
             mode: Some("url".to_string()),
             url: Some("https://example.com/auth".to_string()),
+            elicitation_id: None,
         };
         let actual: HookInputPayload = fixture.into();
         match actual {
@@ -1517,10 +1539,12 @@ mod tests {
             server_name: "github".to_string(),
             action: "accept".to_string(),
             content: Some(json!({"title": "My PR"})),
+            mode: None,
+            elicitation_id: None,
         };
         let actual: HookInputPayload = fixture.into();
         match actual {
-            HookInputPayload::ElicitationResult { server_name, action, content } => {
+            HookInputPayload::ElicitationResult { server_name, action, content, .. } => {
                 assert_eq!(server_name, "github");
                 assert_eq!(action, "accept");
                 assert_eq!(content.unwrap()["title"], "My PR");

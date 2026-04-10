@@ -170,7 +170,7 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
                 return Ok(true);
             }
 
-            // First-wins permission_behavior consume.
+            // deny > ask > allow precedence permission_behavior consume.
             match aggregated.permission_behavior {
                 Some(PermissionBehavior::Allow) => {
                     tracing::debug!(

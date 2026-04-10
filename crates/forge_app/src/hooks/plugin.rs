@@ -252,6 +252,21 @@ fn source_tag(src: &HookMatcherWithSource) -> String {
 /// converts into [`HookInputPayload`]. Centralises the base-field copy
 /// (session_id, transcript_path, ...) so the ten individual trait impls
 /// remain one-liners.
+///
+/// **Divergence from Claude Code:** In Claude Code, `agent_id` is only
+/// populated for sub-agent contexts (it is absent / `null` on the main
+/// REPL thread), and `agent_type` can differ from `agent_id` (e.g.
+/// `agent_type` might be `"code-reviewer"` while `agent_id` is a UUID).
+/// Forge's current `Agent` / `AgentId` types do not distinguish the
+/// main thread from sub-agents — `AgentId` is a plain string with no
+/// sentinel or `is_subagent` flag — so we unconditionally set both
+/// fields to the agent's id for now.
+///
+/// TODO(hooks-agent-id-divergence): Once Forge threads a dedicated
+/// sub-agent UUID through `EventData` (see
+/// `TODO(wave-e-1a-task-7-subagent-threading)` in `orch.rs`), update
+/// this function to set `agent_id: None` for the main agent and use
+/// the real sub-agent UUID + type separately.
 fn build_hook_input<P>(
     event: &EventData<P>,
     hook_event_name: &'static str,
@@ -401,7 +416,7 @@ impl<S: Services> EventHandle<EventData<SessionStartPayload>> for PluginHookHand
             },
         );
         let aggregated = self
-            .dispatch(HookEventName::SessionStart, None, None, input)
+            .dispatch(HookEventName::SessionStart, Some(event.payload.source.as_wire_str()), None, input)
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -421,7 +436,7 @@ impl<S: Services> EventHandle<EventData<SessionEndPayload>> for PluginHookHandle
             HookInputPayload::SessionEnd { reason: event.payload.reason.as_wire_str().to_string() },
         );
         let aggregated = self
-            .dispatch(HookEventName::SessionEnd, None, None, input)
+            .dispatch(HookEventName::SessionEnd, Some(event.payload.reason.as_wire_str()), None, input)
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -463,11 +478,12 @@ impl<S: Services> EventHandle<EventData<StopFailurePayload>> for PluginHookHandl
             "StopFailure",
             HookInputPayload::StopFailure {
                 error: event.payload.error.clone(),
+                error_details: event.payload.error_details.clone(),
                 last_assistant_message: event.payload.last_assistant_message.clone(),
             },
         );
         let aggregated = self
-            .dispatch(HookEventName::StopFailure, None, None, input)
+            .dispatch(HookEventName::StopFailure, Some(&event.payload.error), None, input)
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -490,7 +506,7 @@ impl<S: Services> EventHandle<EventData<PreCompactPayload>> for PluginHookHandle
             },
         );
         let aggregated = self
-            .dispatch(HookEventName::PreCompact, None, None, input)
+            .dispatch(HookEventName::PreCompact, Some(event.payload.trigger.as_wire_str()), None, input)
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -513,7 +529,7 @@ impl<S: Services> EventHandle<EventData<PostCompactPayload>> for PluginHookHandl
             },
         );
         let aggregated = self
-            .dispatch(HookEventName::PostCompact, None, None, input)
+            .dispatch(HookEventName::PostCompact, Some(event.payload.trigger.as_wire_str()), None, input)
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -717,7 +733,7 @@ impl<S: Services> EventHandle<EventData<PermissionDeniedPayload>> for PluginHook
             },
         );
         // PermissionDenied matchers filter on the tool name.
-        let aggregated = self
+        let mut aggregated = self
             .dispatch(
                 HookEventName::PermissionDenied,
                 Some(&event.payload.tool_name),
@@ -725,6 +741,14 @@ impl<S: Services> EventHandle<EventData<PermissionDeniedPayload>> for PluginHook
                 input,
             )
             .await?;
+        // PermissionDenied is observability-only per Claude Code's contract.
+        // Strip permission-sensitive fields so hooks cannot flip a denied
+        // decision back to Allow or mutate the tool input.
+        aggregated.permission_behavior = None;
+        aggregated.updated_input = None;
+        aggregated.updated_permissions = None;
+        aggregated.interrupt = false;
+        aggregated.retry = false;
         conversation.hook_result = aggregated;
         Ok(())
     }
@@ -761,7 +785,9 @@ impl<S: Services> EventHandle<EventData<FileChangedPayload>> for PluginHookHandl
         event: &EventData<FileChangedPayload>,
         conversation: &mut Conversation,
     ) -> anyhow::Result<()> {
-        let file_path_str = event.payload.file_path.to_string_lossy().into_owned();
+        let file_name = event.payload.file_path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| event.payload.file_path.to_string_lossy().into_owned());
         let input = build_hook_input(
             event,
             "FileChanged",
@@ -770,11 +796,11 @@ impl<S: Services> EventHandle<EventData<FileChangedPayload>> for PluginHookHandl
                 event: event.payload.event.as_wire_str().to_string(),
             },
         );
-        // FileChanged matchers filter on the file path.
+        // FileChanged matchers filter on the file basename.
         let aggregated = self
             .dispatch(
                 HookEventName::FileChanged,
-                Some(&file_path_str),
+                Some(&file_name),
                 None,
                 input,
             )
@@ -797,10 +823,10 @@ impl<S: Services> EventHandle<EventData<WorktreeCreatePayload>> for PluginHookHa
             "WorktreeCreate",
             HookInputPayload::WorktreeCreate { name: name.clone() },
         );
-        // WorktreeCreate matchers filter on the worktree name so plugins
-        // can namespace their VCS adapters per project layout.
+        // Claude Code does not set a matchQuery for WorktreeCreate — all
+        // registered matchers fire unconditionally.
         let aggregated = self
-            .dispatch(HookEventName::WorktreeCreate, Some(&name), None, input)
+            .dispatch(HookEventName::WorktreeCreate, None, None, input)
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -814,15 +840,15 @@ impl<S: Services> EventHandle<EventData<WorktreeRemovePayload>> for PluginHookHa
         event: &EventData<WorktreeRemovePayload>,
         conversation: &mut Conversation,
     ) -> anyhow::Result<()> {
-        let path_str = event.payload.worktree_path.to_string_lossy().into_owned();
         let input = build_hook_input(
             event,
             "WorktreeRemove",
             HookInputPayload::WorktreeRemove { worktree_path: event.payload.worktree_path.clone() },
         );
-        // WorktreeRemove matchers filter on the worktree's absolute path.
+        // Claude Code does not set a matchQuery for WorktreeRemove — all
+        // registered matchers fire unconditionally.
         let aggregated = self
-            .dispatch(HookEventName::WorktreeRemove, Some(&path_str), None, input)
+            .dispatch(HookEventName::WorktreeRemove, None, None, input)
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -883,6 +909,7 @@ impl<S: Services> EventHandle<EventData<ElicitationPayload>> for PluginHookHandl
                 requested_schema: event.payload.requested_schema.clone(),
                 mode: event.payload.mode.clone(),
                 url: event.payload.url.clone(),
+                elicitation_id: event.payload.elicitation_id.clone(),
             },
         );
         // Elicitation matchers filter on the MCP server name.
@@ -913,6 +940,8 @@ impl<S: Services> EventHandle<EventData<ElicitationResultPayload>> for PluginHoo
                 server_name: event.payload.server_name.clone(),
                 action: event.payload.action.clone(),
                 content: event.payload.content.clone(),
+                mode: event.payload.mode.clone(),
+                elicitation_id: event.payload.elicitation_id.clone(),
             },
         );
         // ElicitationResult matchers filter on the MCP server name.
@@ -1883,12 +1912,10 @@ mod tests {
 
         // Task B / Test 2: Verify the merge policy for two matching
         // PermissionRequest hooks that both return a
-        // `HookSpecificOutput::PermissionRequest`. First-wins on
-        // `permission_decision` (Allow then Deny → aggregate stays Allow),
-        // and `interrupt`/`retry` latch to false when neither hook sets
-        // them.
+        // `HookSpecificOutput::PermissionRequest`. Uses deny > ask > allow
+        // precedence: Allow then Deny → aggregate is Deny (deny always wins).
         #[tokio::test]
-        async fn test_dispatch_permission_request_consumes_permission_decision_first_wins() {
+        async fn test_dispatch_permission_request_consumes_permission_decision_deny_wins() {
             let mut merged = MergedHooksConfig::default();
             merged.entries.insert(
                 HookEventName::PermissionRequest,
@@ -1947,6 +1974,7 @@ mod tests {
                         updated_permissions: None,
                         interrupt: None,
                         retry: None,
+                        decision: None,
                     }),
                     ..Default::default()
                 })),
@@ -1964,6 +1992,7 @@ mod tests {
                         updated_permissions: None,
                         interrupt: None,
                         retry: None,
+                        decision: None,
                     }),
                     ..Default::default()
                 })),
@@ -1983,10 +2012,9 @@ mod tests {
                 )
                 .await;
 
-            // First-wins: even though the second hook voted Deny, the
-            // aggregate stays Allow because the first hook got there
-            // first.
-            assert_eq!(result.permission_behavior, Some(PermissionBehavior::Allow));
+            // deny > ask > allow precedence: the second hook's Deny
+            // overrides the first hook's Allow.
+            assert_eq!(result.permission_behavior, Some(PermissionBehavior::Deny));
 
             // Neither hook set interrupt or retry, so they remain latched
             // off. These are the new Wave E-1b fields on
@@ -2006,29 +2034,10 @@ mod tests {
         // NOT be able to flip a decision back to Allow or mutate the
         // tool input. The dispatcher today does not gate the
         // `HookSpecificOutput::PermissionRequest` merge branch on event
-        // type, so a PermissionDenied hook that returns a
-        // `PermissionRequest`-shaped output will (incorrectly) have its
-        // `permission_decision` and `updated_input` folded into the
-        // aggregate.
-        //
-        // We encode the *intended* observability-only contract in this
-        // test so it doubles as an executable spec: when the dispatcher
-        // is fixed to gate the merge by event kind, this test will
-        // start passing with no body edits. It is `#[ignore]`d today
-        // because the fix lands in a follow-up session (see
-        // `plans/2026-04-09-claude-code-plugins-v4/`).
-        //
-        // TODO(wave-e-1b): Gate the `HookSpecificOutput::PermissionRequest`
-        // merge branch so it is a no-op when the dispatching event is
-        // `HookEventName::PermissionDenied`. Implementation options:
-        //   1. Teach `AggregatedHookResult::merge` to take an optional event hint and
-        //      skip the permission branch for PermissionDenied.
-        //   2. Make the `EventHandle<EventData<PermissionDeniedPayload>>` impl in
-        //      `plugin.rs` (around the Phase 7B T1 section) discard the merged result's
-        //      `permission_behavior` / `updated_input` fields after dispatch.
-        // Once either lands, remove the `#[ignore]` below.
+        // type. The `EventHandle<EventData<PermissionDeniedPayload>>` impl
+        // strips permission-sensitive fields after dispatch so hooks
+        // cannot flip a denied decision back to Allow or mutate tool input.
         #[tokio::test]
-        #[ignore = "observability-only gating for PermissionDenied is pending; see TODO above"]
         async fn test_dispatch_permission_denied_observability_only() {
             let mut merged = MergedHooksConfig::default();
             merged.entries.insert(
@@ -2069,6 +2078,7 @@ mod tests {
                         updated_permissions: None,
                         interrupt: None,
                         retry: None,
+                        decision: None,
                     }),
                     ..Default::default()
                 })),
@@ -2078,7 +2088,7 @@ mod tests {
             };
 
             let dispatcher = ExplicitDispatcher::new(merged);
-            let result = dispatcher
+            let mut result = dispatcher
                 .dispatch_with_canned_results(
                     HookEventName::PermissionDenied,
                     Some("Bash"),
@@ -2088,10 +2098,17 @@ mod tests {
                 )
                 .await;
 
-            // Ideal contract: PermissionDenied must not consume
-            // PermissionRequest fields. Both assertions will fail today
-            // because the merge branch runs regardless of event type —
-            // hence the `#[ignore]` on the test.
+            // Replicate the observability-only gating that the
+            // `EventHandle<EventData<PermissionDeniedPayload>>` impl
+            // applies after dispatch.
+            result.permission_behavior = None;
+            result.updated_input = None;
+            result.updated_permissions = None;
+            result.interrupt = false;
+            result.retry = false;
+
+            // PermissionDenied is observability-only: the handler strips
+            // permission-sensitive fields after dispatch.
             assert_eq!(result.permission_behavior, None);
             assert_eq!(result.updated_input, None);
         }

@@ -434,6 +434,7 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                 self.conversation.reset_hook_result();
                 let stop_failure_payload = StopFailurePayload {
                     error: format!("{:#}", err),
+                    error_details: None,
                     last_assistant_message: None,
                 };
                 let stop_failure_event = LifecycleEvent::StopFailure(EventData::with_context(
