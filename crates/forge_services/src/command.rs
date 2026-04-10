@@ -15,8 +15,7 @@ use gray_matter::engine::YAML;
 pub struct CommandLoaderService<F> {
     infra: Arc<F>,
     /// Optional plugin repository used to pull commands contributed by
-    /// installed plugins. Tests construct this service without a plugin
-    /// repository via [`CommandLoaderService::new_without_plugins`].
+    /// installed plugins.
     plugin_repository: Option<Arc<dyn PluginRepository>>,
 
     /// In-memory cache of loaded commands.
@@ -37,16 +36,6 @@ impl<F> CommandLoaderService<F> {
         Self {
             infra,
             plugin_repository: Some(plugin_repository),
-            cache: tokio::sync::RwLock::new(None),
-        }
-    }
-
-    /// Test-only constructor that skips plugin command loading.
-    #[cfg(test)]
-    pub(crate) fn new_without_plugins(infra: Arc<F>) -> Self {
-        Self {
-            infra,
-            plugin_repository: None,
             cache: tokio::sync::RwLock::new(None),
         }
     }
