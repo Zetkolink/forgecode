@@ -205,7 +205,12 @@ pub fn substitute_variables(command: &str, env_vars: &HashMap<String, String>) -
                 key.to_uppercase().replace('-', "_")
             );
             let replacement = env_vars.get(&env_key).map(String::as_str).unwrap_or("");
-            result = format!("{}{}{}", &result[..start], replacement, &result[start + rel_end + 1..]);
+            result = format!(
+                "{}{}{}",
+                &result[..start],
+                replacement,
+                &result[start + rel_end + 1..]
+            );
         } else {
             break;
         }

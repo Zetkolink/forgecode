@@ -23,8 +23,7 @@ use forge_domain::{
     AgentHookCommand, AggregatedHookResult, ConfigChangePayload, Conversation, CwdChangedPayload,
     ElicitationPayload, ElicitationResultPayload, EventData, EventHandle, FileChangedPayload,
     HookCommand, HookEventName, HookInput, HookInputBase, HookInputPayload, HookOutcome,
-    HttpHookCommand,
-    InstructionsLoadedPayload, NotificationPayload, PermissionDeniedPayload,
+    HttpHookCommand, InstructionsLoadedPayload, NotificationPayload, PermissionDeniedPayload,
     PermissionRequestPayload, PostCompactPayload, PostToolUseFailurePayload, PostToolUsePayload,
     PreCompactPayload, PreToolUsePayload, PromptHookCommand, SessionEndPayload,
     SessionStartPayload, SetupPayload, ShellHookCommand, StopFailurePayload, StopPayload,
@@ -176,8 +175,13 @@ impl<S: Services> PluginHookHandler<S> {
         // We split the once-ids out so we can pair them with results
         // after execution to decide whether to mark a once-hook as fired.
         let executor = self.services.hook_executor();
-        let (once_ids, cmd_src_pairs): (Vec<Option<HookId>>, Vec<(HookCommand, HookMatcherWithSource)>) =
-            pending.into_iter().map(|(cmd, src, id)| (id, (cmd, src))).unzip();
+        let (once_ids, cmd_src_pairs): (
+            Vec<Option<HookId>>,
+            Vec<(HookCommand, HookMatcherWithSource)>,
+        ) = pending
+            .into_iter()
+            .map(|(cmd, src, id)| (id, (cmd, src)))
+            .unzip();
 
         let futures = cmd_src_pairs.into_iter().map(|(cmd, source)| {
             let input = input.clone();
@@ -185,8 +189,8 @@ impl<S: Services> PluginHookHandler<S> {
                 match cmd {
                     HookCommand::Command(ref shell) => {
                         // Validate plugin root exists (if this hook comes from a plugin)
-                        if let Some(ref root) = source.plugin_root {
-                            if !root.exists() {
+                        if let Some(ref root) = source.plugin_root
+                            && !root.exists() {
                                 tracing::warn!(
                                     plugin_root = %root.display(),
                                     "plugin directory no longer exists; skipping hook"
@@ -196,7 +200,6 @@ impl<S: Services> PluginHookHandler<S> {
                                     root.display()
                                 ));
                             }
-                        }
 
                         // Build FORGE_* env vars from the available context.
                         let mut env_vars = HashMap::new();
@@ -269,7 +272,7 @@ impl<S: Services> PluginHookHandler<S> {
         // can retry on the next event dispatch.
         let mut once_fired = self.once_fired.lock().await;
         let mut aggregated = AggregatedHookResult::default();
-        for (once_id, result) in once_ids.into_iter().zip(results.into_iter()) {
+        for (once_id, result) in once_ids.into_iter().zip(results) {
             match result {
                 Ok(ref exec) if exec.outcome == HookOutcome::Success => {
                     if let Some(id) = once_id {
@@ -1201,11 +1204,10 @@ mod tests {
             for (_cmd, _src, once_id) in pending {
                 self.executor.calls.lock().await.push("hit".to_string());
                 let exec = StubExecutor::canned_success();
-                if exec.outcome == HookOutcome::Success {
-                    if let Some(id) = once_id {
+                if exec.outcome == HookOutcome::Success
+                    && let Some(id) = once_id {
                         once_fired.insert(id);
                     }
-                }
                 aggregated.merge(exec);
             }
             aggregated
@@ -1279,11 +1281,10 @@ mod tests {
             for (_cmd, _src, once_id) in pending {
                 self.executor.calls.lock().await.push("hit".to_string());
                 let exec = canned.pop().unwrap_or_else(StubExecutor::canned_success);
-                if exec.outcome == HookOutcome::Success {
-                    if let Some(id) = once_id {
+                if exec.outcome == HookOutcome::Success
+                    && let Some(id) = once_id {
                         once_fired.insert(id);
                     }
-                }
                 aggregated.merge(exec);
             }
             aggregated
