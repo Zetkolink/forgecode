@@ -56,16 +56,17 @@ mod performance {
                 let manifest_path = path.join(candidate);
                 if manifest_path.is_file()
                     && let Ok(raw) = std::fs::read_to_string(&manifest_path)
-                        && let Ok(manifest) = serde_json::from_str::<PluginManifest>(&raw) {
-                            let name = manifest.name.clone().unwrap_or_else(|| {
-                                path.file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .into_owned()
-                            });
-                            results.push((name, manifest));
-                            break; // first match wins
-                        }
+                    && let Ok(manifest) = serde_json::from_str::<PluginManifest>(&raw)
+                {
+                    let name = manifest.name.clone().unwrap_or_else(|| {
+                        path.file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned()
+                    });
+                    results.push((name, manifest));
+                    break; // first match wins
+                }
             }
         }
         results
