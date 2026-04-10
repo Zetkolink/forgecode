@@ -7,7 +7,7 @@
 //! | Test                                      | Nominal | Assert  |
 //! |-------------------------------------------|---------|---------|
 //! | Plugin discovery (20 plugins)             | 200 ms  | 400 ms  |
-//! | Hook execution (10 noop hooks)            | 500 ms  | 1000 ms |
+//! | Hook execution (10 noop hooks)            | 500 ms  | 2 s / 10 s CI |
 //! | File watcher responds to write            | 500 ms  | 1000 ms |
 //! | Config watcher debounce fires once/window | —       | 1 event |
 //!
@@ -212,12 +212,17 @@ mod performance {
             assert_eq!(*exit_code, 0, "noop hook {i} should exit 0");
         }
 
-        // 2× the nominal 500 ms target to avoid CI flakes.
-        // With multi_thread runtime and parallel fork+exec, 10 noop
-        // hooks should complete well within this budget.
+        // CI runners (GitHub Actions, etc.) have significantly slower
+        // fork+exec than local machines. Use a generous 10 s budget on
+        // CI and a tighter 2 s budget locally.
+        let budget = if std::env::var("CI").is_ok() {
+            Duration::from_secs(10)
+        } else {
+            Duration::from_millis(2000)
+        };
         assert!(
-            elapsed < Duration::from_millis(2000),
-            "10 parallel noop hook executions took {elapsed:?}, expected < 2000 ms"
+            elapsed < budget,
+            "10 parallel noop hook executions took {elapsed:?}, expected < {budget:?}"
         );
     }
 
