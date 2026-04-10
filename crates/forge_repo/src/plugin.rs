@@ -472,10 +472,13 @@ fn resolve_plugin_conflicts(plugins: Vec<LoadedPlugin>) -> Vec<LoadedPlugin> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use forge_app::domain::PluginSource;
     use forge_config::ForgeConfig;
     use forge_infra::ForgeInfra;
     use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
 
     use super::*;
 
@@ -634,5 +637,294 @@ mod tests {
 
         // No MCP servers were declared.
         assert!(plugin.mcp_servers.is_none());
+    }
+
+    // =========================================================================
+    // Wave G-1 — Phase 11.1.2 plugin discovery integration tests.
+    //
+    // These tests exercise `ForgePluginRepository::scan_root` against the
+    // Wave G-1 fixture plugin catalog checked in under
+    // `crates/forge_services/tests/fixtures/plugins/`. The fixtures live in
+    // `forge_services` (per the Phase 11.1.1 plan) because downstream
+    // Wave G-2+ hook execution tests consume them from inside that crate.
+    // The discovery tests must live here in `forge_repo` because
+    // `ForgePluginRepository` is private to this crate (`mod plugin;` in
+    // `lib.rs` is not `pub`).
+    //
+    // The tests reference the shared fixtures via the cross-crate relative
+    // path `../forge_services/tests/fixtures/plugins` rooted at
+    // `forge_repo`'s `CARGO_MANIFEST_DIR`.
+    // =========================================================================
+
+    /// Absolute path to the Wave G-1 fixture plugin catalog.
+    ///
+    /// The catalog lives in `forge_services` (see
+    /// `crates/forge_services/tests/fixtures/plugins/`) so hook-execution
+    /// tests in Wave G-2 can locate it from inside that crate. This helper
+    /// crosses the crate boundary via a `CARGO_MANIFEST_DIR`-rooted
+    /// relative path so tests remain hermetic (no cwd dependency).
+    fn wave_g1_fixtures_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("forge_services")
+            .join("tests")
+            .join("fixtures")
+            .join("plugins")
+    }
+
+    /// Full list of Wave G-1 fixture plugin names, kept in sync with
+    /// `crates/forge_services/tests/common/mod.rs::FIXTURE_PLUGIN_NAMES`.
+    const WAVE_G1_FIXTURE_NAMES: &[&str] = &[
+        "agent-provider",
+        "bash-logger",
+        "command-provider",
+        "config-watcher",
+        "dangerous-guard",
+        "full-stack",
+        "prettier-format",
+        "skill-provider",
+    ];
+
+    /// Recursively copies a directory tree. Used to stage fixture plugins
+    /// into isolated temp directories for the shadow-precedence test. We
+    /// deliberately avoid pulling in a new dependency (e.g. `fs_extra`)
+    /// and keep the helper local to this test module.
+    fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+        fs::create_dir_all(to)?;
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            let src = entry.path();
+            let dst = to.join(entry.file_name());
+            let ft = entry.file_type()?;
+            if ft.is_dir() {
+                copy_dir_recursive(&src, &dst)?;
+            } else if ft.is_file() {
+                fs::copy(&src, &dst)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Wave G-1 Phase 11.1.2 test 1: discovery finds every fixture plugin.
+    ///
+    /// Points `scan_root` at the Wave G-1 fixture catalog and asserts that
+    /// all 8 plugins are loaded cleanly with no error tail.
+    #[tokio::test]
+    async fn test_discover_finds_all_fixture_plugins() {
+        let fixture_root = wave_g1_fixtures_root();
+        assert!(
+            fixture_root.is_dir(),
+            "Wave G-1 fixtures must exist at {:?}",
+            fixture_root
+        );
+
+        let repo = fixture_plugin_repo();
+        let (plugins, errors) = repo
+            .scan_root(&fixture_root, PluginSource::Project)
+            .await
+            .expect("scan_root should succeed for the Wave G-1 fixture catalog");
+
+        assert!(
+            errors.is_empty(),
+            "Wave G-1 fixtures must load cleanly, got errors: {errors:?}"
+        );
+        assert_eq!(
+            plugins.len(),
+            WAVE_G1_FIXTURE_NAMES.len(),
+            "expected exactly {} plugins, got {}: {:?}",
+            WAVE_G1_FIXTURE_NAMES.len(),
+            plugins.len(),
+            plugins.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
+
+        let mut actual_names: Vec<&str> = plugins.iter().map(|p| p.name.as_str()).collect();
+        actual_names.sort();
+        let mut expected: Vec<&str> = WAVE_G1_FIXTURE_NAMES.to_vec();
+        expected.sort();
+        assert_eq!(actual_names, expected);
+
+        // Per-plugin spot checks that the most important semantic fields
+        // made it through the manifest parser.
+        let by_name: std::collections::HashMap<&str, &LoadedPlugin> =
+            plugins.iter().map(|p| (p.name.as_str(), p)).collect();
+
+        // Hook-only plugins must have a populated `hooks_config`.
+        for hook_plugin in ["prettier-format", "bash-logger", "dangerous-guard", "config-watcher"] {
+            let p = by_name[hook_plugin];
+            assert!(
+                p.hooks_config.is_some(),
+                "{hook_plugin} must have hooks_config populated from hooks/hooks.json"
+            );
+        }
+
+        // skill-provider must resolve a skills/ sibling directory.
+        let sp = by_name["skill-provider"];
+        assert_eq!(sp.skills_paths.len(), 1);
+        assert!(sp.skills_paths[0].ends_with("skill-provider/skills"));
+
+        // command-provider must resolve a commands/ sibling directory.
+        let cp = by_name["command-provider"];
+        assert_eq!(cp.commands_paths.len(), 1);
+        assert!(cp.commands_paths[0].ends_with("command-provider/commands"));
+
+        // agent-provider must resolve an agents/ sibling directory.
+        let ap = by_name["agent-provider"];
+        assert_eq!(ap.agents_paths.len(), 1);
+        assert!(ap.agents_paths[0].ends_with("agent-provider/agents"));
+
+        // full-stack exercises every component type + MCP sidecar.
+        let fs_plugin = by_name["full-stack"];
+        assert_eq!(fs_plugin.skills_paths.len(), 1);
+        assert_eq!(fs_plugin.commands_paths.len(), 1);
+        assert_eq!(fs_plugin.agents_paths.len(), 1);
+        assert!(fs_plugin.hooks_config.is_some());
+        let mcp = fs_plugin
+            .mcp_servers
+            .as_ref()
+            .expect("full-stack must load its .mcp.json sidecar");
+        assert!(
+            mcp.contains_key("full-stack-server"),
+            "full-stack mcpServers must contain full-stack-server, got {:?}",
+            mcp.keys().collect::<Vec<_>>()
+        );
+
+        // All plugins are enabled by default (before any config overrides).
+        for p in &plugins {
+            assert!(p.enabled, "{} must be enabled by default", p.name);
+            assert!(!p.is_builtin, "{} must not be flagged as builtin", p.name);
+            assert_eq!(p.source, PluginSource::Project);
+        }
+    }
+
+    /// Wave G-1 Phase 11.1.2 test 2: discovery skips invalid manifests
+    /// without crashing and surfaces them in the error tail.
+    ///
+    /// Stages a tempdir with two plugin directories:
+    /// - `valid-plugin` — a copy of the `bash-logger` Wave G-1 fixture
+    /// - `broken-plugin` — a directory whose `.claude-plugin/plugin.json`
+    ///   is malformed JSON
+    ///
+    /// `scan_root` must return the valid one in `plugins` and the broken
+    /// one in `errors`, without bubbling up a top-level failure.
+    #[tokio::test]
+    async fn test_discover_skips_invalid_manifest() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        // Copy the bash-logger fixture as the "valid" plugin.
+        let src = wave_g1_fixtures_root().join("bash-logger");
+        copy_dir_recursive(&src, &root.join("valid-plugin")).unwrap();
+        // Rename inside the staged copy so the manifest name matches the
+        // directory (optional — we only assert the directory is loaded).
+
+        // Stage a broken plugin with invalid JSON.
+        let broken = root.join("broken-plugin");
+        fs::create_dir_all(broken.join(".claude-plugin")).unwrap();
+        fs::write(
+            broken.join(".claude-plugin").join("plugin.json"),
+            "{ this is not valid json",
+        )
+        .unwrap();
+
+        let repo = fixture_plugin_repo();
+        let (plugins, errors) = repo
+            .scan_root(root, PluginSource::Project)
+            .await
+            .expect("scan_root must succeed even when one plugin is broken");
+
+        // The valid plugin must load.
+        assert_eq!(
+            plugins.len(),
+            1,
+            "expected exactly one successfully loaded plugin, got {:?}",
+            plugins.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
+        assert_eq!(plugins[0].name, "bash-logger");
+
+        // The broken plugin must show up in the error tail.
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one plugin load error, got {errors:?}"
+        );
+        let err = &errors[0];
+        assert_eq!(err.plugin_name.as_deref(), Some("broken-plugin"));
+        assert!(
+            err.error.to_lowercase().contains("parse")
+                || err.error.to_lowercase().contains("json"),
+            "error message should mention JSON parsing, got: {}",
+            err.error
+        );
+    }
+
+    /// Wave G-1 Phase 11.1.2 test 3: project-scoped plugins shadow
+    /// user-scoped plugins with the same name.
+    ///
+    /// Stages two tempdir roots — `global/` and `project/` — each
+    /// containing a copy of the `bash-logger` fixture. Exercises the real
+    /// `scan_root` path for each root, then runs the results through the
+    /// private `resolve_plugin_conflicts` helper which is the same
+    /// function called by `load_plugins_with_errors`. The project-scoped
+    /// copy must win.
+    #[tokio::test]
+    async fn test_discover_project_shadows_user_same_name() {
+        let temp = TempDir::new().unwrap();
+        let global_root = temp.path().join("global");
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(&global_root).unwrap();
+        fs::create_dir_all(&project_root).unwrap();
+
+        // Copy the same fixture into both roots.
+        let src = wave_g1_fixtures_root().join("bash-logger");
+        copy_dir_recursive(&src, &global_root.join("bash-logger")).unwrap();
+        copy_dir_recursive(&src, &project_root.join("bash-logger")).unwrap();
+
+        let repo = fixture_plugin_repo();
+
+        // Scan each root with its proper source. `load_plugins_with_errors`
+        // uses the same call order (global first, then project) and feeds
+        // the concatenated result into `resolve_plugin_conflicts`.
+        let (mut combined, mut all_errors): (Vec<LoadedPlugin>, Vec<PluginLoadError>) =
+            (Vec::new(), Vec::new());
+
+        let (g_plugins, g_errors) = repo
+            .scan_root(&global_root, PluginSource::Global)
+            .await
+            .expect("scanning global root must succeed");
+        combined.extend(g_plugins);
+        all_errors.extend(g_errors);
+
+        let (p_plugins, p_errors) = repo
+            .scan_root(&project_root, PluginSource::Project)
+            .await
+            .expect("scanning project root must succeed");
+        combined.extend(p_plugins);
+        all_errors.extend(p_errors);
+
+        assert!(all_errors.is_empty(), "no per-plugin errors expected, got {all_errors:?}");
+        assert_eq!(combined.len(), 2, "expected two copies before conflict resolution");
+
+        // Run through the same helper that `load_plugins_with_errors` uses
+        // for precedence resolution.
+        let resolved = resolve_plugin_conflicts(combined);
+
+        assert_eq!(
+            resolved.len(),
+            1,
+            "expected exactly one plugin after conflict resolution"
+        );
+        assert_eq!(resolved[0].name, "bash-logger");
+        assert_eq!(
+            resolved[0].source,
+            PluginSource::Project,
+            "project-scoped plugin must shadow the global copy (Project > Global precedence)"
+        );
+        // The winning plugin's resolved path must be inside the project
+        // root, not the global root.
+        assert!(
+            resolved[0].path.starts_with(&project_root),
+            "winning plugin's path should be under the project root, got {:?}",
+            resolved[0].path
+        );
     }
 }
