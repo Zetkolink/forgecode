@@ -58,9 +58,10 @@ mod e2e {
         fn is_blocking(&self) -> bool {
             // Exit code 2 = blocking, or parsed JSON decision = Block.
             if let Some(HookOutput::Sync(ref sync)) = self.parsed_output
-                && sync.decision == Some(forge_domain::HookDecision::Block) {
-                    return true;
-                }
+                && sync.decision == Some(forge_domain::HookDecision::Block)
+            {
+                return true;
+            }
             self.exit_code == Some(2)
         }
     }
