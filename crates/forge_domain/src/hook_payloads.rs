@@ -1496,7 +1496,14 @@ mod tests {
         };
         let actual: HookInputPayload = fixture.into();
         match actual {
-            HookInputPayload::Elicitation { server_name, message, requested_schema, mode, url, .. } => {
+            HookInputPayload::Elicitation {
+                server_name,
+                message,
+                requested_schema,
+                mode,
+                url,
+                ..
+            } => {
                 assert_eq!(server_name, "github");
                 assert_eq!(message, "Provide a PR title");
                 assert!(requested_schema.is_some());

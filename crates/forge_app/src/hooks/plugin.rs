@@ -416,7 +416,12 @@ impl<S: Services> EventHandle<EventData<SessionStartPayload>> for PluginHookHand
             },
         );
         let aggregated = self
-            .dispatch(HookEventName::SessionStart, Some(event.payload.source.as_wire_str()), None, input)
+            .dispatch(
+                HookEventName::SessionStart,
+                Some(event.payload.source.as_wire_str()),
+                None,
+                input,
+            )
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -436,7 +441,12 @@ impl<S: Services> EventHandle<EventData<SessionEndPayload>> for PluginHookHandle
             HookInputPayload::SessionEnd { reason: event.payload.reason.as_wire_str().to_string() },
         );
         let aggregated = self
-            .dispatch(HookEventName::SessionEnd, Some(event.payload.reason.as_wire_str()), None, input)
+            .dispatch(
+                HookEventName::SessionEnd,
+                Some(event.payload.reason.as_wire_str()),
+                None,
+                input,
+            )
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -483,7 +493,12 @@ impl<S: Services> EventHandle<EventData<StopFailurePayload>> for PluginHookHandl
             },
         );
         let aggregated = self
-            .dispatch(HookEventName::StopFailure, Some(&event.payload.error), None, input)
+            .dispatch(
+                HookEventName::StopFailure,
+                Some(&event.payload.error),
+                None,
+                input,
+            )
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -506,7 +521,12 @@ impl<S: Services> EventHandle<EventData<PreCompactPayload>> for PluginHookHandle
             },
         );
         let aggregated = self
-            .dispatch(HookEventName::PreCompact, Some(event.payload.trigger.as_wire_str()), None, input)
+            .dispatch(
+                HookEventName::PreCompact,
+                Some(event.payload.trigger.as_wire_str()),
+                None,
+                input,
+            )
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -529,7 +549,12 @@ impl<S: Services> EventHandle<EventData<PostCompactPayload>> for PluginHookHandl
             },
         );
         let aggregated = self
-            .dispatch(HookEventName::PostCompact, Some(event.payload.trigger.as_wire_str()), None, input)
+            .dispatch(
+                HookEventName::PostCompact,
+                Some(event.payload.trigger.as_wire_str()),
+                None,
+                input,
+            )
             .await?;
         conversation.hook_result = aggregated;
         Ok(())
@@ -785,7 +810,10 @@ impl<S: Services> EventHandle<EventData<FileChangedPayload>> for PluginHookHandl
         event: &EventData<FileChangedPayload>,
         conversation: &mut Conversation,
     ) -> anyhow::Result<()> {
-        let file_name = event.payload.file_path.file_name()
+        let file_name = event
+            .payload
+            .file_path
+            .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| event.payload.file_path.to_string_lossy().into_owned());
         let input = build_hook_input(
@@ -798,12 +826,7 @@ impl<S: Services> EventHandle<EventData<FileChangedPayload>> for PluginHookHandl
         );
         // FileChanged matchers filter on the file basename.
         let aggregated = self
-            .dispatch(
-                HookEventName::FileChanged,
-                Some(&file_name),
-                None,
-                input,
-            )
+            .dispatch(HookEventName::FileChanged, Some(&file_name), None, input)
             .await?;
         conversation.hook_result = aggregated;
         Ok(())

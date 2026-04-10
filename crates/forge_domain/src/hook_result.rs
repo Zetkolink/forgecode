@@ -30,7 +30,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::hook_io::{HookDecision, HookOutput, HookSpecificOutput, PermissionDecision, PermissionRequestDecision};
+use crate::hook_io::{
+    HookDecision, HookOutput, HookSpecificOutput, PermissionDecision, PermissionRequestDecision,
+};
 
 /// Result of aggregating every hook that ran for a single lifecycle event.
 ///
@@ -270,27 +272,21 @@ impl AggregatedHookResult {
                             PermissionRequestDecision::Deny { .. } => PermissionDecision::Deny,
                         })
                     });
-                    let effective_input = updated_input.or_else(|| {
-                        match &decision {
-                            Some(PermissionRequestDecision::Allow { updated_input, .. }) => {
-                                updated_input.clone()
-                            }
-                            _ => None,
+                    let effective_input = updated_input.or_else(|| match &decision {
+                        Some(PermissionRequestDecision::Allow { updated_input, .. }) => {
+                            updated_input.clone()
                         }
+                        _ => None,
                     });
-                    let effective_perms = updated_permissions.or_else(|| {
-                        match &decision {
-                            Some(PermissionRequestDecision::Allow { updated_permissions, .. }) => {
-                                updated_permissions.clone()
-                            }
-                            _ => None,
+                    let effective_perms = updated_permissions.or_else(|| match &decision {
+                        Some(PermissionRequestDecision::Allow { updated_permissions, .. }) => {
+                            updated_permissions.clone()
                         }
+                        _ => None,
                     });
-                    let effective_interrupt = interrupt.or_else(|| {
-                        match &decision {
-                            Some(PermissionRequestDecision::Deny { interrupt, .. }) => *interrupt,
-                            _ => None,
-                        }
+                    let effective_interrupt = interrupt.or_else(|| match &decision {
+                        Some(PermissionRequestDecision::Deny { interrupt, .. }) => *interrupt,
+                        _ => None,
                     });
 
                     // deny > ask > allow precedence (mirrors PreToolUse).
@@ -345,9 +341,10 @@ impl AggregatedHookResult {
                     // `action: 'decline'`.
                     if action.as_deref() == Some("decline") && self.blocking_error.is_none() {
                         self.blocking_error = Some(HookBlockingError {
-                            message: sync.reason.clone().unwrap_or_else(|| {
-                                "Elicitation denied by hook".to_string()
-                            }),
+                            message: sync
+                                .reason
+                                .clone()
+                                .unwrap_or_else(|| "Elicitation denied by hook".to_string()),
                             command: String::new(),
                         });
                     }
