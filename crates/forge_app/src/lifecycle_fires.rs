@@ -42,7 +42,29 @@ use notify_debouncer_full::notify::RecursiveMode;
 use tracing::{debug, warn};
 
 use crate::hooks::PluginHookHandler;
-use crate::services::{Notification, NotificationService, Services};
+use crate::services::{AgentRegistry, Notification, NotificationService, Services};
+
+/// Resolve an [`Agent`] from the services registry.
+///
+/// Prefers the active agent, falling back to the first registered
+/// agent. Returns `None` when the registry is empty — callers should
+/// skip the hook fire entirely because the hook infrastructure requires
+/// a non-`None` agent tag on every event.
+async fn resolve_agent_from_services<S: Services>(services: &S) -> Option<Agent> {
+    // Prefer the active agent.
+    if let Ok(Some(active_id)) = services.get_active_agent_id().await
+        && let Ok(Some(agent)) = services.get_agent(&active_id).await
+    {
+        return Some(agent);
+    }
+
+    // Fall back to any registered agent.
+    services
+        .get_agents()
+        .await
+        .ok()
+        .and_then(|agents| agents.into_iter().next())
+}
 
 /// Runtime-settable accessor for the background
 /// `FileChangedWatcher` used by the Phase 7C Wave E-2b dynamic
@@ -186,29 +208,10 @@ impl<S: Services> ForgeNotificationService<S> {
         let _ = err.flush();
     }
 
-    /// Look up an [`Agent`] to attach to the hook event. Prefers the
-    /// active agent, falling back to the first registered agent when no
-    /// active agent is configured. Returns `None` if the registry is
-    /// empty — in that case the fire is skipped entirely because the
-    /// hook infrastructure requires a non-`None` agent tag on every
-    /// event.
+    /// Look up an [`Agent`] to attach to the hook event. Delegates to
+    /// [`resolve_agent_from_services`].
     async fn resolve_agent(&self) -> Option<Agent> {
-        use crate::services::AgentRegistry;
-
-        // Prefer the active agent so the notification event reflects the
-        // agent the user has selected.
-        if let Ok(Some(active_id)) = self.services.get_active_agent_id().await
-            && let Ok(Some(agent)) = self.services.get_agent(&active_id).await
-        {
-            return Some(agent);
-        }
-
-        // Fall back to any registered agent.
-        self.services
-            .get_agents()
-            .await
-            .ok()
-            .and_then(|agents| agents.into_iter().next())
+        resolve_agent_from_services(self.services.as_ref()).await
     }
 }
 
@@ -296,34 +299,9 @@ pub async fn fire_setup_hook<S: Services>(
     services: Arc<S>,
     trigger: SetupTrigger,
 ) -> anyhow::Result<()> {
-    use crate::services::AgentRegistry;
-
-    // Resolve an agent for the event context. Setup fires before any
-    // conversation has been established, so we use the active agent if
-    // set, otherwise the first registered agent. If the registry is
-    // empty, skip the fire entirely.
-    let agent = if let Ok(Some(active_id)) = services.get_active_agent_id().await {
-        match services.get_agent(&active_id).await {
-            Ok(Some(agent)) => Some(agent),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    let agent = match agent {
-        Some(a) => a,
-        None => match services
-            .get_agents()
-            .await
-            .ok()
-            .and_then(|a| a.into_iter().next())
-        {
-            Some(a) => a,
-            None => {
-                debug!("no agent available — skipping Setup hook fire");
-                return Ok(());
-            }
-        },
+    let Some(agent) = resolve_agent_from_services(services.as_ref()).await else {
+        debug!("no agent available — skipping Setup hook fire");
+        return Ok(());
     };
     let model_id: ModelId = agent.model.clone();
 
@@ -383,43 +361,13 @@ pub async fn fire_config_change_hook<S: Services>(
     source: ConfigSource,
     file_path: Option<PathBuf>,
 ) {
-    use crate::services::AgentRegistry;
-
-    // Resolve an agent for the event context. ConfigChange fires
-    // out-of-band (from a background filesystem watcher) so there is
-    // no live Conversation bound to an agent — we use the active
-    // agent if set, otherwise the first registered agent. If the
-    // registry is empty, skip the fire entirely.
-    let agent = if let Ok(Some(active_id)) = services.get_active_agent_id().await {
-        match services.get_agent(&active_id).await {
-            Ok(Some(agent)) => Some(agent),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    let agent = match agent {
-        Some(a) => a,
-        None => match services
-            .get_agents()
-            .await
-            .ok()
-            .and_then(|a| a.into_iter().next())
-        {
-            Some(a) => a,
-            None => {
-                debug!("no agent available — skipping ConfigChange hook fire");
-                return;
-            }
-        },
+    let Some(agent) = resolve_agent_from_services(services.as_ref()).await else {
+        debug!("no agent available — skipping ConfigChange hook fire");
+        return;
     };
     let model_id: ModelId = agent.model.clone();
 
     let environment = services.get_environment();
-    // Scratch conversation — ConfigChange fires out-of-band from a
-    // background watcher thread, so there is no live Conversation to
-    // update. The resulting hook_result is drained and discarded
-    // below.
     let mut scratch = Conversation::new(ConversationId::generate());
     let session_id = scratch.id.into_string();
     let transcript_path = environment.transcript_path(&session_id);
@@ -479,43 +427,13 @@ pub async fn fire_file_changed_hook<S: Services>(
     file_path: PathBuf,
     event: FileChangeEvent,
 ) {
-    use crate::services::AgentRegistry;
-
-    // Resolve an agent for the event context. FileChanged fires from
-    // a background filesystem watcher with no live Conversation bound
-    // to an agent — we use the active agent if set, otherwise the
-    // first registered agent. If the registry is empty, skip the
-    // fire entirely.
-    let agent = if let Ok(Some(active_id)) = services.get_active_agent_id().await {
-        match services.get_agent(&active_id).await {
-            Ok(Some(agent)) => Some(agent),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    let agent = match agent {
-        Some(a) => a,
-        None => match services
-            .get_agents()
-            .await
-            .ok()
-            .and_then(|a| a.into_iter().next())
-        {
-            Some(a) => a,
-            None => {
-                debug!("no agent available — skipping FileChanged hook fire");
-                return;
-            }
-        },
+    let Some(agent) = resolve_agent_from_services(services.as_ref()).await else {
+        debug!("no agent available — skipping FileChanged hook fire");
+        return;
     };
     let model_id: ModelId = agent.model.clone();
 
     let environment = services.get_environment();
-    // Scratch conversation — FileChanged fires out-of-band from a
-    // background watcher thread, so there is no live Conversation to
-    // update. The resulting hook_result is drained and discarded
-    // below.
     let mut scratch = Conversation::new(ConversationId::generate());
     let session_id = scratch.id.into_string();
     let transcript_path = environment.transcript_path(&session_id);
@@ -580,43 +498,13 @@ pub async fn fire_instructions_loaded_hook<S: Services>(
     services: Arc<S>,
     loaded: LoadedInstructions,
 ) {
-    use crate::services::AgentRegistry;
-
-    // Resolve an agent for the event context. InstructionsLoaded fires
-    // at session start from the chat pipeline, so we use the active
-    // agent if set, otherwise the first registered agent. If the
-    // registry is empty, skip the fire entirely — without an agent
-    // tag the hook infrastructure cannot build an `EventData`.
-    let agent = if let Ok(Some(active_id)) = services.get_active_agent_id().await {
-        match services.get_agent(&active_id).await {
-            Ok(Some(agent)) => Some(agent),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    let agent = match agent {
-        Some(a) => a,
-        None => match services
-            .get_agents()
-            .await
-            .ok()
-            .and_then(|a| a.into_iter().next())
-        {
-            Some(a) => a,
-            None => {
-                debug!("no agent available — skipping InstructionsLoaded hook fire");
-                return;
-            }
-        },
+    let Some(agent) = resolve_agent_from_services(services.as_ref()).await else {
+        debug!("no agent available — skipping InstructionsLoaded hook fire");
+        return;
     };
     let model_id: ModelId = agent.model.clone();
 
     let environment = services.get_environment();
-    // Scratch conversation — InstructionsLoaded fires from the chat
-    // pipeline *before* the live conversation's orchestrator is
-    // running, so we dispatch against a throwaway conversation that
-    // gets dropped as soon as the hook call returns.
     let mut scratch = Conversation::new(ConversationId::generate());
     let session_id = scratch.id.into_string();
     let transcript_path = environment.transcript_path(&session_id);
@@ -689,35 +577,9 @@ pub async fn fire_worktree_create_hook<S: Services>(
     services: Arc<S>,
     name: String,
 ) -> AggregatedHookResult {
-    use crate::services::AgentRegistry;
-
-    // Resolve an agent for the event context. WorktreeCreate fires
-    // before any conversation has been established, so we use the
-    // active agent if set, otherwise the first registered agent. If
-    // the registry is empty, skip the fire entirely — without an
-    // agent tag the hook infrastructure cannot build an `EventData`.
-    let agent = if let Ok(Some(active_id)) = services.get_active_agent_id().await {
-        match services.get_agent(&active_id).await {
-            Ok(Some(agent)) => Some(agent),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    let agent = match agent {
-        Some(a) => a,
-        None => match services
-            .get_agents()
-            .await
-            .ok()
-            .and_then(|a| a.into_iter().next())
-        {
-            Some(a) => a,
-            None => {
-                debug!("no agent available — skipping WorktreeCreate hook fire");
-                return AggregatedHookResult::default();
-            }
-        },
+    let Some(agent) = resolve_agent_from_services(services.as_ref()).await else {
+        debug!("no agent available — skipping WorktreeCreate hook fire");
+        return AggregatedHookResult::default();
     };
     let model_id: ModelId = agent.model.clone();
 
@@ -780,44 +642,13 @@ pub async fn fire_elicitation_hook<S: Services>(
     mode: Option<String>,
     url: Option<String>,
 ) -> AggregatedHookResult {
-    use crate::services::AgentRegistry;
-
-    // Resolve an agent for the event context. Elicitation fires from
-    // the MCP client handler, which may run before a live
-    // conversation has been established, so we use the active agent
-    // if set, otherwise the first registered agent. If the registry
-    // is empty, skip the fire entirely — without an agent tag the
-    // hook infrastructure cannot build an `EventData`.
-    let agent = if let Ok(Some(active_id)) = services.get_active_agent_id().await {
-        match services.get_agent(&active_id).await {
-            Ok(Some(agent)) => Some(agent),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    let agent = match agent {
-        Some(a) => a,
-        None => match services
-            .get_agents()
-            .await
-            .ok()
-            .and_then(|a| a.into_iter().next())
-        {
-            Some(a) => a,
-            None => {
-                debug!("no agent available — skipping Elicitation hook fire");
-                return AggregatedHookResult::default();
-            }
-        },
+    let Some(agent) = resolve_agent_from_services(services.as_ref()).await else {
+        debug!("no agent available — skipping Elicitation hook fire");
+        return AggregatedHookResult::default();
     };
     let model_id: ModelId = agent.model.clone();
 
     let environment = services.get_environment();
-    // Scratch conversation — Elicitation fires from the MCP client
-    // handler, which is not guaranteed to have a live conversation
-    // handy. The scratch conversation is dropped as soon as we drain
-    // its `hook_result` below.
     let mut scratch = Conversation::new(ConversationId::generate());
     let session_id = scratch.id.into_string();
     let transcript_path = environment.transcript_path(&session_id);
@@ -873,32 +704,9 @@ pub async fn fire_elicitation_result_hook<S: Services>(
     action: String,
     content: Option<serde_json::Value>,
 ) {
-    use crate::services::AgentRegistry;
-
-    // Same agent-resolution fallback as `fire_elicitation_hook` — if
-    // no agent is registered, skip the fire entirely.
-    let agent = if let Ok(Some(active_id)) = services.get_active_agent_id().await {
-        match services.get_agent(&active_id).await {
-            Ok(Some(agent)) => Some(agent),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    let agent = match agent {
-        Some(a) => a,
-        None => match services
-            .get_agents()
-            .await
-            .ok()
-            .and_then(|a| a.into_iter().next())
-        {
-            Some(a) => a,
-            None => {
-                debug!("no agent available — skipping ElicitationResult hook fire");
-                return;
-            }
-        },
+    let Some(agent) = resolve_agent_from_services(services.as_ref()).await else {
+        debug!("no agent available — skipping ElicitationResult hook fire");
+        return;
     };
     let model_id: ModelId = agent.model.clone();
 

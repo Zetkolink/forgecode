@@ -179,17 +179,39 @@ fn classify_outcome(exit_code: Option<i32>, output: Option<&HookOutput>) -> Hook
     }
 }
 
-/// Substitute `${VAR}` references in a command string using the given
-/// environment variable map.
+/// Substitute `${VAR}` and `${user_config.KEY}` references in a command
+/// string using the given environment variable map.
 ///
 /// Only `${VAR}` (braced) references are substituted here — the bare
-/// `$VAR` form is left for the shell itself to expand. `${user_config.KEY}`
-/// style substitution is deferred to Part 3 when plugin user config
-/// becomes available.
+/// `$VAR` form is left for the shell itself to expand.
+///
+/// `${user_config.KEY}` is resolved by looking up
+/// `FORGE_PLUGIN_OPTION_<KEY>` in `env_vars` (key is upper-cased, hyphens
+/// become underscores). This mirrors Claude Code's plugin user-config
+/// substitution at `claude-code/src/utils/hooks.ts:822-857`.
 ///
 /// Reference: `claude-code/src/utils/hooks.ts:822-857`.
 pub fn substitute_variables(command: &str, env_vars: &HashMap<String, String>) -> String {
     let mut result = command.to_string();
+
+    // Handle ${user_config.KEY} substitutions first so they don't collide
+    // with the generic ${VAR} pass below.
+    let prefix = "${user_config.";
+    while let Some(start) = result.find(prefix) {
+        if let Some(rel_end) = result[start..].find('}') {
+            let key = &result[start + prefix.len()..start + rel_end];
+            let env_key = format!(
+                "FORGE_PLUGIN_OPTION_{}",
+                key.to_uppercase().replace('-', "_")
+            );
+            let replacement = env_vars.get(&env_key).map(String::as_str).unwrap_or("");
+            result = format!("{}{}{}", &result[..start], replacement, &result[start + rel_end + 1..]);
+        } else {
+            break;
+        }
+    }
+
+    // Handle regular ${VAR} substitutions.
     for (key, val) in env_vars {
         let braced = format!("${{{key}}}");
         if result.contains(&braced) {

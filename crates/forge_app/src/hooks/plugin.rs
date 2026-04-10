@@ -15,13 +15,15 @@
 //! can bolt the handler onto each lifecycle event's existing call site.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use forge_domain::{
     AgentHookCommand, AggregatedHookResult, ConfigChangePayload, Conversation, CwdChangedPayload,
     ElicitationPayload, ElicitationResultPayload, EventData, EventHandle, FileChangedPayload,
-    HookCommand, HookEventName, HookInput, HookInputBase, HookInputPayload, HttpHookCommand,
+    HookCommand, HookEventName, HookInput, HookInputBase, HookInputPayload, HookOutcome,
+    HttpHookCommand,
     InstructionsLoadedPayload, NotificationPayload, PermissionDeniedPayload,
     PermissionRequestPayload, PostCompactPayload, PostToolUseFailurePayload, PostToolUsePayload,
     PreCompactPayload, PreToolUsePayload, PromptHookCommand, SessionEndPayload,
@@ -120,9 +122,17 @@ impl<S: Services> PluginHookHandler<S> {
         // once filters. Cloning is cheap — each `HookCommand` is a small
         // enum — and it lets us release the once_fired lock before
         // spawning any futures.
-        let mut pending: Vec<(HookCommand, HookMatcherWithSource)> = Vec::new();
+        //
+        // `once` hooks carry `Some(HookId)` so the second pass can mark
+        // them as fired after successful execution. We do NOT insert
+        // into `once_fired` here — only after success — so that a
+        // failed once-hook can retry on the next event.
+        let mut pending: Vec<(HookCommand, HookMatcherWithSource, Option<HookId>)> = Vec::new();
+        // Local set to prevent the same once-hook from being queued
+        // multiple times within a single dispatch batch.
+        let mut once_claimed: HashSet<HookId> = HashSet::new();
         {
-            let mut once_fired = self.once_fired.lock().await;
+            let once_fired = self.once_fired.lock().await;
             for (matcher_index, matcher_with_source) in matchers.iter().enumerate() {
                 let matcher_pattern = matcher_with_source.matcher.matcher.as_deref().unwrap_or("");
                 if !matches_pattern(matcher_pattern, effective_tool_name) {
@@ -143,13 +153,14 @@ impl<S: Services> PluginHookHandler<S> {
                             hook_index,
                             source: source_tag(matcher_with_source),
                         };
-                        if once_fired.contains(&id) {
+                        if once_fired.contains(&id) || once_claimed.contains(&id) {
                             continue;
                         }
-                        once_fired.insert(id);
+                        once_claimed.insert(id.clone());
+                        pending.push((hook_cmd.clone(), matcher_with_source.clone(), Some(id)));
+                    } else {
+                        pending.push((hook_cmd.clone(), matcher_with_source.clone(), None));
                     }
-
-                    pending.push((hook_cmd.clone(), matcher_with_source.clone()));
                 }
             }
         }
@@ -161,16 +172,87 @@ impl<S: Services> PluginHookHandler<S> {
         // Second pass: run every surviving hook in parallel. Each future
         // returns a `HookExecResult` (or an error which we translate into
         // a NonBlockingError so the aggregator still sees a record).
+        //
+        // We split the once-ids out so we can pair them with results
+        // after execution to decide whether to mark a once-hook as fired.
         let executor = self.services.hook_executor();
-        let futures = pending.into_iter().map(|(cmd, _source)| {
+        let (once_ids, cmd_src_pairs): (Vec<Option<HookId>>, Vec<(HookCommand, HookMatcherWithSource)>) =
+            pending.into_iter().map(|(cmd, src, id)| (id, (cmd, src))).unzip();
+
+        let futures = cmd_src_pairs.into_iter().map(|(cmd, source)| {
             let input = input.clone();
             async move {
                 match cmd {
                     HookCommand::Command(ref shell) => {
-                        // Phase 3 doesn't populate the per-hook env map —
-                        // plugin-specific env injection lands in Phase 4 when
-                        // the full env builder is wired through.
-                        executor.execute_shell(shell, &input, HashMap::new()).await
+                        // Validate plugin root exists (if this hook comes from a plugin)
+                        if let Some(ref root) = source.plugin_root {
+                            if !root.exists() {
+                                tracing::warn!(
+                                    plugin_root = %root.display(),
+                                    "plugin directory no longer exists; skipping hook"
+                                );
+                                return Err(anyhow::anyhow!(
+                                    "plugin directory does not exist: {}",
+                                    root.display()
+                                ));
+                            }
+                        }
+
+                        // Build FORGE_* env vars from the available context.
+                        let mut env_vars = HashMap::new();
+                        env_vars.insert(
+                            "FORGE_PROJECT_DIR".to_string(),
+                            input.base.cwd.display().to_string(),
+                        );
+                        env_vars.insert(
+                            "FORGE_SESSION_ID".to_string(),
+                            input.base.session_id.clone(),
+                        );
+                        if let Some(ref root) = source.plugin_root {
+                            env_vars.insert(
+                                "FORGE_PLUGIN_ROOT".to_string(),
+                                root.display().to_string(),
+                            );
+                        }
+                        if let Some(ref name) = source.plugin_name {
+                            // Derive plugin data dir from HOME.
+                            // forge_app cannot depend on forge_services, so we
+                            // replicate the path convention here:
+                            // <home>/.forge/plugin-data/<name>/
+                            if let Ok(home) = std::env::var("HOME") {
+                                let data_dir = PathBuf::from(home)
+                                    .join(".forge")
+                                    .join("plugin-data")
+                                    .join(name);
+                                env_vars.insert(
+                                    "FORGE_PLUGIN_DATA".to_string(),
+                                    data_dir.display().to_string(),
+                                );
+                            }
+                        }
+
+                        // Set FORGE_ENV_FILE for events that support env-file
+                        // write-back (SessionStart, Setup, CwdChanged, FileChanged).
+                        let event_name = input.base.hook_event_name.as_str();
+                        if matches!(
+                            event_name,
+                            "SessionStart" | "Setup" | "CwdChanged" | "FileChanged"
+                        ) {
+                            let env_file = std::env::temp_dir().join(format!(
+                                "forge-hook-env-{}-{}",
+                                input.base.session_id,
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_nanos()
+                            ));
+                            env_vars.insert(
+                                "FORGE_ENV_FILE".to_string(),
+                                env_file.display().to_string(),
+                            );
+                        }
+
+                        executor.execute_shell(shell, &input, env_vars).await
                     }
                     HookCommand::Http(ref http) => executor.execute_http(http, &input).await,
                     HookCommand::Prompt(ref prompt) => {
@@ -183,9 +265,18 @@ impl<S: Services> PluginHookHandler<S> {
 
         let results = futures::future::join_all(futures).await;
 
+        // Mark once-hooks as fired only on success, so failed hooks
+        // can retry on the next event dispatch.
+        let mut once_fired = self.once_fired.lock().await;
         let mut aggregated = AggregatedHookResult::default();
-        for result in results {
+        for (once_id, result) in once_ids.into_iter().zip(results.into_iter()) {
             match result {
+                Ok(ref exec) if exec.outcome == HookOutcome::Success => {
+                    if let Some(id) = once_id {
+                        once_fired.insert(id);
+                    }
+                    aggregated.merge(exec.clone());
+                }
                 Ok(exec) => aggregated.merge(exec),
                 Err(e) => {
                     // Per-hook infrastructure error — log and continue so a
@@ -1071,9 +1162,10 @@ mod tests {
             let tn = tool_name.unwrap_or("");
             let ti = tool_input.unwrap_or(&empty);
 
-            let mut pending: Vec<(HookCommand, HookMatcherWithSource)> = Vec::new();
+            let mut pending: Vec<(HookCommand, HookMatcherWithSource, Option<HookId>)> = Vec::new();
+            let mut once_claimed: HashSet<HookId> = HashSet::new();
             {
-                let mut once_fired = self.once_fired.lock().await;
+                let once_fired = self.once_fired.lock().await;
                 for (mi, matcher_with_source) in matchers.iter().enumerate() {
                     let pat = matcher_with_source.matcher.matcher.as_deref().unwrap_or("");
                     if !matches_pattern(pat, tn) {
@@ -1092,20 +1184,29 @@ mod tests {
                                 hook_index: hi,
                                 source: source_tag(matcher_with_source),
                             };
-                            if once_fired.contains(&id) {
+                            if once_fired.contains(&id) || once_claimed.contains(&id) {
                                 continue;
                             }
-                            once_fired.insert(id);
+                            once_claimed.insert(id.clone());
+                            pending.push((cmd.clone(), matcher_with_source.clone(), Some(id)));
+                        } else {
+                            pending.push((cmd.clone(), matcher_with_source.clone(), None));
                         }
-                        pending.push((cmd.clone(), matcher_with_source.clone()));
                     }
                 }
             }
 
+            let mut once_fired = self.once_fired.lock().await;
             let mut aggregated = AggregatedHookResult::default();
-            for (_cmd, _src) in pending {
+            for (_cmd, _src, once_id) in pending {
                 self.executor.calls.lock().await.push("hit".to_string());
-                aggregated.merge(StubExecutor::canned_success());
+                let exec = StubExecutor::canned_success();
+                if exec.outcome == HookOutcome::Success {
+                    if let Some(id) = once_id {
+                        once_fired.insert(id);
+                    }
+                }
+                aggregated.merge(exec);
             }
             aggregated
         }
@@ -1135,9 +1236,10 @@ mod tests {
             let tn = tool_name.unwrap_or("");
             let ti = tool_input.unwrap_or(&empty);
 
-            let mut pending: Vec<(HookCommand, HookMatcherWithSource)> = Vec::new();
+            let mut pending: Vec<(HookCommand, HookMatcherWithSource, Option<HookId>)> = Vec::new();
+            let mut once_claimed: HashSet<HookId> = HashSet::new();
             {
-                let mut once_fired = self.once_fired.lock().await;
+                let once_fired = self.once_fired.lock().await;
                 for (mi, matcher_with_source) in matchers.iter().enumerate() {
                     let pat = matcher_with_source.matcher.matcher.as_deref().unwrap_or("");
                     if !matches_pattern(pat, tn) {
@@ -1156,12 +1258,14 @@ mod tests {
                                 hook_index: hi,
                                 source: source_tag(matcher_with_source),
                             };
-                            if once_fired.contains(&id) {
+                            if once_fired.contains(&id) || once_claimed.contains(&id) {
                                 continue;
                             }
-                            once_fired.insert(id);
+                            once_claimed.insert(id.clone());
+                            pending.push((cmd.clone(), matcher_with_source.clone(), Some(id)));
+                        } else {
+                            pending.push((cmd.clone(), matcher_with_source.clone(), None));
                         }
-                        pending.push((cmd.clone(), matcher_with_source.clone()));
                     }
                 }
             }
@@ -1169,11 +1273,17 @@ mod tests {
             // Drain canned results in order. Using `into_iter` + a drain
             // counter would also work; `remove(0)` is fine here because
             // tests only enqueue a handful of results.
+            let mut once_fired = self.once_fired.lock().await;
             let mut aggregated = AggregatedHookResult::default();
             canned.reverse();
-            for (_cmd, _src) in pending {
+            for (_cmd, _src, once_id) in pending {
                 self.executor.calls.lock().await.push("hit".to_string());
                 let exec = canned.pop().unwrap_or_else(StubExecutor::canned_success);
+                if exec.outcome == HookOutcome::Success {
+                    if let Some(id) = once_id {
+                        once_fired.insert(id);
+                    }
+                }
                 aggregated.merge(exec);
             }
             aggregated
@@ -1327,6 +1437,93 @@ mod tests {
             )
             .await;
         assert!(second.additional_contexts.is_empty());
+    }
+
+    /// A `once: true` hook that FAILS should NOT be marked as fired, so
+    /// it can retry on the next event dispatch. Only successful execution
+    /// should permanently mark it.
+    #[tokio::test]
+    async fn test_dispatch_once_hook_retries_after_failure() {
+        use forge_domain::{HookMatcher, ShellHookCommand};
+        let mut merged = MergedHooksConfig::default();
+        merged.entries.insert(
+            HookEventName::PreToolUse,
+            vec![HookMatcherWithSource {
+                matcher: HookMatcher {
+                    matcher: Some("Bash".to_string()),
+                    hooks: vec![HookCommand::Command(ShellHookCommand {
+                        command: "echo once-fail".to_string(),
+                        condition: None,
+                        shell: None,
+                        timeout: None,
+                        status_message: None,
+                        once: true,
+                        async_mode: false,
+                        async_rewake: false,
+                    })],
+                },
+                source: crate::hook_runtime::HookConfigSource::UserGlobal,
+                plugin_root: None,
+                plugin_name: None,
+            }],
+        );
+
+        let dispatcher = ExplicitDispatcher::new(merged);
+
+        // First dispatch with a FAILED result — the once-hook should
+        // execute but NOT be marked as fired.
+        let failed_result = HookExecResult {
+            outcome: HookOutcome::NonBlockingError,
+            output: None,
+            raw_stdout: "error output".to_string(),
+            raw_stderr: "something went wrong".to_string(),
+            exit_code: Some(1),
+        };
+        let first = dispatcher
+            .dispatch_with_canned_results(
+                HookEventName::PreToolUse,
+                Some("Bash"),
+                Some(&json!({"command": "echo hi"})),
+                sample_input("PreToolUse"),
+                vec![failed_result],
+            )
+            .await;
+        // The hook ran (non-blocking error is still merged).
+        let calls_after_first = dispatcher.executor.calls.lock().await.len();
+        assert_eq!(calls_after_first, 1);
+        // NonBlockingError stdout is NOT folded into additional_contexts
+        // (only Success outcomes contribute context), so contexts remain empty.
+        assert!(first.additional_contexts.is_empty());
+
+        // Second dispatch — since the first failed, the once-hook should
+        // fire again (retry).
+        let second = dispatcher
+            .dispatch_with_canned_results(
+                HookEventName::PreToolUse,
+                Some("Bash"),
+                Some(&json!({"command": "echo hi"})),
+                sample_input("PreToolUse"),
+                vec![StubExecutor::canned_success()],
+            )
+            .await;
+        let calls_after_second = dispatcher.executor.calls.lock().await.len();
+        assert_eq!(calls_after_second, 2);
+        assert_eq!(second.additional_contexts, vec!["canned".to_string()]);
+
+        // Third dispatch — the second succeeded, so the once-hook should
+        // now be permanently marked and skipped.
+        let third = dispatcher
+            .dispatch(
+                HookEventName::PreToolUse,
+                Some("Bash"),
+                Some(&json!({"command": "echo hi"})),
+                sample_input("PreToolUse"),
+            )
+            .await;
+        assert!(third.additional_contexts.is_empty());
+        // No additional executor call.
+        let calls_after_third = dispatcher.executor.calls.lock().await.len();
+        assert_eq!(calls_after_third, 2);
     }
 
     // ---- Phase 6A / 6B: Notification + Setup dispatcher tests ----

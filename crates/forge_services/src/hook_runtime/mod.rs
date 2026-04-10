@@ -17,18 +17,11 @@
 //! - [`executor`] — the top-level [`forge_app::HookExecutorInfra`] impl that
 //!   fans out to the per-kind executors.
 //!
-//! `HookExecResult` and `HookOutcome` live in `forge_domain` (not here)
-//! so [`forge_domain::AggregatedHookResult::merge`] can consume them
-//! without a circular crate dependency. They are re-exported here for
-//! convenience so every hook runtime file can `use
-//! crate::hook_runtime::HookOutcome;` without pulling in the full
-//! `forge_domain::` prefix.
-//!
-//! The merged-config types (`MergedHooksConfig`, `HookMatcherWithSource`,
-//! `HookConfigSource`) live in `forge_app::hook_runtime` so they can be
-//! consumed by both the dispatcher (upstream) and the loader
-//! (downstream). They are re-exported from this module for backwards
-//! compatibility with existing call sites.
+//! `HookOutcome` lives in `forge_domain` (not here) so
+//! [`forge_domain::AggregatedHookResult::merge`] can consume it without
+//! a circular crate dependency. It is re-exported here for convenience
+//! so every hook runtime file can `use crate::hook_runtime::HookOutcome;`
+//! without pulling in the full `forge_domain::` prefix.
 
 pub mod agent;
 pub mod config_loader;
@@ -40,9 +33,4 @@ pub mod shell;
 
 pub use config_loader::ForgeHookConfigLoader;
 pub use executor::ForgeHookExecutor;
-#[allow(unused_imports)]
-pub use forge_app::hook_runtime::{
-    HookConfigLoaderService, HookConfigSource, HookMatcherWithSource, MergedHooksConfig,
-};
-#[allow(unused_imports)]
-pub use forge_domain::{HookExecResult, HookOutcome};
+pub use forge_domain::HookOutcome;
