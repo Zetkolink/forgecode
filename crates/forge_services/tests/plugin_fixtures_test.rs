@@ -37,8 +37,7 @@ fn read_manifest(plugin_name: &str) -> PluginManifest {
         .join("plugin.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()))
+    serde_json::from_str(&raw).unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()))
 }
 
 fn assert_dir_nonempty(root: &Path, subdir: &str) {
@@ -63,11 +62,7 @@ fn assert_dir_nonempty(root: &Path, subdir: &str) {
 #[test]
 fn test_all_eight_fixture_plugins_have_directories() {
     let root = fixture_plugins_dir();
-    assert!(
-        root.is_dir(),
-        "fixture plugins root must exist: {:?}",
-        root
-    );
+    assert!(root.is_dir(), "fixture plugins root must exist: {:?}", root);
 
     assert_eq!(
         FIXTURE_PLUGIN_NAMES.len(),
@@ -78,11 +73,7 @@ fn test_all_eight_fixture_plugins_have_directories() {
 
     for name in FIXTURE_PLUGIN_NAMES {
         let dir = fixture_plugin_path(name);
-        assert!(
-            dir.is_dir(),
-            "fixture plugin directory missing: {:?}",
-            dir
-        );
+        assert!(dir.is_dir(), "fixture plugin directory missing: {:?}", dir);
         let manifest_path = dir.join(".claude-plugin").join("plugin.json");
         assert!(
             manifest_path.is_file(),
@@ -153,8 +144,7 @@ fn test_dangerous_guard_hook_reads_stdin() {
     // crates/forge_services/src/hook_runtime/shell.rs:73-112). The guard
     // must therefore read from stdin (via `cat`) rather than an env var.
     let root = fixture_plugin_path("dangerous-guard");
-    let raw =
-        std::fs::read_to_string(root.join("hooks").join("hooks.json")).expect("hooks.json");
+    let raw = std::fs::read_to_string(root.join("hooks").join("hooks.json")).expect("hooks.json");
     let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
     let command = value
         .pointer("/hooks/PreToolUse/0/hooks/0/command")
@@ -181,7 +171,11 @@ fn test_dangerous_guard_hook_reads_stdin() {
 fn test_skill_provider_has_three_skill_files() {
     let root = fixture_plugin_path("skill-provider");
     assert_dir_nonempty(&root, "skills");
-    for skill in &["inspect-code.md", "refactor-helper.md", "debug-assistant.md"] {
+    for skill in &[
+        "inspect-code.md",
+        "refactor-helper.md",
+        "debug-assistant.md",
+    ] {
         let path = root.join("skills").join(skill);
         assert!(path.is_file(), "missing skill: {:?}", path);
     }
@@ -228,11 +222,18 @@ fn test_full_stack_has_all_component_types() {
     // unreachable because `serde(default)` on the wrapped struct means
     // `McpJsonFile` always deserializes successfully with an empty map.
     let mcp = root.join(".mcp.json");
-    assert!(mcp.is_file(), "full-stack must have a sibling .mcp.json sidecar at the plugin root, got {:?}", mcp);
+    assert!(
+        mcp.is_file(),
+        "full-stack must have a sibling .mcp.json sidecar at the plugin root, got {:?}",
+        mcp
+    );
     let mcp_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&mcp).unwrap()).unwrap();
     assert!(
-        mcp_json.get("mcp_servers").and_then(|v| v.get("full-stack-server")).is_some(),
+        mcp_json
+            .get("mcp_servers")
+            .and_then(|v| v.get("full-stack-server"))
+            .is_some(),
         ".mcp.json must declare full-stack-server under mcp_servers key"
     );
 }
@@ -240,8 +241,7 @@ fn test_full_stack_has_all_component_types() {
 #[test]
 fn test_full_stack_hooks_has_sessionstart() {
     let root = fixture_plugin_path("full-stack");
-    let raw =
-        std::fs::read_to_string(root.join("hooks").join("hooks.json")).expect("hooks.json");
+    let raw = std::fs::read_to_string(root.join("hooks").join("hooks.json")).expect("hooks.json");
     let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert!(
         value
@@ -255,8 +255,7 @@ fn test_full_stack_hooks_has_sessionstart() {
 #[test]
 fn test_config_watcher_declares_configchange_event() {
     let root = fixture_plugin_path("config-watcher");
-    let raw =
-        std::fs::read_to_string(root.join("hooks").join("hooks.json")).expect("hooks.json");
+    let raw = std::fs::read_to_string(root.join("hooks").join("hooks.json")).expect("hooks.json");
     let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert!(
         value.pointer("/hooks/ConfigChange/0").is_some(),

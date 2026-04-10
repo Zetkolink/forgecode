@@ -749,7 +749,12 @@ mod tests {
             plugins.iter().map(|p| (p.name.as_str(), p)).collect();
 
         // Hook-only plugins must have a populated `hooks_config`.
-        for hook_plugin in ["prettier-format", "bash-logger", "dangerous-guard", "config-watcher"] {
+        for hook_plugin in [
+            "prettier-format",
+            "bash-logger",
+            "dangerous-guard",
+            "config-watcher",
+        ] {
             let p = by_name[hook_plugin];
             assert!(
                 p.hooks_config.is_some(),
@@ -801,8 +806,8 @@ mod tests {
     ///
     /// Stages a tempdir with two plugin directories:
     /// - `valid-plugin` — a copy of the `bash-logger` Wave G-1 fixture
-    /// - `broken-plugin` — a directory whose `.claude-plugin/plugin.json`
-    ///   is malformed JSON
+    /// - `broken-plugin` — a directory whose `.claude-plugin/plugin.json` is
+    ///   malformed JSON
     ///
     /// `scan_root` must return the valid one in `plugins` and the broken
     /// one in `errors`, without bubbling up a top-level failure.
@@ -850,8 +855,7 @@ mod tests {
         let err = &errors[0];
         assert_eq!(err.plugin_name.as_deref(), Some("broken-plugin"));
         assert!(
-            err.error.to_lowercase().contains("parse")
-                || err.error.to_lowercase().contains("json"),
+            err.error.to_lowercase().contains("parse") || err.error.to_lowercase().contains("json"),
             "error message should mention JSON parsing, got: {}",
             err.error
         );
@@ -901,8 +905,15 @@ mod tests {
         combined.extend(p_plugins);
         all_errors.extend(p_errors);
 
-        assert!(all_errors.is_empty(), "no per-plugin errors expected, got {all_errors:?}");
-        assert_eq!(combined.len(), 2, "expected two copies before conflict resolution");
+        assert!(
+            all_errors.is_empty(),
+            "no per-plugin errors expected, got {all_errors:?}"
+        );
+        assert_eq!(
+            combined.len(),
+            2,
+            "expected two copies before conflict resolution"
+        );
 
         // Run through the same helper that `load_plugins_with_errors` uses
         // for precedence resolution.
