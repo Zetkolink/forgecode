@@ -28,8 +28,8 @@ mod integration {
     use forge_app::hook_runtime::{HookConfigSource, HookMatcherWithSource, MergedHooksConfig};
     use forge_domain::{
         HookCommand, HookEventName, HookInput, HookInputBase, HookInputPayload, HookOutcome,
-        HookOutput, HooksConfig, LoadedPlugin, PluginHooksConfig, PluginLoadError, PluginLoadResult,
-        PluginManifest, PluginSource, ShellHookCommand,
+        HookOutput, HooksConfig, LoadedPlugin, PluginHooksConfig, PluginLoadError,
+        PluginLoadResult, PluginManifest, PluginSource, ShellHookCommand,
     };
     use serde_json::json;
     use tokio::io::AsyncWriteExt;
@@ -296,9 +296,7 @@ mod integration {
     }
 
     /// Scan a plugin root directory, returning both plugins and errors.
-    fn scan_plugins_in_dir_with_errors(
-        root: &Path,
-    ) -> (Vec<LoadedPlugin>, Vec<PluginLoadError>) {
+    fn scan_plugins_in_dir_with_errors(root: &Path) -> (Vec<LoadedPlugin>, Vec<PluginLoadError>) {
         let mut plugins = Vec::new();
         let mut errors = Vec::new();
 
@@ -309,7 +307,7 @@ mod integration {
         let mut entries: Vec<_> = std::fs::read_dir(root)
             .expect("read plugin root directory")
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+            .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
             .collect();
 
         // Sort for deterministic ordering.
@@ -321,13 +319,8 @@ mod integration {
                 Ok(Some(plugin)) => plugins.push(plugin),
                 Ok(None) => {} // Not a plugin directory.
                 Err(e) => {
-                    let plugin_name =
-                        path.file_name().and_then(|s| s.to_str()).map(String::from);
-                    errors.push(PluginLoadError {
-                        plugin_name,
-                        path,
-                        error: e,
-                    });
+                    let plugin_name = path.file_name().and_then(|s| s.to_str()).map(String::from);
+                    errors.push(PluginLoadError { plugin_name, path, error: e });
                 }
             }
         }
@@ -467,10 +460,8 @@ mod integration {
         assert_eq!(cmd_prefix, "command-provider:");
 
         // Verify both plugins can coexist in a PluginLoadResult without collision.
-        let result = PluginLoadResult::new(
-            vec![skill_plugin.clone(), cmd_plugin.clone()],
-            Vec::new(),
-        );
+        let result =
+            PluginLoadResult::new(vec![skill_plugin.clone(), cmd_plugin.clone()], Vec::new());
         assert_eq!(result.plugins.len(), 2);
         assert!(!result.has_errors());
 
@@ -491,10 +482,7 @@ mod integration {
         // Create a LoadedPlugin marked as disabled.
         let disabled_plugin = LoadedPlugin {
             name: "full-stack".to_string(),
-            manifest: PluginManifest {
-                name: Some("full-stack".to_string()),
-                ..Default::default()
-            },
+            manifest: PluginManifest { name: Some("full-stack".to_string()), ..Default::default() },
             path: full_stack_path.clone(),
             source: PluginSource::Project,
             enabled: false, // <-- disabled
