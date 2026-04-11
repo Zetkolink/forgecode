@@ -86,15 +86,12 @@ mod integration {
         let mut child = cmd.spawn().expect("failed to spawn bash");
 
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(input_json.as_bytes())
-                .await
-                .expect("write stdin");
-            stdin.write_all(b"\n").await.expect("write newline");
-            // Explicitly shut down stdin so the child sees EOF.  Without
-            // this, `cat` in the hook command may block indefinitely on
-            // Linux where the async drop doesn't guarantee a close.
-            stdin.shutdown().await.expect("close stdin");
+            // Ignore write/shutdown errors — the child may have already
+            // exited (e.g. `exit 1`), which closes the pipe before we
+            // finish writing.  This is expected and not an error.
+            let _ = stdin.write_all(input_json.as_bytes()).await;
+            let _ = stdin.write_all(b"\n").await;
+            let _ = stdin.shutdown().await;
         }
 
         let timeout_dur = std::time::Duration::from_secs(timeout_secs.unwrap_or(30));
