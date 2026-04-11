@@ -1,7 +1,7 @@
 //! Elicitation dispatcher trait for MCP server-initiated user prompts.
 //!
-//! When an MCP server sends an `elicitation/create` request (per the MCP spec), the
-//! rmcp `ClientHandler::create_elicitation` callback needs to route the
+//! When an MCP server sends an `elicitation/create` request (per the MCP spec),
+//! the rmcp `ClientHandler::create_elicitation` callback needs to route the
 //! request somewhere. This trait is that somewhere — the `forge_infra`
 //! crate will implement a `ForgeMcpHandler` that forwards rmcp's raw
 //! request into a call on `ElicitationDispatcher`, which in turn fires

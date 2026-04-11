@@ -17,8 +17,8 @@
 
 use forge_app::HookExecutorInfra;
 use forge_domain::{
-    AgentHookCommand, Context, ContextMessage, HookDecision, HookExecResult, HookInput,
-    HookOutput, ModelId, ResponseFormat, SyncHookOutput,
+    AgentHookCommand, Context, ContextMessage, HookDecision, HookExecResult, HookInput, HookOutput,
+    ModelId, ResponseFormat, SyncHookOutput,
 };
 
 use crate::hook_runtime::HookOutcome;
@@ -86,7 +86,8 @@ impl ForgeAgentHookExecutor {
     /// Execute an agent hook by making a single LLM call.
     ///
     /// # Arguments
-    /// - `config` — The agent hook configuration (prompt text, model override, timeout).
+    /// - `config` — The agent hook configuration (prompt text, model override,
+    ///   timeout).
     /// - `input` — The hook input payload (tool name, args, etc.).
     /// - `executor` — The executor infra providing `query_model_for_hook`.
     pub async fn execute(
@@ -99,25 +100,16 @@ impl ForgeAgentHookExecutor {
         let processed_prompt = substitute_arguments(&config.prompt, input);
 
         // 2. Determine the model to use.
-        let model_id = ModelId::new(
-            config
-                .model
-                .as_deref()
-                .unwrap_or(DEFAULT_AGENT_HOOK_MODEL),
-        );
+        let model_id = ModelId::new(config.model.as_deref().unwrap_or(DEFAULT_AGENT_HOOK_MODEL));
 
         // 3. Build the LLM context with the agent-specific system prompt.
         let context = Context::default()
-            .add_message(ContextMessage::system(
-                AGENT_HOOK_SYSTEM_PROMPT.to_string(),
-            ))
+            .add_message(ContextMessage::system(AGENT_HOOK_SYSTEM_PROMPT.to_string()))
             .add_message(ContextMessage::user(
                 processed_prompt.clone(),
                 Some(model_id.clone()),
             ))
-            .response_format(ResponseFormat::JsonSchema(Box::new(
-                hook_response_schema(),
-            )));
+            .response_format(ResponseFormat::JsonSchema(Box::new(hook_response_schema())));
 
         // 4. Apply timeout (default 60s for agent hooks).
         let timeout_secs = config.timeout.unwrap_or(DEFAULT_AGENT_HOOK_TIMEOUT_SECS);
@@ -213,9 +205,7 @@ impl ForgeAgentHookExecutor {
                         let output = HookOutput::Sync(SyncHookOutput {
                             should_continue: Some(false),
                             decision: Some(HookDecision::Block),
-                            reason: Some(format!(
-                                "Agent hook condition was not met: {reason}"
-                            )),
+                            reason: Some(format!("Agent hook condition was not met: {reason}")),
                             ..Default::default()
                         });
                         Ok(HookExecResult {

@@ -42,15 +42,13 @@ mod bench {
     fn make_env_vars() -> HashMap<String, String> {
         let cwd = std::env::current_dir().unwrap();
         let mut env = HashMap::new();
-        env.insert(
-            "FORGE_PROJECT_DIR".to_string(),
-            cwd.display().to_string(),
-        );
+        env.insert("FORGE_PROJECT_DIR".to_string(), cwd.display().to_string());
         env.insert("FORGE_SESSION_ID".to_string(), "bench-session".to_string());
         env
     }
 
-    /// Build a ShellHookCommand that reads stdin JSON and echoes a valid HookOutput.
+    /// Build a ShellHookCommand that reads stdin JSON and echoes a valid
+    /// HookOutput.
     fn make_echo_hook_command() -> ShellHookCommand {
         ShellHookCommand {
             command: "read input && echo '{\"continue\": true}'".to_string(),
@@ -97,7 +95,9 @@ mod bench {
                 total += t.elapsed();
             }
             let avg = total / RUNS as u32;
-            eprintln!("Phase 1  bare 'bash -c exit 0'              avg {avg:>10.3?}  (total {total:.3?} / {RUNS} runs)");
+            eprintln!(
+                "Phase 1  bare 'bash -c exit 0'              avg {avg:>10.3?}  (total {total:.3?} / {RUNS} runs)"
+            );
         }
 
         // -----------------------------------------------------------
@@ -140,7 +140,9 @@ mod bench {
                 total += t.elapsed();
             }
             let avg = total / RUNS as u32;
-            eprintln!("Phase 2  bash + stdin JSON + stdout read     avg {avg:>10.3?}  (total {total:.3?} / {RUNS} runs)");
+            eprintln!(
+                "Phase 2  bash + stdin JSON + stdout read     avg {avg:>10.3?}  (total {total:.3?} / {RUNS} runs)"
+            );
         }
 
         // -----------------------------------------------------------
@@ -253,7 +255,9 @@ mod bench {
                 }
             }
             let avg = total / RUNS as u32;
-            eprintln!("Phase 6  10× parallel 'bash -c exit 0'       avg {avg:>10.3?}  (total {total:.3?} / {RUNS} runs)");
+            eprintln!(
+                "Phase 6  10× parallel 'bash -c exit 0'       avg {avg:>10.3?}  (total {total:.3?} / {RUNS} runs)"
+            );
         }
 
         // -----------------------------------------------------------
@@ -285,14 +289,18 @@ mod bench {
 
                 // Verify correctness
                 for (i, r) in results.iter().enumerate() {
-                    let r = r.as_ref().unwrap_or_else(|e| panic!("hook {i} failed: {e}"));
+                    let r = r
+                        .as_ref()
+                        .unwrap_or_else(|e| panic!("hook {i} failed: {e}"));
                     assert_eq!(r.outcome, HookOutcome::Success, "hook {i} not Success");
                     assert!(r.output.is_some(), "hook {i} missing output");
                     assert_eq!(r.exit_code, Some(0), "hook {i} non-zero exit");
                 }
             }
             let avg = total / RUNS as u32;
-            eprintln!("Phase 7  10× ForgeShellHookExecutor          avg {avg:>10.3?}  (total {total:.3?} / {RUNS} runs)");
+            eprintln!(
+                "Phase 7  10× ForgeShellHookExecutor          avg {avg:>10.3?}  (total {total:.3?} / {RUNS} runs)"
+            );
         }
 
         // -----------------------------------------------------------

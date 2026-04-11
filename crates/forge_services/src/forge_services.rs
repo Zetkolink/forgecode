@@ -299,8 +299,9 @@ impl<
     where
         ForgeServices<F>: forge_app::Services,
     {
-        self.hook_executor_service
-            .init_services(self.clone() as std::sync::Arc<dyn crate::hook_runtime::executor::HookModelService>);
+        self.hook_executor_service.init_services(
+            self.clone() as std::sync::Arc<dyn crate::hook_runtime::executor::HookModelService>
+        );
     }
 
     /// Return a type-erased handle to the elicitation dispatcher so

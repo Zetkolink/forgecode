@@ -64,11 +64,7 @@ impl SessionHookStore {
             .hooks
             .entry(event)
             .or_default()
-            .push(SessionHookEntry {
-                matcher,
-                plugin_root,
-                plugin_name,
-            });
+            .push(SessionHookEntry { matcher, plugin_root, plugin_name });
     }
 
     /// Get all session hooks for a session and event, converted to
@@ -105,9 +101,7 @@ impl SessionHookStore {
     /// Check if any session hooks exist for a given session.
     pub async fn has_hooks(&self, session_id: &str) -> bool {
         let guard = self.inner.read().await;
-        guard
-            .get(session_id)
-            .map_or(false, |b| !b.hooks.is_empty())
+        guard.get(session_id).is_some_and(|b| !b.hooks.is_empty())
     }
 }
 
@@ -150,15 +144,10 @@ mod tests {
             )
             .await;
 
-        let hooks = store
-            .get_hooks("sess-1", &HookEventName::PreToolUse)
-            .await;
+        let hooks = store.get_hooks("sess-1", &HookEventName::PreToolUse).await;
         assert_eq!(hooks.len(), 1);
         assert_eq!(hooks[0].source, HookConfigSource::Session);
-        assert_eq!(
-            hooks[0].matcher.matcher.as_deref(),
-            Some("Bash")
-        );
+        assert_eq!(hooks[0].matcher.matcher.as_deref(), Some("Bash"));
     }
 
     #[tokio::test]
@@ -186,9 +175,7 @@ mod tests {
             .await;
 
         // Different event returns nothing.
-        let hooks = store
-            .get_hooks("sess-1", &HookEventName::PostToolUse)
-            .await;
+        let hooks = store.get_hooks("sess-1", &HookEventName::PostToolUse).await;
         assert!(hooks.is_empty());
     }
 
@@ -216,9 +203,7 @@ mod tests {
             )
             .await;
 
-        let hooks = store
-            .get_hooks("sess-1", &HookEventName::PreToolUse)
-            .await;
+        let hooks = store.get_hooks("sess-1", &HookEventName::PreToolUse).await;
         assert_eq!(hooks.len(), 2);
         assert_eq!(hooks[0].matcher.matcher.as_deref(), Some("Bash"));
         assert!(hooks[0].plugin_root.is_none());
@@ -250,9 +235,7 @@ mod tests {
         store.clear_session("sess-1").await;
 
         assert!(!store.has_hooks("sess-1").await);
-        let hooks = store
-            .get_hooks("sess-1", &HookEventName::PreToolUse)
-            .await;
+        let hooks = store.get_hooks("sess-1", &HookEventName::PreToolUse).await;
         assert!(hooks.is_empty());
     }
 
@@ -285,9 +268,7 @@ mod tests {
         assert!(!store.has_hooks("sess-1").await);
         assert!(store.has_hooks("sess-2").await);
 
-        let hooks = store
-            .get_hooks("sess-2", &HookEventName::PreToolUse)
-            .await;
+        let hooks = store.get_hooks("sess-2", &HookEventName::PreToolUse).await;
         assert_eq!(hooks.len(), 1);
     }
 
@@ -328,9 +309,7 @@ mod tests {
             )
             .await;
 
-        let hooks = store
-            .get_hooks("sess-1", &HookEventName::PreToolUse)
-            .await;
+        let hooks = store.get_hooks("sess-1", &HookEventName::PreToolUse).await;
         assert_eq!(hooks.len(), 1);
         assert_eq!(hooks[0].source, HookConfigSource::Session);
     }
@@ -351,9 +330,7 @@ mod tests {
             .await;
 
         // The clone sees the hook added through the original.
-        let hooks = cloned
-            .get_hooks("sess-1", &HookEventName::PreToolUse)
-            .await;
+        let hooks = cloned.get_hooks("sess-1", &HookEventName::PreToolUse).await;
         assert_eq!(hooks.len(), 1);
     }
 }

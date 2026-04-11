@@ -67,13 +67,10 @@ pub fn matches_pattern(pattern: &str, tool_name: &str) -> bool {
 
     // 3. Pipe list — any exact alternative matches (with legacy normalization).
     if trimmed.contains('|') {
-        return trimmed
-            .split('|')
-            .map(str::trim)
-            .any(|alt| {
-                let normalized = normalize_legacy_tool_name(alt);
-                normalized == tool_name || alt == tool_name
-            });
+        return trimmed.split('|').map(str::trim).any(|alt| {
+            let normalized = normalize_legacy_tool_name(alt);
+            normalized == tool_name || alt == tool_name
+        });
     }
 
     // 4. Exact match (with legacy normalization).
@@ -177,7 +174,12 @@ fn normalize_legacy_tool_name(name: &str) -> &str {
 fn get_legacy_names(forge_name: &str) -> &'static [&'static str] {
     match forge_name {
         "Read" => &["FileRead", "FileReadTool"],
-        "Write" => &["FileWrite", "FileWriteTool", "NotebookEdit", "NotebookEditTool"],
+        "Write" => &[
+            "FileWrite",
+            "FileWriteTool",
+            "NotebookEdit",
+            "NotebookEditTool",
+        ],
         "Patch" => &["FileEdit", "FileEditTool"],
         "FsSearch" => &["Grep", "GrepTool", "Glob", "GlobTool"],
         "Shell" => &["Bash", "BashTool"],

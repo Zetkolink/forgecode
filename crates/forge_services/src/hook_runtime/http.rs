@@ -567,10 +567,7 @@ mod tests {
 
     #[test]
     fn test_is_url_allowed_empty_vec_blocks_all() {
-        assert!(!is_url_allowed(
-            "https://hooks.example.com/hook",
-            Some(&[])
-        ));
+        assert!(!is_url_allowed("https://hooks.example.com/hook", Some(&[])));
     }
 
     #[test]

@@ -108,15 +108,14 @@ impl<'a, S: Services + 'static> Sandbox<'a, S> {
     /// This method is a stub — worktree cleanup is not yet implemented.
     /// To complete this:
     ///   1. Accept the `worktree_path: PathBuf` of the worktree to remove.
-    ///   2. Fire the hook BEFORE removal so plugins can veto:
-    ///        let hook_result = forge_app::fire_worktree_remove_hook(
-    ///            self.services.clone(), worktree_path.clone()
-    ///        ).await;
+    ///   2. Fire the hook BEFORE removal so plugins can veto: let hook_result =
+    ///      forge_app::fire_worktree_remove_hook( self.services.clone(),
+    ///      worktree_path.clone() ).await;
     ///   3. If `hook_result.blocking_error` is set, abort the removal.
-    ///   4. Otherwise, run `git worktree remove --force <path>` (with an
-    ///      `rm -rf` fallback for non-git worktrees).
-    ///   5. Call this from the session exit path in `main.rs` or from a
-    ///      future `ExitWorktreeTool` / `--sandbox-remove` CLI flag.
+    ///   4. Otherwise, run `git worktree remove --force <path>` (with an `rm
+    ///      -rf` fallback for non-git worktrees).
+    ///   5. Call this from the session exit path in `main.rs` or from a future
+    ///      `ExitWorktreeTool` / `--sandbox-remove` CLI flag.
     ///
     /// See: `forge_app::fire_worktree_remove_hook`
     #[allow(dead_code)]

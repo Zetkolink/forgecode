@@ -145,9 +145,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_service_forwards_env_vars() {
-        let fixture = ForgeShell::new(Arc::new(MockCommandInfra {
-            expected_env_vars: Some(vec!["PATH".to_string(), "HOME".to_string()]),
-        }), SessionEnvCache::new());
+        let fixture = ForgeShell::new(
+            Arc::new(MockCommandInfra {
+                expected_env_vars: Some(vec!["PATH".to_string(), "HOME".to_string()]),
+            }),
+            SessionEnvCache::new(),
+        );
 
         let actual = fixture
             .execute(
@@ -167,7 +170,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_service_forwards_no_env_vars() {
-        let fixture = ForgeShell::new(Arc::new(MockCommandInfra { expected_env_vars: None }), SessionEnvCache::new());
+        let fixture = ForgeShell::new(
+            Arc::new(MockCommandInfra { expected_env_vars: None }),
+            SessionEnvCache::new(),
+        );
 
         let actual = fixture
             .execute(
@@ -187,9 +193,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_service_forwards_empty_env_vars() {
-        let fixture = ForgeShell::new(Arc::new(MockCommandInfra {
-            expected_env_vars: Some(vec![]),
-        }), SessionEnvCache::new());
+        let fixture = ForgeShell::new(
+            Arc::new(MockCommandInfra { expected_env_vars: Some(vec![]) }),
+            SessionEnvCache::new(),
+        );
 
         let actual = fixture
             .execute(
@@ -209,7 +216,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_service_with_description() {
-        let fixture = ForgeShell::new(Arc::new(MockCommandInfra { expected_env_vars: None }), SessionEnvCache::new());
+        let fixture = ForgeShell::new(
+            Arc::new(MockCommandInfra { expected_env_vars: None }),
+            SessionEnvCache::new(),
+        );
 
         let actual = fixture
             .execute(
@@ -233,7 +243,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_service_without_description() {
-        let fixture = ForgeShell::new(Arc::new(MockCommandInfra { expected_env_vars: None }), SessionEnvCache::new());
+        let fixture = ForgeShell::new(
+            Arc::new(MockCommandInfra { expected_env_vars: None }),
+            SessionEnvCache::new(),
+        );
 
         let actual = fixture
             .execute(

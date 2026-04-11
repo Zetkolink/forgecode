@@ -37,8 +37,8 @@ use forge_domain::{
     CwdChangedPayload, ElicitationPayload, ElicitationResultPayload, EventData, EventHandle,
     FileChangeEvent, FileChangedPayload, InstructionsLoadedPayload, LoadedInstructions, ModelId,
     NotificationPayload, PermissionDeniedPayload, PermissionRequestPayload, PermissionUpdate,
-    SetupPayload, SetupTrigger, SubagentStartPayload, SubagentStopPayload,
-    WorktreeCreatePayload, WorktreeRemovePayload,
+    SetupPayload, SetupTrigger, SubagentStartPayload, SubagentStopPayload, WorktreeCreatePayload,
+    WorktreeRemovePayload,
 };
 use notify_debouncer_full::notify::RecursiveMode;
 use tracing::{debug, warn};
@@ -775,7 +775,8 @@ pub async fn fire_subagent_start_hook<S: Services>(
     let transcript_path = environment.transcript_path(&session_id);
     let cwd = environment.cwd.clone();
 
-    let payload = SubagentStartPayload { agent_id: agent_id.clone(), agent_type: agent_type.clone() };
+    let payload =
+        SubagentStartPayload { agent_id: agent_id.clone(), agent_type: agent_type.clone() };
     let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
 
     let plugin_handler = PluginHookHandler::new(services.clone());
@@ -848,13 +849,12 @@ pub async fn fire_subagent_stop_hook<S: Services>(
     let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
 
     let plugin_handler = PluginHookHandler::new(services.clone());
-    if let Err(err) =
-        <PluginHookHandler<S> as EventHandle<EventData<SubagentStopPayload>>>::handle(
-            &plugin_handler,
-            &event,
-            &mut scratch,
-        )
-        .await
+    if let Err(err) = <PluginHookHandler<S> as EventHandle<EventData<SubagentStopPayload>>>::handle(
+        &plugin_handler,
+        &event,
+        &mut scratch,
+    )
+    .await
     {
         warn!(
             agent_id = %agent_id,
@@ -1036,13 +1036,12 @@ pub async fn fire_cwd_changed_hook<S: Services>(
     let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
 
     let plugin_handler = PluginHookHandler::new(services.clone());
-    if let Err(err) =
-        <PluginHookHandler<S> as EventHandle<EventData<CwdChangedPayload>>>::handle(
-            &plugin_handler,
-            &event,
-            &mut scratch,
-        )
-        .await
+    if let Err(err) = <PluginHookHandler<S> as EventHandle<EventData<CwdChangedPayload>>>::handle(
+        &plugin_handler,
+        &event,
+        &mut scratch,
+    )
+    .await
     {
         warn!(
             old_cwd = %old_cwd.display(),

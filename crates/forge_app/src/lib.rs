@@ -1,9 +1,9 @@
 mod agent;
-mod async_hook_queue;
 mod agent_executor;
 mod agent_provider_resolver;
 mod app;
 mod apply_tunable_parameters;
+mod async_hook_queue;
 mod changed_files;
 mod command_generator;
 mod compact;
@@ -44,9 +44,9 @@ mod walker;
 mod workspace_status;
 
 pub use agent::*;
-pub use async_hook_queue::AsyncHookResultQueue;
 pub use agent_provider_resolver::*;
 pub use app::*;
+pub use async_hook_queue::AsyncHookResultQueue;
 pub use command_generator::*;
 pub use data_gen::*;
 pub use error::*;

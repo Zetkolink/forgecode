@@ -36,9 +36,9 @@ use forge_domain::{HooksConfig, LoadedPlugin, PluginHooksManifestField, PluginRe
 
 /// Wrapper struct for the plugin `hooks.json` format.
 ///
-/// Plugin hooks files use `{ "hooks": { EventName: [...] }, "description": "..." }`
-/// while user/project settings use the flat `{ EventName: [...] }` format.
-/// This matches Claude Code's `PluginHooksSchema` at
+/// Plugin hooks files use `{ "hooks": { EventName: [...] }, "description":
+/// "..." }` while user/project settings use the flat `{ EventName: [...] }`
+/// format. This matches Claude Code's `PluginHooksSchema` at
 /// `claude-code/src/utils/plugins/schemas.ts:328-339`.
 #[derive(serde::Deserialize)]
 struct PluginHooksFile {
@@ -108,7 +108,11 @@ pub struct ForgeHookConfigLoader<F> {
 
 impl<F> ForgeHookConfigLoader<F>
 where
-    F: EnvironmentInfra<Config = forge_config::ForgeConfig> + FileReaderInfra + FileInfoInfra + Send + Sync,
+    F: EnvironmentInfra<Config = forge_config::ForgeConfig>
+        + FileReaderInfra
+        + FileInfoInfra
+        + Send
+        + Sync,
 {
     /// Creates a new loader. The cache is empty until
     /// [`load`](HookConfigLoaderService::load) is called for the first
@@ -149,13 +153,7 @@ where
             // Load managed hooks from ~/forge/managed-hooks.json
             let managed_path = env.base_path.join("managed-hooks.json");
             if let Some(config) = self.read_hooks_json(&managed_path).await? {
-                extend_from(
-                    &mut merged,
-                    config,
-                    HookConfigSource::Managed,
-                    None,
-                    None,
-                );
+                extend_from(&mut merged, config, HookConfigSource::Managed, None, None);
             }
 
             return Ok(merged);
@@ -296,11 +294,10 @@ where
     ///
     /// Supports two JSON shapes:
     ///
-    /// - **Flat format** (user/project settings):
-    ///   `{ "PreToolUse": [...] }`
+    /// - **Flat format** (user/project settings): `{ "PreToolUse": [...] }`
     /// - **Wrapper format** (plugin `hooks.json`, matching Claude Code's
-    ///   `PluginHooksSchema`):
-    ///   `{ "hooks": { "PreToolUse": [...] }, "description": "..." }`
+    ///   `PluginHooksSchema`): `{ "hooks": { "PreToolUse": [...] },
+    ///   "description": "..." }`
     ///
     /// The wrapper format is tried first; if the top-level object contains
     /// a `"hooks"` key whose value is an object, it is unwrapped.
@@ -329,7 +326,12 @@ where
 #[async_trait::async_trait]
 impl<F> HookConfigLoaderService for ForgeHookConfigLoader<F>
 where
-    F: EnvironmentInfra<Config = forge_config::ForgeConfig> + FileReaderInfra + FileInfoInfra + Send + Sync + 'static,
+    F: EnvironmentInfra<Config = forge_config::ForgeConfig>
+        + FileReaderInfra
+        + FileInfoInfra
+        + Send
+        + Sync
+        + 'static,
 {
     /// Returns the merged hook config, loading it from disk on first
     /// call (or after [`invalidate`](Self::invalidate)).
@@ -397,7 +399,11 @@ mod tests {
                 shell: "/bin/bash".to_string(),
                 base_path: base,
             };
-            Self { env, env_vars: BTreeMap::new(), config: forge_config::ForgeConfig::default() }
+            Self {
+                env,
+                env_vars: BTreeMap::new(),
+                config: forge_config::ForgeConfig::default(),
+            }
         }
 
         fn with_env_var(mut self, key: &str, value: &str) -> Self {
@@ -949,16 +955,16 @@ mod tests {
         // Write user hooks that would normally be loaded.
         std::fs::write(base.join("hooks.json"), sample_hooks_json()).unwrap();
 
-        let config = forge_config::ForgeConfig {
-            disable_all_hooks: true,
-            ..Default::default()
-        };
+        let config = forge_config::ForgeConfig { disable_all_hooks: true, ..Default::default() };
         let infra = Arc::new(TestInfra::new(base, cwd).with_config(config));
         let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::default());
         let loader = ForgeHookConfigLoader::new(infra, repo);
 
         let merged = loader.load().await.unwrap();
-        assert!(merged.is_empty(), "disable_all_hooks should return empty config");
+        assert!(
+            merged.is_empty(),
+            "disable_all_hooks should return empty config"
+        );
         assert_eq!(merged.total_matchers(), 0);
     }
 
@@ -979,10 +985,8 @@ mod tests {
         )
         .unwrap();
 
-        let config = forge_config::ForgeConfig {
-            allow_managed_hooks_only: true,
-            ..Default::default()
-        };
+        let config =
+            forge_config::ForgeConfig { allow_managed_hooks_only: true, ..Default::default() };
         let infra = Arc::new(TestInfra::new(base, cwd).with_config(config));
         let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::default());
         let loader = ForgeHookConfigLoader::new(infra, repo);
@@ -1013,10 +1017,8 @@ mod tests {
         )
         .unwrap();
 
-        let config = forge_config::ForgeConfig {
-            allow_managed_hooks_only: true,
-            ..Default::default()
-        };
+        let config =
+            forge_config::ForgeConfig { allow_managed_hooks_only: true, ..Default::default() };
         let infra = Arc::new(TestInfra::new(base, cwd).with_config(config));
         let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::default());
         let loader = ForgeHookConfigLoader::new(infra, repo);
@@ -1058,7 +1060,10 @@ mod tests {
             Some(1)
         );
         assert_eq!(
-            merged.entries.get(&HookEventName::PostToolUse).map(Vec::len),
+            merged
+                .entries
+                .get(&HookEventName::PostToolUse)
+                .map(Vec::len),
             Some(1)
         );
     }

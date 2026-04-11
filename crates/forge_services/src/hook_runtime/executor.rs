@@ -38,22 +38,14 @@ use crate::hook_runtime::shell::{ForgeShellHookExecutor, PromptHandler};
 pub trait HookModelService: Send + Sync + 'static {
     /// Execute a single non-streaming LLM call and return the text
     /// content of the response.
-    async fn query_model(
-        &self,
-        model_id: &ModelId,
-        context: Context,
-    ) -> anyhow::Result<String>;
+    async fn query_model(&self, model_id: &ModelId, context: Context) -> anyhow::Result<String>;
 }
 
 /// Blanket implementation: any `Services` aggregate can serve as a
 /// `HookModelService` by delegating to `ProviderService::chat`.
 #[async_trait]
 impl<S: Services + 'static> HookModelService for S {
-    async fn query_model(
-        &self,
-        model_id: &ModelId,
-        context: Context,
-    ) -> anyhow::Result<String> {
+    async fn query_model(&self, model_id: &ModelId, context: Context) -> anyhow::Result<String> {
         // Resolve the provider for the requested model.
         let provider_id = self.get_default_provider().await?;
         let provider = self.get_provider(provider_id).await?;
@@ -189,9 +181,7 @@ where
     ) -> anyhow::Result<HookExecResult> {
         // Check the URL allowlist before executing the HTTP hook.
         if let Ok(forge_config) = self.infra.get_config() {
-            let allowed = forge_config
-                .allowed_http_hook_urls
-                .as_deref();
+            let allowed = forge_config.allowed_http_hook_urls.as_deref();
             if !is_url_allowed(&config.url, allowed) {
                 tracing::warn!(
                     url = config.url.as_str(),
@@ -334,7 +324,10 @@ mod tests {
         }
 
         fn get_env_vars(&self) -> std::collections::BTreeMap<String, String> {
-            self.env_vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            self.env_vars
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
         }
     }
 
@@ -404,7 +397,10 @@ mod tests {
         };
 
         // Verify the infra resolves the env var correctly.
-        assert_eq!(infra.get_env_var("API_TOKEN"), Some("test-secret".to_string()));
+        assert_eq!(
+            infra.get_env_var("API_TOKEN"),
+            Some("test-secret".to_string())
+        );
 
         // Build the snapshot HashMap the same way ForgeHookExecutor::execute_http does.
         let mut snapshot = HashMap::new();
@@ -415,7 +411,10 @@ mod tests {
                 }
             }
         }
-        assert_eq!(snapshot.get("API_TOKEN").map(String::as_str), Some("test-secret"));
+        assert_eq!(
+            snapshot.get("API_TOKEN").map(String::as_str),
+            Some("test-secret")
+        );
 
         // Verify substitution via the http module's substitute_header_value.
         let lookup = crate::hook_runtime::http::map_env_lookup(snapshot);
@@ -467,10 +466,15 @@ mod tests {
             once: false,
         };
 
-        let result = exec.execute_http(&hook_config, &sample_input()).await.unwrap();
+        let result = exec
+            .execute_http(&hook_config, &sample_input())
+            .await
+            .unwrap();
         assert_eq!(result.outcome, HookOutcome::NonBlockingError);
         assert!(
-            result.raw_stderr.contains("not in the allowed_http_hook_urls"),
+            result
+                .raw_stderr
+                .contains("not in the allowed_http_hook_urls"),
             "error should mention allowlist: {}",
             result.raw_stderr
         );
@@ -494,7 +498,10 @@ mod tests {
             once: false,
         };
 
-        let result = exec.execute_http(&hook_config, &sample_input()).await.unwrap();
+        let result = exec
+            .execute_http(&hook_config, &sample_input())
+            .await
+            .unwrap();
         // Should NOT be blocked by allowlist; will fail with connection error.
         assert!(
             !result.raw_stderr.contains("allowed_http_hook_urls"),
@@ -521,8 +528,15 @@ mod tests {
             once: false,
         };
 
-        let result = exec.execute_http(&hook_config, &sample_input()).await.unwrap();
+        let result = exec
+            .execute_http(&hook_config, &sample_input())
+            .await
+            .unwrap();
         assert_eq!(result.outcome, HookOutcome::NonBlockingError);
-        assert!(result.raw_stderr.contains("not in the allowed_http_hook_urls"));
+        assert!(
+            result
+                .raw_stderr
+                .contains("not in the allowed_http_hook_urls")
+        );
     }
 }

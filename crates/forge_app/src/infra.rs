@@ -527,11 +527,7 @@ pub trait HookExecutorInfra: Send + Sync {
     /// override this to delegate to `ProviderService::chat`.
     ///
     /// Reference: `claude-code/src/utils/hooks/execPromptHook.ts:62-100`
-    async fn query_model_for_hook(
-        &self,
-        _model_id: &ModelId,
-        _context: Context,
-    ) -> Result<String> {
+    async fn query_model_for_hook(&self, _model_id: &ModelId, _context: Context) -> Result<String> {
         Err(anyhow::anyhow!(
             "LLM calls for hooks are not available in this mode"
         ))

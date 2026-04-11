@@ -74,7 +74,8 @@ impl ForgePromptHookExecutor {
     /// Execute a prompt hook by making a single LLM call.
     ///
     /// # Arguments
-    /// - `config` — The prompt hook configuration (prompt text, model override, timeout).
+    /// - `config` — The prompt hook configuration (prompt text, model override,
+    ///   timeout).
     /// - `input` — The hook input payload (tool name, args, etc.).
     /// - `executor` — The executor infra providing `query_model_for_hook`.
     pub async fn execute(
@@ -87,12 +88,7 @@ impl ForgePromptHookExecutor {
         let processed_prompt = substitute_arguments(&config.prompt, input);
 
         // 2. Determine the model to use.
-        let model_id = ModelId::new(
-            config
-                .model
-                .as_deref()
-                .unwrap_or(DEFAULT_PROMPT_HOOK_MODEL),
-        );
+        let model_id = ModelId::new(config.model.as_deref().unwrap_or(DEFAULT_PROMPT_HOOK_MODEL));
 
         // 3. Build the LLM context.
         let context = Context::default()
@@ -103,9 +99,7 @@ impl ForgePromptHookExecutor {
                 processed_prompt.clone(),
                 Some(model_id.clone()),
             ))
-            .response_format(ResponseFormat::JsonSchema(Box::new(
-                hook_response_schema(),
-            )));
+            .response_format(ResponseFormat::JsonSchema(Box::new(hook_response_schema())));
 
         // 4. Apply timeout.
         let timeout_secs = config.timeout.unwrap_or(DEFAULT_PROMPT_HOOK_TIMEOUT_SECS);
@@ -201,9 +195,7 @@ impl ForgePromptHookExecutor {
                         let output = HookOutput::Sync(SyncHookOutput {
                             should_continue: Some(false),
                             decision: Some(HookDecision::Block),
-                            reason: Some(format!(
-                                "Prompt hook condition was not met: {reason}"
-                            )),
+                            reason: Some(format!("Prompt hook condition was not met: {reason}")),
                             ..Default::default()
                         });
                         Ok(HookExecResult {
@@ -227,7 +219,7 @@ mod tests {
 
     use forge_domain::{HookInputBase, HookInputPayload};
     use pretty_assertions::assert_eq;
-    use serde_json::json;
+    
 
     use super::*;
 
@@ -242,9 +234,7 @@ mod tests {
                 agent_type: None,
                 hook_event_name: "UserPromptSubmit".to_string(),
             },
-            payload: HookInputPayload::UserPromptSubmit {
-                prompt: "hello".to_string(),
-            },
+            payload: HookInputPayload::UserPromptSubmit { prompt: "hello".to_string() },
         }
     }
 

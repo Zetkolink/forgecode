@@ -18,9 +18,9 @@ mod forge_services;
 mod fs_watcher_core;
 mod hook_runtime;
 // Re-export shell executor for integration/performance tests.
-pub use hook_runtime::shell::{ForgeShellHookExecutor, PromptHandler};
 // Re-export workspace trust helper for the CLI `forge trust` command.
 pub use hook_runtime::config_loader::accept_workspace_trust;
+pub use hook_runtime::shell::{ForgeShellHookExecutor, PromptHandler};
 mod instructions;
 mod mcp;
 mod policy;

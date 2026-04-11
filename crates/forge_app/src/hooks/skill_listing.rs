@@ -202,9 +202,9 @@ impl DeltaCache {
     /// Used in two scenarios:
     /// - `SessionEnd` cleanup, to prevent the cache from growing unbounded
     ///   across restart / resume cycles.
-    /// - Plugin hot-reload: when a plugin is enabled or disabled the
-    ///   skill catalog may change and every agent in the conversation needs to
-    ///   see a fresh announcement on the next turn.
+    /// - Plugin hot-reload: when a plugin is enabled or disabled the skill
+    ///   catalog may change and every agent in the conversation needs to see a
+    ///   fresh announcement on the next turn.
     ///
     /// Removes every `(conversation_id, *)` entry regardless of which agent
     /// had previously been announced to.

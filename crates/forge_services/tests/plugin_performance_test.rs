@@ -150,14 +150,8 @@ mod performance {
 
         // Build env vars matching the production dispatcher.
         let mut env_vars = std::collections::HashMap::new();
-        env_vars.insert(
-            "FORGE_PROJECT_DIR".to_string(),
-            cwd.display().to_string(),
-        );
-        env_vars.insert(
-            "FORGE_SESSION_ID".to_string(),
-            "perf-test".to_string(),
-        );
+        env_vars.insert("FORGE_PROJECT_DIR".to_string(), cwd.display().to_string());
+        env_vars.insert("FORGE_SESSION_ID".to_string(), "perf-test".to_string());
 
         // Execute all 10 hooks in parallel through the real executor
         // (mirrors the production dispatcher which uses join_all).
@@ -184,11 +178,7 @@ mod performance {
                 result.output.is_some(),
                 "hook {i}: expected parsed HookOutput from JSON stdout"
             );
-            assert_eq!(
-                result.exit_code,
-                Some(0),
-                "hook {i}: expected exit code 0"
-            );
+            assert_eq!(result.exit_code, Some(0), "hook {i}: expected exit code 0");
         }
 
         // Budget: 1 s local, 2 s on CI. The local budget accounts for

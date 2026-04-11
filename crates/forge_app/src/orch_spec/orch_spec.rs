@@ -724,9 +724,9 @@ async fn test_complete_when_empty_todos() {
 //
 // Tested scenarios:
 // - Non-default agents (e.g. `sage`) also receive the `<system_reminder>`
-//   catalog. This is the bug being tested: previously the
-//   partial was statically rendered only into `forge.md`, so Sage and Muse were
-//   blind to available skills.
+//   catalog. This is the bug being tested: previously the partial was
+//   statically rendered only into `forge.md`, so Sage and Muse were blind to
+//   available skills.
 // - A skill created mid-session (simulating the `create-skill` workflow) is
 //   visible to the LLM on the *next* turn, without requiring a restart. The
 //   delta cache ensures no duplicate reminders are emitted.
@@ -1365,11 +1365,7 @@ async fn test_pre_tool_use_passthrough_applies_updated_input() {
 
     // Verify the hook fired
     let payloads = captured_payloads.lock().unwrap();
-    assert_eq!(
-        payloads.len(),
-        1,
-        "PreToolUse hook must fire exactly once"
-    );
+    assert_eq!(payloads.len(), 1, "PreToolUse hook must fire exactly once");
     assert_eq!(payloads[0].tool_name, "fs_read");
 
     // The orchestrator must have completed without error, proving it

@@ -27,8 +27,8 @@ use std::time::Duration;
 
 use forge_app::{HookExecResult, HookOutcome};
 use forge_domain::{
-    HookDecision, HookInput, HookOutput, HookPromptRequest, HookPromptResponse,
-    PendingHookResult, ShellHookCommand, ShellType, SyncHookOutput,
+    HookDecision, HookInput, HookOutput, HookPromptRequest, HookPromptResponse, PendingHookResult,
+    ShellHookCommand, ShellType, SyncHookOutput,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -47,10 +47,8 @@ const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 /// the hook's stdout.
 #[async_trait::async_trait]
 pub trait PromptHandler {
-    async fn handle_prompt(
-        &self,
-        request: HookPromptRequest,
-    ) -> anyhow::Result<HookPromptResponse>;
+    async fn handle_prompt(&self, request: HookPromptRequest)
+    -> anyhow::Result<HookPromptResponse>;
 }
 
 /// Errors that can occur during the streaming stdout read.
@@ -84,10 +82,7 @@ impl Default for ForgeShellHookExecutor {
 impl ForgeShellHookExecutor {
     /// Create a new shell executor using the default 30-second timeout.
     pub fn new() -> Self {
-        Self {
-            default_timeout: DEFAULT_HOOK_TIMEOUT,
-            async_result_tx: None,
-        }
+        Self { default_timeout: DEFAULT_HOOK_TIMEOUT, async_result_tx: None }
     }
 
     /// Create a shell executor with a custom default timeout (used in
@@ -136,8 +131,8 @@ impl ForgeShellHookExecutor {
         let command = substitute_variables(&config.command, &env_vars);
 
         // 3. Pick shell based on config (default bash on Unix, powershell on Windows is
-        //    handled implicitly by the fallback on Windows builds; defaults to
-        //    bash everywhere because the test suite is gated to unix).
+        //    handled implicitly by the fallback on Windows builds; defaults to bash
+        //    everywhere because the test suite is gated to unix).
         let (program, shell_flag) = match config.shell {
             Some(ShellType::Powershell) => ("powershell", "-Command"),
             Some(ShellType::Bash) | None => ("bash", "-c"),
@@ -164,10 +159,9 @@ impl ForgeShellHookExecutor {
 
         let mut child = cmd.spawn()?;
 
-        // 4. Write JSON + "\n" to stdin.
-        //    When prompt_handler is active we keep the stdin handle alive
-        //    so we can write prompt responses later. Otherwise we drop
-        //    it immediately so the hook sees EOF.
+        // 4. Write JSON + "\n" to stdin. When prompt_handler is active we keep the
+        //    stdin handle alive so we can write prompt responses later. Otherwise we
+        //    drop it immediately so the hook sees EOF.
         let mut stdin_handle = child.stdin.take();
         if let Some(stdin) = &mut stdin_handle {
             // Write input to stdin; ignore BrokenPipe (EPIPE) errors that
@@ -180,13 +174,12 @@ impl ForgeShellHookExecutor {
             }
             .await;
 
-            if let Err(e) = write_result {
-                if e.kind() != std::io::ErrorKind::BrokenPipe {
+            if let Err(e) = write_result
+                && e.kind() != std::io::ErrorKind::BrokenPipe {
                     return Err(anyhow::anyhow!("hook stdin write failed: {e}"));
                 }
                 // BrokenPipe is expected when the hook doesn't read stdin.
                 // Continue to collect stdout/stderr and exit code normally.
-            }
         }
         // When there is no prompt handler, close stdin now so the hook
         // sees EOF (original behavior).
@@ -246,9 +239,7 @@ impl ForgeShellHookExecutor {
                                     parsed
                                         .as_ref()
                                         .and_then(|o| match o {
-                                            HookOutput::Sync(sync) => {
-                                                sync.system_message.clone()
-                                            }
+                                            HookOutput::Sync(sync) => sync.system_message.clone(),
                                             _ => None,
                                         })
                                         .unwrap_or_else(|| stdout.trim().to_string())
@@ -289,12 +280,7 @@ impl ForgeShellHookExecutor {
         // requests bidirectionally. This replaces the old
         // `child.wait_with_output()` batch read.
         let streaming_result = self
-            .execute_sync_streaming(
-                &mut child,
-                stdin_handle,
-                timeout_duration,
-                prompt_handler,
-            )
+            .execute_sync_streaming(&mut child, stdin_handle, timeout_duration, prompt_handler)
             .await;
 
         let (stdout, stderr, exit_code) = match streaming_result {
@@ -375,15 +361,15 @@ impl ForgeShellHookExecutor {
 
                 while let Ok(Some(line)) = lines.next_line().await {
                     // Quick heuristic: does this look like a prompt request?
-                    if line.trim_start().starts_with('{') && line.contains("\"prompt\"") {
-                        if let Ok(req) = serde_json::from_str::<HookPromptRequest>(&line) {
+                    if line.trim_start().starts_with('{') && line.contains("\"prompt\"")
+                        && let Ok(req) = serde_json::from_str::<HookPromptRequest>(&line) {
                             // We have a valid prompt request.
                             if let Some(handler) = prompt_handler {
                                 match handler.handle_prompt(req).await {
                                     Ok(response) => {
                                         if let Some(stdin) = &mut stdin_handle {
-                                            let resp_json =
-                                                serde_json::to_string(&response).unwrap_or_default();
+                                            let resp_json = serde_json::to_string(&response)
+                                                .unwrap_or_default();
                                             let write_result = async {
                                                 stdin.write_all(resp_json.as_bytes()).await?;
                                                 stdin.write_all(b"\n").await?;
@@ -391,14 +377,13 @@ impl ForgeShellHookExecutor {
                                                 Ok::<(), std::io::Error>(())
                                             }
                                             .await;
-                                            if let Err(e) = write_result {
-                                                if e.kind() != std::io::ErrorKind::BrokenPipe {
+                                            if let Err(e) = write_result
+                                                && e.kind() != std::io::ErrorKind::BrokenPipe {
                                                     tracing::warn!(
                                                         error = %e,
                                                         "Failed to write prompt response to hook stdin"
                                                     );
                                                 }
-                                            }
                                         }
                                     }
                                     Err(e) => {
@@ -430,7 +415,6 @@ impl ForgeShellHookExecutor {
                             // `processedPromptLines` behavior).
                             continue;
                         }
-                    }
                     // Regular stdout line — accumulate into buffer.
                     stdout_buf.extend_from_slice(line.as_bytes());
                     stdout_buf.push(b'\n');
@@ -794,10 +778,7 @@ mod tests {
         // waiting for the child to finish. We use `sleep 10` as the
         // command — if we blocked, the test would take 10 s.
         let executor = ForgeShellHookExecutor::new();
-        let config = ShellHookCommand {
-            async_mode: true,
-            ..shell_hook("sleep 10")
-        };
+        let config = ShellHookCommand { async_mode: true, ..shell_hook("sleep 10") };
 
         let start = std::time::Instant::now();
         let result = executor
@@ -827,10 +808,7 @@ mod tests {
         let executor = ForgeShellHookExecutor::new();
 
         let command = format!("cat > {}", captured.display());
-        let config = ShellHookCommand {
-            async_mode: true,
-            ..shell_hook(&command)
-        };
+        let config = ShellHookCommand { async_mode: true, ..shell_hook(&command) };
         let result = executor
             .execute(&config, &sample_input(), HashMap::new(), None)
             .await
@@ -844,12 +822,11 @@ mod tests {
         let mut contents = String::new();
         for _ in 0..20 {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            if let Ok(c) = std::fs::read_to_string(&captured) {
-                if !c.trim().is_empty() {
+            if let Ok(c) = std::fs::read_to_string(&captured)
+                && !c.trim().is_empty() {
                     contents = c;
                     break;
                 }
-            }
         }
 
         assert!(!contents.is_empty(), "async hook child never wrote to file");
@@ -927,9 +904,7 @@ mod tests {
         // A hook that emits a prompt request JSON to stdout should still
         // produce a normal HookExecResult (the prompt line is stripped).
         let executor = ForgeShellHookExecutor::new();
-        let config = shell_hook(
-            r#"echo '{"prompt": {"type": "confirm", "message": "Deploy?"}}'"#,
-        );
+        let config = shell_hook(r#"echo '{"prompt": {"type": "confirm", "message": "Deploy?"}}'"#);
         let result = executor
             .execute(&config, &sample_input(), HashMap::new(), None)
             .await
@@ -1061,12 +1036,7 @@ mod tests {
             r#"read -r INPUT; echo '{"prompt":{"type":"confirm","message":"Deploy?"}}'; read -r RESPONSE; echo "got:$RESPONSE""#,
         );
         let result = executor
-            .execute(
-                &config,
-                &sample_input(),
-                HashMap::new(),
-                Some(&handler),
-            )
+            .execute(&config, &sample_input(), HashMap::new(), Some(&handler))
             .await
             .unwrap();
 
@@ -1095,12 +1065,7 @@ mod tests {
             r#"read -r INPUT; echo '{"prompt":{"type":"confirm","message":"First?"}}'; read -r R1; echo '{"prompt":{"type":"input","message":"Second?"}}'; read -r R2; echo "r1:$R1 r2:$R2""#,
         );
         let result = executor
-            .execute(
-                &config,
-                &sample_input(),
-                HashMap::new(),
-                Some(&handler),
-            )
+            .execute(&config, &sample_input(), HashMap::new(), Some(&handler))
             .await
             .unwrap();
 
@@ -1122,22 +1087,15 @@ mod tests {
     async fn test_hook_exit_before_prompt_response_does_not_hang() {
         // Hook writes a prompt request but exits immediately without
         // waiting for a response. The executor must not hang.
-        let executor =
-            ForgeShellHookExecutor::with_default_timeout(Duration::from_secs(5));
+        let executor = ForgeShellHookExecutor::with_default_timeout(Duration::from_secs(5));
         let handler = MockPromptHandler;
         // The hook writes a prompt request then exits immediately
         // (doesn't read stdin for the response).
-        let config = shell_hook(
-            r#"echo '{"prompt":{"type":"confirm","message":"Ignored?"}}'; echo "done""#,
-        );
+        let config =
+            shell_hook(r#"echo '{"prompt":{"type":"confirm","message":"Ignored?"}}'; echo "done""#);
         let start = std::time::Instant::now();
         let result = executor
-            .execute(
-                &config,
-                &sample_input(),
-                HashMap::new(),
-                Some(&handler),
-            )
+            .execute(&config, &sample_input(), HashMap::new(), Some(&handler))
             .await
             .unwrap();
         let elapsed = start.elapsed();
@@ -1178,12 +1136,7 @@ mod tests {
             r#"read -r INPUT; echo '{"prompt":{"type":"confirm","message":"Denied?"}}'; if read -r RESP; then echo "got:$RESP"; else echo "stdin-closed"; fi"#,
         );
         let result = executor
-            .execute(
-                &config,
-                &sample_input(),
-                HashMap::new(),
-                Some(&handler),
-            )
+            .execute(&config, &sample_input(), HashMap::new(), Some(&handler))
             .await
             .unwrap();
 

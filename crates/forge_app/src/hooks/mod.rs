@@ -11,7 +11,6 @@ pub use compaction::CompactionHandler;
 pub use doom_loop::DoomLoopDetector;
 pub use pending_todos::PendingTodosHandler;
 pub use plugin::PluginHookHandler;
-pub use session_hooks::SessionHookStore;
 // Only the two lifecycle hooks themselves are re-exported at crate level.
 // Internal helpers (`format_invocables_within_budget`, `build_skill_reminder`,
 // `DEFAULT_BUDGET_FRACTION`, `DEFAULT_CONTEXT_TOKENS`) stay private to the

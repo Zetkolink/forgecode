@@ -269,10 +269,10 @@ impl<
                 // persistent session state. To wire this properly:
                 //   1. Add a mutable cwd tracker to the session/environment (e.g.
                 //      Arc<RwLock<PathBuf>>) so the "current" cwd can be compared.
-                //   2. After execution, detect if the resolved `normalized_cwd` differs
-                //      from the session's tracked cwd (or inspect post-execution `pwd`).
+                //   2. After execution, detect if the resolved `normalized_cwd` differs from
+                //      the session's tracked cwd (or inspect post-execution `pwd`).
                 //   3. If changed, update the tracker and call:
-                //        fire_cwd_changed_hook(self.services.clone(), old_cwd, new_cwd).await;
+                //      fire_cwd_changed_hook(self.services.clone(), old_cwd, new_cwd).await;
                 // See: crate::lifecycle_fires::fire_cwd_changed_hook
                 let output = self
                     .services

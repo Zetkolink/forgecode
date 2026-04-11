@@ -471,7 +471,9 @@ impl<
         command: &str,
     ) -> anyhow::Result<std::process::ExitStatus> {
         let cwd = self.environment().cwd;
-        self.infra.execute_command_raw(command, cwd, None, None).await
+        self.infra
+            .execute_command_raw(command, cwd, None, None)
+            .await
     }
 
     async fn get_agent_provider(&self, agent_id: AgentId) -> anyhow::Result<Provider<Url>> {

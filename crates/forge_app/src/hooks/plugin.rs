@@ -23,13 +23,12 @@ use forge_domain::{
     AgentHookCommand, AggregatedHookResult, ConfigChangePayload, Conversation, CwdChangedPayload,
     ElicitationPayload, ElicitationResultPayload, EventData, EventHandle, FileChangedPayload,
     HookCommand, HookEventName, HookExecResult, HookInput, HookInputBase, HookInputPayload,
-    HookOutcome, HttpHookCommand,
-    InstructionsLoadedPayload, NotificationPayload, PermissionDeniedPayload,
-    PermissionRequestPayload, PostCompactPayload, PostToolUseFailurePayload, PostToolUsePayload,
-    PreCompactPayload, PreToolUsePayload, PromptHookCommand, SessionEndPayload,
-    SessionStartPayload, SetupPayload, ShellHookCommand, StopFailurePayload, StopPayload,
-    SubagentStartPayload, SubagentStopPayload, UserPromptSubmitPayload, WorktreeCreatePayload,
-    WorktreeRemovePayload,
+    HookOutcome, HttpHookCommand, InstructionsLoadedPayload, NotificationPayload,
+    PermissionDeniedPayload, PermissionRequestPayload, PostCompactPayload,
+    PostToolUseFailurePayload, PostToolUsePayload, PreCompactPayload, PreToolUsePayload,
+    PromptHookCommand, SessionEndPayload, SessionStartPayload, SetupPayload, ShellHookCommand,
+    StopFailurePayload, StopPayload, SubagentStartPayload, SubagentStopPayload,
+    UserPromptSubmitPayload, WorktreeCreatePayload, WorktreeRemovePayload,
 };
 use tokio::sync::Mutex;
 
@@ -94,10 +93,7 @@ impl<S: Services> PluginHookHandler<S> {
     }
 
     /// Create a new dispatcher with a shared [`SessionHookStore`].
-    pub fn with_session_hooks(
-        services: Arc<S>,
-        session_hooks: SessionHookStore,
-    ) -> Self {
+    pub fn with_session_hooks(services: Arc<S>, session_hooks: SessionHookStore) -> Self {
         Self {
             services,
             once_fired: Arc::new(Mutex::new(HashSet::new())),
@@ -182,7 +178,7 @@ impl<S: Services> PluginHookHandler<S> {
         let all_matchers: Vec<HookMatcherWithSource> = static_matchers
             .iter()
             .cloned()
-            .chain(session_matchers.into_iter())
+            .chain(session_matchers)
             .collect();
 
         // Collect every hook that passes matcher + condition + once
@@ -224,18 +220,20 @@ impl<S: Services> PluginHookHandler<S> {
                 match cmd {
                     HookCommand::Command(ref shell) => {
                         // Validate plugin root exists (if this hook comes from a plugin)
-                        if let Some(ref root) = source.plugin_root {
-                            if !root.exists() {
+                        if let Some(ref root) = source.plugin_root
+                            && !root.exists() {
                                 tracing::warn!(
                                     plugin_root = %root.display(),
                                     "plugin directory no longer exists; skipping hook"
                                 );
-                                return (Err(anyhow::anyhow!(
-                                    "plugin directory does not exist: {}",
-                                    root.display()
-                                )), None);
+                                return (
+                                    Err(anyhow::anyhow!(
+                                        "plugin directory does not exist: {}",
+                                        root.display()
+                                    )),
+                                    None,
+                                );
                             }
-                        }
 
                         // Build FORGE_* env vars from the available context.
                         let mut env_vars = HashMap::new();
@@ -294,13 +292,20 @@ impl<S: Services> PluginHookHandler<S> {
                             None
                         };
 
-                        (executor.execute_shell(shell, &input, env_vars).await, env_file_path)
+                        (
+                            executor.execute_shell(shell, &input, env_vars).await,
+                            env_file_path,
+                        )
                     }
-                    HookCommand::Http(ref http) => (executor.execute_http(http, &input).await, None),
+                    HookCommand::Http(ref http) => {
+                        (executor.execute_http(http, &input).await, None)
+                    }
                     HookCommand::Prompt(ref prompt) => {
                         (executor.execute_prompt(prompt, &input).await, None)
                     }
-                    HookCommand::Agent(ref agent) => (executor.execute_agent(agent, &input).await, None),
+                    HookCommand::Agent(ref agent) => {
+                        (executor.execute_agent(agent, &input).await, None)
+                    }
                 }
             }
         });
@@ -312,7 +317,7 @@ impl<S: Services> PluginHookHandler<S> {
         let mut once_fired = self.once_fired.lock().await;
         let mut aggregated = AggregatedHookResult::default();
         let mut env_file_paths: Vec<PathBuf> = Vec::new();
-        for (once_id, (result, env_file_path)) in once_ids.into_iter().zip(results.into_iter()) {
+        for (once_id, (result, env_file_path)) in once_ids.into_iter().zip(results) {
             match result {
                 Ok(ref exec) if exec.outcome == HookOutcome::Success => {
                     if let Some(id) = once_id {
@@ -470,11 +475,10 @@ where
     let mut aggregated = AggregatedHookResult::default();
     for (cmd, src, once_id) in pending {
         let exec = execute_fn(&cmd, &src).await;
-        if exec.outcome == HookOutcome::Success {
-            if let Some(id) = once_id {
+        if exec.outcome == HookOutcome::Success
+            && let Some(id) = once_id {
                 fired_lock.insert(id);
             }
-        }
         aggregated.merge(exec);
     }
     aggregated
@@ -1308,14 +1312,9 @@ mod tests {
                 return AggregatedHookResult::default();
             };
 
-            let pending = collect_pending_hooks(
-                matchers,
-                &event,
-                tool_name,
-                tool_input,
-                &self.once_fired,
-            )
-            .await;
+            let pending =
+                collect_pending_hooks(matchers, &event, tool_name, tool_input, &self.once_fired)
+                    .await;
 
             let executor = &self.executor;
             execute_and_merge(pending, &self.once_fired, |_cmd, _src| {
@@ -1350,14 +1349,9 @@ mod tests {
                 return AggregatedHookResult::default();
             };
 
-            let pending = collect_pending_hooks(
-                matchers,
-                &event,
-                tool_name,
-                tool_input,
-                &self.once_fired,
-            )
-            .await;
+            let pending =
+                collect_pending_hooks(matchers, &event, tool_name, tool_input, &self.once_fired)
+                    .await;
 
             // Wrap the canned results in an Arc<Mutex<_>> so the closure
             // can drain them in order.
