@@ -772,9 +772,7 @@ impl<S: Services> EventHandle<EventData<StopFailurePayload>> for PluginHookHandl
         // Clean up session-scoped hooks to prevent unbounded memory
         // growth. Called after dispatch so all SessionEnd hooks have
         // finished before their entries are removed.
-        self.session_hooks
-            .clear_session(&event.session_id)
-            .await;
+        self.session_hooks.clear_session(&event.session_id).await;
 
         Ok(())
     }
