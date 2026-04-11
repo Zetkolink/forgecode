@@ -4927,26 +4927,27 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             // plugins typically declare MCP servers there, not inline).
             let sidecar = source.join(".mcp.json");
             if sidecar.exists()
-                && let Ok(raw) = std::fs::read_to_string(&sidecar) {
-                    #[derive(serde::Deserialize)]
-                    struct McpJsonFile {
-                        #[serde(default, alias = "mcpServers")]
-                        mcp_servers: std::collections::BTreeMap<String, serde_json::Value>,
-                    }
-                    if let Ok(parsed) = serde_json::from_str::<McpJsonFile>(&raw) {
-                        // Only count sidecar servers not already in the manifest.
-                        for key in parsed.mcp_servers.keys() {
-                            if !manifest
-                                .mcp_servers
-                                .as_ref()
-                                .map(|m| m.contains_key(key))
-                                .unwrap_or(false)
-                            {
-                                count += 1;
-                            }
+                && let Ok(raw) = std::fs::read_to_string(&sidecar)
+            {
+                #[derive(serde::Deserialize)]
+                struct McpJsonFile {
+                    #[serde(default, alias = "mcpServers")]
+                    mcp_servers: std::collections::BTreeMap<String, serde_json::Value>,
+                }
+                if let Ok(parsed) = serde_json::from_str::<McpJsonFile>(&raw) {
+                    // Only count sidecar servers not already in the manifest.
+                    for key in parsed.mcp_servers.keys() {
+                        if !manifest
+                            .mcp_servers
+                            .as_ref()
+                            .map(|m| m.contains_key(key))
+                            .unwrap_or(false)
+                        {
+                            count += 1;
                         }
                     }
                 }
+            }
             count
         };
 
@@ -5162,25 +5163,26 @@ mod tests {
         let mut count = manifest.mcp_servers.as_ref().map(|m| m.len()).unwrap_or(0);
         let sidecar = root.join(".mcp.json");
         if sidecar.exists()
-            && let Ok(raw) = std::fs::read_to_string(&sidecar) {
-                #[derive(serde::Deserialize)]
-                struct McpJsonFile {
-                    #[serde(default, alias = "mcpServers")]
-                    mcp_servers: std::collections::BTreeMap<String, serde_json::Value>,
-                }
-                if let Ok(parsed) = serde_json::from_str::<McpJsonFile>(&raw) {
-                    for key in parsed.mcp_servers.keys() {
-                        if !manifest
-                            .mcp_servers
-                            .as_ref()
-                            .map(|m| m.contains_key(key))
-                            .unwrap_or(false)
-                        {
-                            count += 1;
-                        }
+            && let Ok(raw) = std::fs::read_to_string(&sidecar)
+        {
+            #[derive(serde::Deserialize)]
+            struct McpJsonFile {
+                #[serde(default, alias = "mcpServers")]
+                mcp_servers: std::collections::BTreeMap<String, serde_json::Value>,
+            }
+            if let Ok(parsed) = serde_json::from_str::<McpJsonFile>(&raw) {
+                for key in parsed.mcp_servers.keys() {
+                    if !manifest
+                        .mcp_servers
+                        .as_ref()
+                        .map(|m| m.contains_key(key))
+                        .unwrap_or(false)
+                    {
+                        count += 1;
                     }
                 }
             }
+        }
         assert_eq!(count, 2);
     }
 }
