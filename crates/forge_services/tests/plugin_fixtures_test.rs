@@ -215,12 +215,10 @@ fn test_full_stack_has_all_component_types() {
     // crates/forge_repo/src/plugin.rs:413 which hard-codes the sidecar
     // path as `<plugin_root>/.mcp.json`).
     //
-    // The sidecar uses the `{"mcp_servers": {...}}` wrapped layout
-    // because `resolve_mcp_servers` deserializes via `McpJsonFile` which
-    // only recognizes the `mcp_servers` key (the `alias = "mcp_servers"`
-    // attribute is a no-op). The bare-map fallback on line 428 is
-    // unreachable because `serde(default)` on the wrapped struct means
-    // `McpJsonFile` always deserializes successfully with an empty map.
+    // The sidecar may use either Claude Code's camelCase key
+    // (`mcpServers`) or the snake_case key (`mcp_servers`). Both are
+    // accepted by `resolve_mcp_servers` via `McpJsonFile` which declares
+    // `mcp_servers` with `alias = "mcpServers"`.
     let mcp = root.join(".mcp.json");
     assert!(
         mcp.is_file(),
@@ -229,12 +227,17 @@ fn test_full_stack_has_all_component_types() {
     );
     let mcp_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&mcp).unwrap()).unwrap();
+    // The sidecar uses Claude Code's camelCase key (`mcpServers`), but
+    // our `McpJsonFile` struct also accepts the snake_case alias. Check
+    // whichever key the fixture actually uses.
+    let servers = mcp_json
+        .get("mcpServers")
+        .or_else(|| mcp_json.get("mcp_servers"));
     assert!(
-        mcp_json
-            .get("mcp_servers")
+        servers
             .and_then(|v| v.get("full-stack-server"))
             .is_some(),
-        ".mcp.json must declare full-stack-server under mcp_servers key"
+        ".mcp.json must declare full-stack-server under mcpServers or mcp_servers key"
     );
 }
 
