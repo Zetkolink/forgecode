@@ -458,9 +458,7 @@ pub enum PluginPermissionUpdate {
     /// Set the permission mode. Currently a no-op in Forge since
     /// Forge uses `restricted: bool` rather than a rich mode enum.
     #[serde(rename = "setMode")]
-    SetMode {
-        mode: String,
-    },
+    SetMode { mode: String },
 }
 
 /// A pending result from an async hook with `asyncRewake: true`.

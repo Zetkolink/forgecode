@@ -84,9 +84,7 @@ pub(crate) async fn execute_llm_hook(
             processed_prompt.clone(),
             Some(model_id.clone()),
         ))
-        .response_format(ResponseFormat::JsonSchema(Box::new(
-            hook_response_schema(),
-        )));
+        .response_format(ResponseFormat::JsonSchema(Box::new(hook_response_schema())));
 
     // 4. Apply timeout.
     let timeout_secs = config.timeout.unwrap_or(config.default_timeout_secs);

@@ -12,11 +12,11 @@
 //! - [`llm_common`] -- shared logic for LLM-based hook executors (prompt and
 //!   agent hooks), including response schema, `$ARGUMENTS` substitution, and
 //!   the common single-shot LLM execution function.
-//! - [`prompt`] -- LLM-backed prompt hook executor. Makes a single model
-//!   call and parses the `{"ok": bool, "reason"?: string}` response.
-//! - [`agent`] -- LLM-backed agent hook executor. Makes a single model
-//!   call with a condition-verification system prompt and parses the
-//!   `{"ok": bool, "reason"?: string}` response.
+//! - [`prompt`] -- LLM-backed prompt hook executor. Makes a single model call
+//!   and parses the `{"ok": bool, "reason"?: string}` response.
+//! - [`agent`] -- LLM-backed agent hook executor. Makes a single model call
+//!   with a condition-verification system prompt and parses the `{"ok": bool,
+//!   "reason"?: string}` response.
 //! - [`config_loader`] — merges `hooks.json` from user/project/plugin sources
 //!   into a single [`forge_app::hook_runtime::MergedHooksConfig`] used by the
 //!   dispatcher.

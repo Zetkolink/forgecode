@@ -282,12 +282,7 @@ impl<
                 // logged and discarded.
                 let new_cwd = PathBuf::from(&normalized_cwd);
                 if new_cwd != default_cwd {
-                    fire_cwd_changed_hook(
-                        self.services.clone(),
-                        default_cwd,
-                        new_cwd,
-                    )
-                    .await;
+                    fire_cwd_changed_hook(self.services.clone(), default_cwd, new_cwd).await;
                 }
 
                 output.into()

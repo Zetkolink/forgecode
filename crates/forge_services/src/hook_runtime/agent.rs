@@ -71,9 +71,7 @@ impl ForgeAgentHookExecutor {
         executor: &dyn HookExecutorInfra,
     ) -> anyhow::Result<HookExecResult> {
         let processed_prompt = substitute_arguments(&config.prompt, input);
-        let model_id = ModelId::new(
-            config.model.as_deref().unwrap_or(DEFAULT_AGENT_HOOK_MODEL),
-        );
+        let model_id = ModelId::new(config.model.as_deref().unwrap_or(DEFAULT_AGENT_HOOK_MODEL));
 
         // Build system prompt with transcript path for context.
         let system_prompt = format!(
@@ -97,12 +95,7 @@ impl ForgeAgentHookExecutor {
 
         let llm_result = tokio::time::timeout(
             timeout_duration,
-            executor.execute_agent_loop(
-                &model_id,
-                context,
-                MAX_AGENT_TURNS,
-                timeout_secs,
-            ),
+            executor.execute_agent_loop(&model_id, context, MAX_AGENT_TURNS, timeout_secs),
         )
         .await;
 
@@ -157,9 +150,7 @@ impl ForgeAgentHookExecutor {
                 let output = HookOutput::Sync(SyncHookOutput {
                     should_continue: Some(false),
                     decision: Some(HookDecision::Block),
-                    reason: Some(format!(
-                        "Agent hook condition was not met: {reason_str}"
-                    )),
+                    reason: Some(format!("Agent hook condition was not met: {reason_str}")),
                     ..Default::default()
                 });
                 Ok(HookExecResult {
@@ -184,11 +175,11 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::hook_runtime::HookOutcome;
     use crate::hook_runtime::llm_common::substitute_arguments;
     use crate::hook_runtime::test_mocks::mocks::{
         ErrorLlmExecutor, HangingLlmExecutor, MockLlmExecutor,
     };
-    use crate::hook_runtime::HookOutcome;
 
     fn sample_input() -> forge_domain::HookInput {
         forge_domain::HookInput {

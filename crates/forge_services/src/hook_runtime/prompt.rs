@@ -75,11 +75,11 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+    use crate::hook_runtime::HookOutcome;
     use crate::hook_runtime::llm_common::substitute_arguments;
     use crate::hook_runtime::test_mocks::mocks::{
         ErrorLlmExecutor, HangingLlmExecutor, MockLlmExecutor,
     };
-    use crate::hook_runtime::HookOutcome;
 
     fn sample_input() -> forge_domain::HookInput {
         forge_domain::HookInput {

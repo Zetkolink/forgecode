@@ -192,7 +192,14 @@ where
         if self.infra.exists(&project_path).await? {
             if self.is_ci() || is_workspace_trusted(&env.cwd) {
                 if let Some(config) = self.read_hooks_json(&project_path).await? {
-                    extend_from(&mut merged, config, HookConfigSource::Project, None, None, vec![]);
+                    extend_from(
+                        &mut merged,
+                        config,
+                        HookConfigSource::Project,
+                        None,
+                        None,
+                        vec![],
+                    );
                 }
             } else {
                 tracing::warn!(
@@ -264,7 +271,8 @@ where
         let Some(hooks_field) = plugin.manifest.hooks.as_ref() else {
             return Ok(());
         };
-        self.merge_hooks_field(plugin, hooks_field, merged, plugin_options).await
+        self.merge_hooks_field(plugin, hooks_field, merged, plugin_options)
+            .await
     }
 
     /// Recursively merges a [`PluginHooksManifestField`] into `merged`.
@@ -311,7 +319,8 @@ where
                 }
                 PluginHooksManifestField::Array(items) => {
                     for item in items {
-                        self.merge_hooks_field(plugin, item, merged, plugin_options.clone()).await?;
+                        self.merge_hooks_field(plugin, item, merged, plugin_options.clone())
+                            .await?;
                     }
                 }
             }

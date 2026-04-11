@@ -185,27 +185,14 @@ where
                                 .strip_prefix("Bash(")
                                 .and_then(|s| s.strip_suffix(')'))
                                 .unwrap_or(pattern);
-                            Rule::Execute(ExecuteRule {
-                                command: inner.to_string(),
-                                dir: None,
-                            })
-                        } else if pattern.starts_with("http://")
-                            || pattern.starts_with("https://")
+                            Rule::Execute(ExecuteRule { command: inner.to_string(), dir: None })
+                        } else if pattern.starts_with("http://") || pattern.starts_with("https://")
                         {
-                            Rule::Fetch(Fetch {
-                                url: pattern.clone(),
-                                dir: None,
-                            })
+                            Rule::Fetch(Fetch { url: pattern.clone(), dir: None })
                         } else {
-                            Rule::Write(WriteRule {
-                                write: pattern.clone(),
-                                dir: None,
-                            })
+                            Rule::Write(WriteRule { write: pattern.clone(), dir: None })
                         };
-                        let policy = Policy::Simple {
-                            permission: permission.clone(),
-                            rule,
-                        };
+                        let policy = Policy::Simple { permission: permission.clone(), rule };
                         self.modify_policy(policy).await?;
                     }
                 }

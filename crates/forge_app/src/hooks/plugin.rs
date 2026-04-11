@@ -22,13 +22,13 @@ use async_trait::async_trait;
 use forge_domain::{
     AgentHookCommand, AggregatedHookResult, ConfigChangePayload, Conversation, CwdChangedPayload,
     ElicitationPayload, ElicitationResultPayload, EventData, EventHandle, FileChangedPayload,
-    HookCommand, HookEventName, HookInput, HookInputBase, HookInputPayload,
-    HookOutcome, HttpHookCommand, InstructionsLoadedPayload, NotificationPayload,
-    PermissionDeniedPayload, PermissionRequestPayload, PostCompactPayload,
-    PostToolUseFailurePayload, PostToolUsePayload, PreCompactPayload, PreToolUsePayload,
-    PromptHookCommand, SessionEndPayload, SessionStartPayload, SetupPayload, ShellHookCommand,
-    StopFailurePayload, StopPayload, SubagentStartPayload, SubagentStopPayload,
-    UserPromptSubmitPayload, WorktreeCreatePayload, WorktreeRemovePayload,
+    HookCommand, HookEventName, HookInput, HookInputBase, HookInputPayload, HookOutcome,
+    HttpHookCommand, InstructionsLoadedPayload, NotificationPayload, PermissionDeniedPayload,
+    PermissionRequestPayload, PostCompactPayload, PostToolUseFailurePayload, PostToolUsePayload,
+    PreCompactPayload, PreToolUsePayload, PromptHookCommand, SessionEndPayload,
+    SessionStartPayload, SetupPayload, ShellHookCommand, StopFailurePayload, StopPayload,
+    SubagentStartPayload, SubagentStopPayload, UserPromptSubmitPayload, WorktreeCreatePayload,
+    WorktreeRemovePayload,
 };
 use tokio::sync::Mutex;
 
@@ -518,12 +518,12 @@ where
 /// remain one-liners.
 ///
 /// **`agent_id` / `agent_type` semantics (matching Claude Code):**
-/// - `agent_type` is always derived from `event.agent.id` — a semantic
-///   name like `"forge"`, `"code-reviewer"`, etc.
-/// - `agent_id` is `None` for the main REPL thread (most events). For
-///   sub-agent events (`SubagentStart`, `SubagentStop`), the caller
-///   passes `Some(id)` via the `subagent_id` parameter, where `id`
-///   comes from the payload's `agent_id` field.
+/// - `agent_type` is always derived from `event.agent.id` — a semantic name
+///   like `"forge"`, `"code-reviewer"`, etc.
+/// - `agent_id` is `None` for the main REPL thread (most events). For sub-agent
+///   events (`SubagentStart`, `SubagentStop`), the caller passes `Some(id)` via
+///   the `subagent_id` parameter, where `id` comes from the payload's
+///   `agent_id` field.
 fn build_hook_input<P>(
     event: &EventData<P>,
     hook_event_name: &'static str,
