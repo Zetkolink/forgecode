@@ -234,9 +234,7 @@ fn test_full_stack_has_all_component_types() {
         .get("mcpServers")
         .or_else(|| mcp_json.get("mcp_servers"));
     assert!(
-        servers
-            .and_then(|v| v.get("full-stack-server"))
-            .is_some(),
+        servers.and_then(|v| v.get("full-stack-server")).is_some(),
         ".mcp.json must declare full-stack-server under mcpServers or mcp_servers key"
     );
 }
