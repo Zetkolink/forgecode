@@ -100,9 +100,8 @@ where
         scan_futures.push(self.scan_root_owned(env.plugin_path(), PluginSource::Global));
 
         // 3. Claude Code project-local (.claude/plugins/).
-        scan_futures.push(
-            self.scan_root_owned(env.claude_plugin_cwd_path(), PluginSource::ClaudeCode),
-        );
+        scan_futures
+            .push(self.scan_root_owned(env.claude_plugin_cwd_path(), PluginSource::ClaudeCode));
 
         // 4. Forge project-local (.forge/plugins/) — highest precedence.
         scan_futures.push(self.scan_root_owned(env.plugin_cwd_path(), PluginSource::Project));
