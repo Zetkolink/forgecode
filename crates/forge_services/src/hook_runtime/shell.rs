@@ -175,11 +175,12 @@ impl ForgeShellHookExecutor {
             .await;
 
             if let Err(e) = write_result
-                && e.kind() != std::io::ErrorKind::BrokenPipe {
-                    return Err(anyhow::anyhow!("hook stdin write failed: {e}"));
-                }
-                // BrokenPipe is expected when the hook doesn't read stdin.
-                // Continue to collect stdout/stderr and exit code normally.
+                && e.kind() != std::io::ErrorKind::BrokenPipe
+            {
+                return Err(anyhow::anyhow!("hook stdin write failed: {e}"));
+            }
+            // BrokenPipe is expected when the hook doesn't read stdin.
+            // Continue to collect stdout/stderr and exit code normally.
         }
         // When there is no prompt handler, close stdin now so the hook
         // sees EOF (original behavior).
@@ -361,60 +362,63 @@ impl ForgeShellHookExecutor {
 
                 while let Ok(Some(line)) = lines.next_line().await {
                     // Quick heuristic: does this look like a prompt request?
-                    if line.trim_start().starts_with('{') && line.contains("\"prompt\"")
-                        && let Ok(req) = serde_json::from_str::<HookPromptRequest>(&line) {
-                            // We have a valid prompt request.
-                            if let Some(handler) = prompt_handler {
-                                match handler.handle_prompt(req).await {
-                                    Ok(response) => {
-                                        if let Some(stdin) = &mut stdin_handle {
-                                            let resp_json = serde_json::to_string(&response)
-                                                .unwrap_or_default();
-                                            let write_result = async {
-                                                stdin.write_all(resp_json.as_bytes()).await?;
-                                                stdin.write_all(b"\n").await?;
-                                                stdin.flush().await?;
-                                                Ok::<(), std::io::Error>(())
-                                            }
-                                            .await;
-                                            if let Err(e) = write_result
-                                                && e.kind() != std::io::ErrorKind::BrokenPipe {
-                                                    tracing::warn!(
-                                                        error = %e,
-                                                        "Failed to write prompt response to hook stdin"
-                                                    );
-                                                }
+                    if line.trim_start().starts_with('{')
+                        && line.contains("\"prompt\"")
+                        && let Ok(req) = serde_json::from_str::<HookPromptRequest>(&line)
+                    {
+                        // We have a valid prompt request.
+                        if let Some(handler) = prompt_handler {
+                            match handler.handle_prompt(req).await {
+                                Ok(response) => {
+                                    if let Some(stdin) = &mut stdin_handle {
+                                        let resp_json =
+                                            serde_json::to_string(&response).unwrap_or_default();
+                                        let write_result = async {
+                                            stdin.write_all(resp_json.as_bytes()).await?;
+                                            stdin.write_all(b"\n").await?;
+                                            stdin.flush().await?;
+                                            Ok::<(), std::io::Error>(())
+                                        }
+                                        .await;
+                                        if let Err(e) = write_result
+                                            && e.kind() != std::io::ErrorKind::BrokenPipe
+                                        {
+                                            tracing::warn!(
+                                                error = %e,
+                                                "Failed to write prompt response to hook stdin"
+                                            );
                                         }
                                     }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            error = %e,
-                                            "Hook prompt handler returned error, closing stdin"
-                                        );
-                                        // Drop stdin so the hook gets EOF and
-                                        // can exit gracefully.
-                                        stdin_handle = None;
-                                    }
                                 }
-                            } else {
-                                // No prompt handler — log a warning for
-                                // observability (matches the old
-                                // `detect_prompt_request` behavior).
-                                let message = &req.prompt.message;
-                                tracing::warn!(
-                                    message = %message,
-                                    "Hook requested interactive prompt but no prompt \
-                                     handler is available — the hook may time out."
-                                );
-                                // Drop stdin so the hook gets EOF instead of
-                                // blocking forever.
-                                stdin_handle = None;
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "Hook prompt handler returned error, closing stdin"
+                                    );
+                                    // Drop stdin so the hook gets EOF and
+                                    // can exit gracefully.
+                                    stdin_handle = None;
+                                }
                             }
-                            // Prompt request lines are stripped from the
-                            // final stdout (matching CC's
-                            // `processedPromptLines` behavior).
-                            continue;
+                        } else {
+                            // No prompt handler — log a warning for
+                            // observability (matches the old
+                            // `detect_prompt_request` behavior).
+                            let message = &req.prompt.message;
+                            tracing::warn!(
+                                message = %message,
+                                "Hook requested interactive prompt but no prompt \
+                                 handler is available — the hook may time out."
+                            );
+                            // Drop stdin so the hook gets EOF instead of
+                            // blocking forever.
+                            stdin_handle = None;
                         }
+                        // Prompt request lines are stripped from the
+                        // final stdout (matching CC's
+                        // `processedPromptLines` behavior).
+                        continue;
+                    }
                     // Regular stdout line — accumulate into buffer.
                     stdout_buf.extend_from_slice(line.as_bytes());
                     stdout_buf.push(b'\n');
@@ -823,10 +827,11 @@ mod tests {
         for _ in 0..20 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             if let Ok(c) = std::fs::read_to_string(&captured)
-                && !c.trim().is_empty() {
-                    contents = c;
-                    break;
-                }
+                && !c.trim().is_empty()
+            {
+                contents = c;
+                break;
+            }
         }
 
         assert!(!contents.is_empty(), "async hook child never wrote to file");

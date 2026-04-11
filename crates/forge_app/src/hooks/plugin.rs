@@ -221,19 +221,20 @@ impl<S: Services> PluginHookHandler<S> {
                     HookCommand::Command(ref shell) => {
                         // Validate plugin root exists (if this hook comes from a plugin)
                         if let Some(ref root) = source.plugin_root
-                            && !root.exists() {
-                                tracing::warn!(
-                                    plugin_root = %root.display(),
-                                    "plugin directory no longer exists; skipping hook"
-                                );
-                                return (
-                                    Err(anyhow::anyhow!(
-                                        "plugin directory does not exist: {}",
-                                        root.display()
-                                    )),
-                                    None,
-                                );
-                            }
+                            && !root.exists()
+                        {
+                            tracing::warn!(
+                                plugin_root = %root.display(),
+                                "plugin directory no longer exists; skipping hook"
+                            );
+                            return (
+                                Err(anyhow::anyhow!(
+                                    "plugin directory does not exist: {}",
+                                    root.display()
+                                )),
+                                None,
+                            );
+                        }
 
                         // Build FORGE_* env vars from the available context.
                         let mut env_vars = HashMap::new();
@@ -476,9 +477,10 @@ where
     for (cmd, src, once_id) in pending {
         let exec = execute_fn(&cmd, &src).await;
         if exec.outcome == HookOutcome::Success
-            && let Some(id) = once_id {
-                fired_lock.insert(id);
-            }
+            && let Some(id) = once_id
+        {
+            fired_lock.insert(id);
+        }
         aggregated.merge(exec);
     }
     aggregated

@@ -219,7 +219,6 @@ mod tests {
 
     use forge_domain::{HookInputBase, HookInputPayload};
     use pretty_assertions::assert_eq;
-    
 
     use super::*;
 
