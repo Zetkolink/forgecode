@@ -260,20 +260,14 @@ impl<S: Services> PluginHookHandler<S> {
                             FORGE_PROJECT_DIR.to_string(),
                             input.base.cwd.display().to_string(),
                         );
-                        env_vars.insert(
-                            FORGE_SESSION_ID.to_string(),
-                            input.base.session_id.clone(),
-                        );
+                        env_vars
+                            .insert(FORGE_SESSION_ID.to_string(), input.base.session_id.clone());
                         if let Some(ref root) = source.plugin_root {
-                            env_vars.insert(
-                                FORGE_PLUGIN_ROOT.to_string(),
-                                root.display().to_string(),
-                            );
+                            env_vars
+                                .insert(FORGE_PLUGIN_ROOT.to_string(), root.display().to_string());
                         }
                         if let Some(ref name) = source.plugin_name {
-                            let data_dir = base_path
-                                .join(PLUGIN_DATA_DIR)
-                                .join(name);
+                            let data_dir = base_path.join(PLUGIN_DATA_DIR).join(name);
                             env_vars.insert(
                                 FORGE_PLUGIN_DATA.to_string(),
                                 data_dir.display().to_string(),
@@ -301,10 +295,8 @@ impl<S: Services> PluginHookHandler<S> {
                                     .unwrap_or_default()
                                     .as_nanos()
                             ));
-                            env_vars.insert(
-                                FORGE_ENV_FILE.to_string(),
-                                env_file.display().to_string(),
-                            );
+                            env_vars
+                                .insert(FORGE_ENV_FILE.to_string(), env_file.display().to_string());
                             Some(env_file)
                         } else {
                             None

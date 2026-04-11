@@ -310,7 +310,6 @@ impl<S> SkillListingHandler<S> {
     /// had previously seen the catalog, so multi-agent conversations
     /// (`forge` + `sage` + `muse`) all receive a fresh reminder on their
     /// respective next turns.
-    ///
     #[allow(dead_code)] // Extension point: currently unused because SkillListingHandler is ephemeral (recreated per chat() call). Will become necessary if the delta cache is ever shared/persisted across calls.
     pub async fn reset_sent_skills(&self, conversation_id: &ConversationId) {
         self.cache.forget(*conversation_id).await;
@@ -322,7 +321,6 @@ impl<S> SkillListingHandler<S> {
     /// universe has fundamentally changed (e.g. a plugin providing five
     /// skills was just disabled). Every active conversation will see a
     /// fresh, possibly smaller, catalog on its next turn.
-    ///
     #[allow(dead_code)] // Extension point: currently unused because SkillListingHandler is ephemeral (recreated per chat() call). Will become necessary if the delta cache is ever shared/persisted across calls.
     pub async fn reset_all(&self) {
         self.cache.forget_all().await;

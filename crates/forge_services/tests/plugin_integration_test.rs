@@ -292,7 +292,12 @@ mod integration {
                 Ok(None) => {} // Not a plugin directory.
                 Err(e) => {
                     let plugin_name = path.file_name().and_then(|s| s.to_str()).map(String::from);
-                    errors.push(PluginLoadError { plugin_name, path, kind: PluginLoadErrorKind::Other, error: e });
+                    errors.push(PluginLoadError {
+                        plugin_name,
+                        path,
+                        kind: PluginLoadErrorKind::Other,
+                        error: e,
+                    });
                 }
             }
         }

@@ -100,7 +100,9 @@ impl<R: PluginRepository + Send + Sync + 'static> PluginLoader for ForgePluginLo
 mod tests {
     use std::sync::Mutex;
 
-    use forge_domain::{LoadedPlugin, PluginLoadError, PluginLoadErrorKind, PluginLoadResult, PluginRepository};
+    use forge_domain::{
+        LoadedPlugin, PluginLoadError, PluginLoadErrorKind, PluginLoadResult, PluginRepository,
+    };
     use pretty_assertions::assert_eq;
 
     use super::*;

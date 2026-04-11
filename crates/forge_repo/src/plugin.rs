@@ -178,7 +178,12 @@ where
                     // plugin identifier; callers render this alongside the
                     // error message in `:plugin list`.
                     let plugin_name = path.file_name().and_then(|s| s.to_str()).map(String::from);
-                    errors.push(PluginLoadError { plugin_name, path, kind: PluginLoadErrorKind::Other, error: format!("{e:#}") });
+                    errors.push(PluginLoadError {
+                        plugin_name,
+                        path,
+                        kind: PluginLoadErrorKind::Other,
+                        error: format!("{e:#}"),
+                    });
                 }
             }
         }
