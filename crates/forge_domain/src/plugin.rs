@@ -179,6 +179,9 @@ pub enum PluginSource {
     Global,
     /// Discovered in `./.forge/plugins/` for the current workspace.
     Project,
+    /// Discovered in `~/.claude/plugins/` or `.claude/plugins/`
+    /// (Claude Code compatibility).
+    ClaudeCode,
     /// Loaded from a path supplied via `--plugin-dir` CLI flag.
     CliFlag,
     /// Compiled into the Forge binary.

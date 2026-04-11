@@ -86,29 +86,40 @@ where
         let plugin_settings: BTreeMap<String, PluginSetting> =
             config.and_then(|cfg| cfg.plugins).unwrap_or_default();
 
-        // Scan global and project-local plugin roots in parallel.
-        let global_root = env.plugin_path();
-        let project_root = env.plugin_cwd_path();
+        // Collect all scan roots. Order matters for `resolve_plugin_conflicts`
+        // which uses last-wins semantics:
+        //   Claude Code global < Forge global < Claude Code project < Forge project
+        let mut scan_futures: Vec<_> = Vec::new();
 
-        let (global, project) = futures::future::join(
-            self.scan_root(&global_root, PluginSource::Global),
-            self.scan_root(&project_root, PluginSource::Project),
-        )
-        .await;
+        // 1. Claude Code global (~/.claude/plugins/) — lowest precedence.
+        if let Some(claude_global) = env.claude_plugin_path() {
+            scan_futures.push(self.scan_root_owned(claude_global, PluginSource::ClaudeCode));
+        }
+
+        // 2. Forge global (~/forge/plugins/).
+        scan_futures.push(self.scan_root_owned(env.plugin_path(), PluginSource::Global));
+
+        // 3. Claude Code project-local (.claude/plugins/).
+        scan_futures.push(
+            self.scan_root_owned(env.claude_plugin_cwd_path(), PluginSource::ClaudeCode),
+        );
+
+        // 4. Forge project-local (.forge/plugins/) — highest precedence.
+        scan_futures.push(self.scan_root_owned(env.plugin_cwd_path(), PluginSource::Project));
+
+        let results = join_all(scan_futures).await;
 
         let (mut plugins, mut errors): (Vec<LoadedPlugin>, Vec<PluginLoadError>) =
             (Vec::new(), Vec::new());
 
-        let (global_plugins, global_errors) = global?;
-        plugins.extend(global_plugins);
-        errors.extend(global_errors);
+        for result in results {
+            let (p, e) = result?;
+            plugins.extend(p);
+            errors.extend(e);
+        }
 
-        let (project_plugins, project_errors) = project?;
-        plugins.extend(project_plugins);
-        errors.extend(project_errors);
-
-        // Apply Project > Global precedence: a later (project) entry with the
-        // same name replaces the earlier (global) one.
+        // Apply last-wins precedence: Forge project > Claude project >
+        // Forge global > Claude global.
         let plugins = resolve_plugin_conflicts(plugins);
 
         // Apply enabled overrides from .forge.toml.
@@ -130,6 +141,16 @@ impl<I> ForgePluginRepository<I>
 where
     I: FileReaderInfra + FileInfoInfra + DirectoryReaderInfra,
 {
+    /// Owned-path convenience wrapper around [`scan_root`] for use with
+    /// `join_all` where futures must be `'static`.
+    async fn scan_root_owned(
+        &self,
+        root: PathBuf,
+        source: PluginSource,
+    ) -> anyhow::Result<(Vec<LoadedPlugin>, Vec<PluginLoadError>)> {
+        self.scan_root(&root, source).await
+    }
+
     /// Scans a single root directory and returns all plugins discovered
     /// underneath along with any per-plugin load errors.
     ///
@@ -472,6 +493,89 @@ mod tests {
         let actual = resolve_plugin_conflicts(plugins);
 
         assert_eq!(actual.len(), 2);
+    }
+
+    /// Verifies four-way precedence: ClaudeCode < Global < ClaudeCode
+    /// project < Project (Forge project).
+    ///
+    /// Simulates the extend order used by `load_plugins_with_errors`:
+    /// Claude Code global first, Forge global second, Claude Code
+    /// project third, Forge project last. `resolve_plugin_conflicts`
+    /// keeps the last occurrence, so Forge project wins.
+    #[test]
+    fn test_resolve_plugin_conflicts_four_way_precedence() {
+        let plugins = vec![
+            fixture_plugin("alpha", PluginSource::ClaudeCode), // Claude global
+            fixture_plugin("alpha", PluginSource::Global),     // Forge global
+            fixture_plugin("alpha", PluginSource::ClaudeCode), // Claude project
+            fixture_plugin("alpha", PluginSource::Project),    // Forge project
+        ];
+
+        let actual = resolve_plugin_conflicts(plugins);
+
+        assert_eq!(actual.len(), 1);
+        assert_eq!(actual[0].source, PluginSource::Project);
+    }
+
+    /// Forge global wins over Claude Code global when there is no project
+    /// override.
+    #[test]
+    fn test_resolve_plugin_conflicts_forge_global_beats_claude_global() {
+        let plugins = vec![
+            fixture_plugin("alpha", PluginSource::ClaudeCode), // Claude global
+            fixture_plugin("alpha", PluginSource::Global),     // Forge global
+        ];
+
+        let actual = resolve_plugin_conflicts(plugins);
+
+        assert_eq!(actual.len(), 1);
+        assert_eq!(actual[0].source, PluginSource::Global);
+    }
+
+    /// Claude Code project-scoped plugin shadows Claude Code global
+    /// plugin with same name (same source, different scope).
+    #[tokio::test]
+    async fn test_discover_claude_project_shadows_claude_global() {
+        let temp = TempDir::new().unwrap();
+        let claude_global_root = temp.path().join("claude-global");
+        let claude_project_root = temp.path().join("claude-project");
+        fs::create_dir_all(&claude_global_root).unwrap();
+        fs::create_dir_all(&claude_project_root).unwrap();
+
+        let src = wave_g1_fixtures_root().join("bash-logger");
+        copy_dir_recursive(&src, &claude_global_root.join("bash-logger")).unwrap();
+        copy_dir_recursive(&src, &claude_project_root.join("bash-logger")).unwrap();
+
+        let repo = fixture_plugin_repo();
+
+        // Mimic load order: Claude global first, then Claude project.
+        let (mut combined, mut all_errors): (Vec<LoadedPlugin>, Vec<PluginLoadError>) =
+            (Vec::new(), Vec::new());
+
+        let (g, ge) = repo
+            .scan_root(&claude_global_root, PluginSource::ClaudeCode)
+            .await
+            .unwrap();
+        combined.extend(g);
+        all_errors.extend(ge);
+
+        let (p, pe) = repo
+            .scan_root(&claude_project_root, PluginSource::ClaudeCode)
+            .await
+            .unwrap();
+        combined.extend(p);
+        all_errors.extend(pe);
+
+        assert!(all_errors.is_empty());
+
+        let resolved = resolve_plugin_conflicts(combined);
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].name, "bash-logger");
+        assert!(
+            resolved[0].path.starts_with(&claude_project_root),
+            "Claude project copy must win over Claude global copy"
+        );
     }
 
     /// Integration-style test exercising the full Claude Code

@@ -105,6 +105,7 @@ fn format_plugin_source(source: forge_domain::PluginSource) -> &'static str {
     match source {
         forge_domain::PluginSource::Global => "user",
         forge_domain::PluginSource::Project => "project",
+        forge_domain::PluginSource::ClaudeCode => "claude",
         forge_domain::PluginSource::CliFlag => "cli",
         forge_domain::PluginSource::Builtin => "builtin",
     }

@@ -160,6 +160,25 @@ impl Environment {
         self.cwd.join(".forge/plugins")
     }
 
+    /// Returns the global Claude Code plugins directory (~/.claude/plugins).
+    ///
+    /// Enables Forge to discover plugins installed by Claude Code (e.g. via
+    /// `npx <plugin> install`). Returns `None` when the home directory is
+    /// unknown.
+    pub fn claude_plugin_path(&self) -> Option<PathBuf> {
+        self.home.as_ref().map(|h| h.join(".claude/plugins"))
+    }
+
+    /// Returns the project-local Claude Code plugins directory
+    /// (.claude/plugins).
+    ///
+    /// Mirrors `plugin_cwd_path()` but for the Claude Code layout.
+    /// Forge-native project plugins (`.forge/plugins/`) take precedence
+    /// over these when there is a name conflict.
+    pub fn claude_plugin_cwd_path(&self) -> PathBuf {
+        self.cwd.join(".claude/plugins")
+    }
+
     /// Returns the global commands directory path (base_path/commands)
     pub fn command_path(&self) -> PathBuf {
         self.base_path.join("commands")
@@ -448,6 +467,39 @@ mod tests {
         assert_eq!(global_path, expected_global);
         assert_eq!(local_path, expected_local);
         assert_ne!(global_path, local_path);
+    }
+
+    #[test]
+    fn test_claude_plugin_path() {
+        let fixture: Environment = Faker.fake();
+        let fixture = fixture.home(PathBuf::from("/home/user"));
+
+        let actual = fixture.claude_plugin_path();
+        let expected = Some(PathBuf::from("/home/user/.claude/plugins"));
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_claude_plugin_path_no_home() {
+        let fixture: Environment = Faker.fake();
+        let mut fixture = fixture;
+        fixture.home = None;
+
+        let actual = fixture.claude_plugin_path();
+
+        assert_eq!(actual, None);
+    }
+
+    #[test]
+    fn test_claude_plugin_cwd_path() {
+        let fixture: Environment = Faker.fake();
+        let fixture = fixture.cwd(PathBuf::from("/projects/my-app"));
+
+        let actual = fixture.claude_plugin_cwd_path();
+        let expected = PathBuf::from("/projects/my-app/.claude/plugins");
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
