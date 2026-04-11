@@ -91,6 +91,10 @@ mod integration {
                 .await
                 .expect("write stdin");
             stdin.write_all(b"\n").await.expect("write newline");
+            // Explicitly shut down stdin so the child sees EOF.  Without
+            // this, `cat` in the hook command may block indefinitely on
+            // Linux where the async drop doesn't guarantee a close.
+            stdin.shutdown().await.expect("close stdin");
         }
 
         let timeout_dur = std::time::Duration::from_secs(timeout_secs.unwrap_or(30));
