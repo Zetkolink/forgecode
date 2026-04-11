@@ -4,9 +4,8 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use forge_app::domain::{
-    LoadedPlugin, McpServerConfig, PluginComponentPath, PluginHooksConfig,
-    PluginHooksManifestField, PluginLoadError, PluginLoadResult, PluginManifest, PluginRepository,
-    PluginSource,
+    LoadedPlugin, McpServerConfig, PluginComponentPath, PluginLoadError, PluginLoadErrorKind,
+    PluginLoadResult, PluginManifest, PluginRepository, PluginSource,
 };
 use forge_app::{DirectoryReaderInfra, EnvironmentInfra, FileInfoInfra, FileReaderInfra};
 use forge_config::PluginSetting;
@@ -179,7 +178,7 @@ where
                     // plugin identifier; callers render this alongside the
                     // error message in `:plugin list`.
                     let plugin_name = path.file_name().and_then(|s| s.to_str()).map(String::from);
-                    errors.push(PluginLoadError { plugin_name, path, error: format!("{e:#}") });
+                    errors.push(PluginLoadError { plugin_name, path, kind: PluginLoadErrorKind::Other, error: format!("{e:#}") });
                 }
             }
         }
@@ -231,10 +230,6 @@ where
     let skills_paths =
         resolve_component_dirs(&infra, &plugin_dir, manifest.skills.as_ref(), "skills").await;
 
-    // Resolve hooks config: either inline (Phase 3 will deserialize the body)
-    // or from a file path. Phase 1 only stores the raw shape.
-    let hooks_config = resolve_hooks_config(&infra, &plugin_dir, manifest.hooks.as_ref()).await;
-
     // Resolve MCP servers: merge inline manifest entries with sibling .mcp.json
     // when present.
     let mcp_servers = resolve_mcp_servers(&infra, &plugin_dir, &manifest).await;
@@ -251,7 +246,6 @@ where
         commands_paths,
         agents_paths,
         skills_paths,
-        hooks_config,
         mcp_servers,
     }))
 }
@@ -276,9 +270,11 @@ where
         plugin_dir.join("plugin.json"),
     ];
 
+    let results = futures::future::join_all(candidates.iter().map(|p| infra.exists(p))).await;
+
     let mut found = Vec::new();
-    for path in &candidates {
-        if infra.exists(path).await? {
+    for (path, result) in candidates.iter().zip(results) {
+        if result? {
             found.push(path.clone());
         }
     }
@@ -325,76 +321,6 @@ where
     }
 }
 
-/// Resolves a hooks manifest field into a [`PluginHooksConfig`].
-///
-/// Phase 1 only loads the raw JSON value so the manifest round-trips. Phase 3
-/// will replace the body with typed hook definitions and stricter validation.
-async fn resolve_hooks_config<I>(
-    infra: &Arc<I>,
-    plugin_dir: &Path,
-    declared: Option<&PluginHooksManifestField>,
-) -> Option<PluginHooksConfig>
-where
-    I: FileReaderInfra + FileInfoInfra,
-{
-    let field = declared?;
-
-    match field {
-        PluginHooksManifestField::Inline(cfg) => Some(cfg.clone()),
-        PluginHooksManifestField::Path(rel) => {
-            let abs = plugin_dir.join(rel);
-            load_hooks_file(infra, &abs).await
-        }
-        PluginHooksManifestField::Array(items) => {
-            // Merge all referenced configs by concatenating their raw values
-            // into a JSON array. Phase 3 will replace this with proper
-            // structural merging.
-            let mut merged: Vec<serde_json::Value> = Vec::new();
-            for item in items {
-                let nested = Box::pin(resolve_hooks_config(infra, plugin_dir, Some(item))).await;
-                if let Some(cfg) = nested {
-                    merged.push(cfg.raw);
-                }
-            }
-            Some(PluginHooksConfig { raw: serde_json::Value::Array(merged) })
-        }
-    }
-}
-
-async fn load_hooks_file<I>(infra: &Arc<I>, path: &Path) -> Option<PluginHooksConfig>
-where
-    I: FileReaderInfra + FileInfoInfra,
-{
-    match infra.exists(path).await {
-        Ok(true) => {}
-        Ok(false) => {
-            tracing::warn!("Plugin hooks file not found: {}", path.display());
-            return None;
-        }
-        Err(e) => {
-            tracing::warn!("Failed to stat plugin hooks file {}: {e:#}", path.display());
-            return None;
-        }
-    }
-
-    match infra.read_utf8(path).await {
-        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
-            Ok(value) => Some(PluginHooksConfig { raw: value }),
-            Err(e) => {
-                tracing::warn!(
-                    "Plugin hooks file {} is not valid JSON: {e:#}",
-                    path.display()
-                );
-                None
-            }
-        },
-        Err(e) => {
-            tracing::warn!("Failed to read plugin hooks file {}: {e:#}", path.display());
-            None
-        }
-    }
-}
-
 /// Resolves MCP server definitions for a plugin.
 ///
 /// Inline manifest entries always win over `.mcp.json`. The merge is shallow:
@@ -419,7 +345,7 @@ where
         // hand-written files.
         #[derive(serde::Deserialize)]
         struct McpJsonFile {
-            #[serde(default, alias = "mcp_servers")]
+            #[serde(default, alias = "mcpServers")]
             mcp_servers: BTreeMap<String, McpServerConfig>,
         }
 
@@ -493,7 +419,6 @@ mod tests {
             commands_paths: Vec::new(),
             agents_paths: Vec::new(),
             skills_paths: Vec::new(),
-            hooks_config: None,
             mcp_servers: None,
         }
     }
@@ -628,13 +553,6 @@ mod tests {
             plugin.agents_paths[0]
         );
 
-        // Hooks must be parsed from the referenced JSON file even though
-        // Phase 1 keeps them opaque.
-        assert!(
-            plugin.hooks_config.is_some(),
-            "hooks_config should be populated from hooks/hooks.json"
-        );
-
         // No MCP servers were declared.
         assert!(plugin.mcp_servers.is_none());
     }
@@ -748,20 +666,6 @@ mod tests {
         let by_name: std::collections::HashMap<&str, &LoadedPlugin> =
             plugins.iter().map(|p| (p.name.as_str(), p)).collect();
 
-        // Hook-only plugins must have a populated `hooks_config`.
-        for hook_plugin in [
-            "prettier-format",
-            "bash-logger",
-            "dangerous-guard",
-            "config-watcher",
-        ] {
-            let p = by_name[hook_plugin];
-            assert!(
-                p.hooks_config.is_some(),
-                "{hook_plugin} must have hooks_config populated from hooks/hooks.json"
-            );
-        }
-
         // skill-provider must resolve a skills/ sibling directory.
         let sp = by_name["skill-provider"];
         assert_eq!(sp.skills_paths.len(), 1);
@@ -782,7 +686,6 @@ mod tests {
         assert_eq!(fs_plugin.skills_paths.len(), 1);
         assert_eq!(fs_plugin.commands_paths.len(), 1);
         assert_eq!(fs_plugin.agents_paths.len(), 1);
-        assert!(fs_plugin.hooks_config.is_some());
         let mcp = fs_plugin
             .mcp_servers
             .as_ref()

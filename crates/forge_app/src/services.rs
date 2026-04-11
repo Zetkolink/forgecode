@@ -1271,6 +1271,16 @@ impl<I: Services> PluginComponentsReloader for I {
         // 4. Command loader cache.
         self.command_loader_service().reload().await?;
 
+        // 5. Hook config loader cache so the next hook dispatch re-merges
+        //    user/project/plugin hooks from disk.
+        self.hook_config_loader().invalidate().await?;
+
+        // 6. MCP service cache so plugin-contributed MCP servers under the
+        //    "{plugin}:{server}" namespace are picked up. Placed last because
+        //    MCP connections are lazy — this only clears the config hash and
+        //    tool map, never triggering interactive OAuth prompts.
+        self.mcp_service().reload_mcp().await?;
+
         Ok(())
     }
 }

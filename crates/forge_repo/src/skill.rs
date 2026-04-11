@@ -315,10 +315,7 @@ impl<I: FileInfoInfra + EnvironmentInfra + FileReaderInfra + WalkerInfra> ForgeS
         };
 
         let mut all = Vec::new();
-        for plugin in plugins {
-            if !plugin.enabled {
-                continue;
-            }
+        for plugin in plugins.into_iter().filter(|p| p.enabled) {
             for skills_dir in &plugin.skills_paths {
                 match self
                     .load_plugin_skills_from_dir(skills_dir, &plugin.name)
@@ -512,7 +509,6 @@ mod tests {
             commands_paths: Vec::new(),
             agents_paths: Vec::new(),
             skills_paths: vec![skills_path],
-            hooks_config: None,
             mcp_servers: None,
         }
     }

@@ -159,6 +159,10 @@ pub enum TopLevelCommand {
     #[command(aliases = ["command", "commands"])]
     Cmd(CmdCommandGroup),
 
+    /// Manage plugins.
+    #[command(alias = "pl")]
+    Plugin(PluginCommandGroup),
+
     /// Manage workspaces for semantic search.
     Workspace(WorkspaceCommandGroup),
 
@@ -185,6 +189,48 @@ pub enum TopLevelCommand {
     /// hooks in `.forge/hooks.json` are allowed to execute. Without this
     /// marker, project hooks are silently skipped as a security measure.
     Trust,
+}
+
+/// Command group for plugin management.
+#[derive(Parser, Debug, Clone)]
+pub struct PluginCommandGroup {
+    #[command(subcommand)]
+    pub command: PluginCommand,
+}
+
+/// Plugin management commands.
+#[derive(Subcommand, Debug, Clone)]
+pub enum PluginCommand {
+    /// List all discovered plugins.
+    #[command(alias = "ls")]
+    List,
+
+    /// Enable a plugin by name.
+    Enable {
+        /// Plugin name to enable.
+        name: String,
+    },
+
+    /// Disable a plugin by name.
+    Disable {
+        /// Plugin name to disable.
+        name: String,
+    },
+
+    /// Show detailed information about a plugin.
+    Info {
+        /// Plugin name to inspect.
+        name: String,
+    },
+
+    /// Reload all plugin-provided components.
+    Reload,
+
+    /// Install a plugin from a local directory path.
+    Install {
+        /// Path to the plugin directory.
+        path: std::path::PathBuf,
+    },
 }
 
 /// Command group for custom command management.

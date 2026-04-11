@@ -28,7 +28,7 @@ mod integration {
     use forge_app::hook_runtime::{HookConfigSource, HookMatcherWithSource, MergedHooksConfig};
     use forge_domain::{
         HookCommand, HookEventName, HookInput, HookInputBase, HookInputPayload, HookOutcome,
-        HookOutput, HooksConfig, LoadedPlugin, PluginHooksConfig, PluginLoadError,
+        HookOutput, HooksConfig, LoadedPlugin, PluginLoadError, PluginLoadErrorKind,
         PluginLoadResult, PluginManifest, PluginSource, ShellHookCommand,
     };
     use serde_json::json;
@@ -236,9 +236,6 @@ mod integration {
 
         let name = manifest.name.clone().unwrap_or_else(|| dir_name.clone());
 
-        // Resolve hooks config from the hooks path in manifest.
-        let hooks_config = resolve_hooks_config(plugin_dir, &manifest);
-
         // Auto-detect component directories.
         let commands_paths = auto_detect_dir(plugin_dir, "commands");
         let agents_paths = auto_detect_dir(plugin_dir, "agents");
@@ -254,33 +251,8 @@ mod integration {
             commands_paths,
             agents_paths,
             skills_paths,
-            hooks_config,
             mcp_servers: None,
         }))
-    }
-
-    /// Resolve hooks config from manifest's hooks field.
-    fn resolve_hooks_config(
-        plugin_dir: &Path,
-        manifest: &PluginManifest,
-    ) -> Option<PluginHooksConfig> {
-        use forge_domain::PluginHooksManifestField;
-
-        let field = manifest.hooks.as_ref()?;
-        match field {
-            PluginHooksManifestField::Path(rel) => {
-                let abs = plugin_dir.join(rel);
-                if abs.exists() {
-                    let raw = std::fs::read_to_string(&abs).ok()?;
-                    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
-                    Some(PluginHooksConfig { raw: value })
-                } else {
-                    None
-                }
-            }
-            PluginHooksManifestField::Inline(cfg) => Some(cfg.clone()),
-            _ => None,
-        }
     }
 
     /// Auto-detect a component directory if it exists.
@@ -320,7 +292,7 @@ mod integration {
                 Ok(None) => {} // Not a plugin directory.
                 Err(e) => {
                     let plugin_name = path.file_name().and_then(|s| s.to_str()).map(String::from);
-                    errors.push(PluginLoadError { plugin_name, path, error: e });
+                    errors.push(PluginLoadError { plugin_name, path, kind: PluginLoadErrorKind::Other, error: e });
                 }
             }
         }
@@ -406,7 +378,6 @@ mod integration {
             commands_paths: Vec::new(),
             agents_paths: Vec::new(),
             skills_paths: vec![skill_provider_path.join("skills")],
-            hooks_config: None,
             mcp_servers: None,
         };
 
@@ -423,7 +394,6 @@ mod integration {
             commands_paths: vec![command_provider_path.join("commands")],
             agents_paths: Vec::new(),
             skills_paths: Vec::new(),
-            hooks_config: None,
             mcp_servers: None,
         };
 
@@ -490,7 +460,6 @@ mod integration {
             commands_paths: Vec::new(),
             agents_paths: Vec::new(),
             skills_paths: Vec::new(),
-            hooks_config: None,
             mcp_servers: None,
         };
 
@@ -734,14 +703,6 @@ mod integration {
 
         let plugin = &plugins[0];
         assert_eq!(plugin.name, "no-hooks-plugin");
-
-        // hooks_config should be None: no hooks field in manifest and
-        // no hooks directory was auto-detected.
-        assert!(
-            plugin.hooks_config.is_none(),
-            "hooks_config should be None for a plugin without hooks, got: {:?}",
-            plugin.hooks_config
-        );
     }
 
     /// I. test_hook_command_syntax_error_returns_non_blocking

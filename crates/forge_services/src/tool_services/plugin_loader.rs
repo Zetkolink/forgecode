@@ -100,7 +100,7 @@ impl<R: PluginRepository + Send + Sync + 'static> PluginLoader for ForgePluginLo
 mod tests {
     use std::sync::Mutex;
 
-    use forge_domain::{LoadedPlugin, PluginLoadError, PluginLoadResult, PluginRepository};
+    use forge_domain::{LoadedPlugin, PluginLoadError, PluginLoadErrorKind, PluginLoadResult, PluginRepository};
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -162,7 +162,6 @@ mod tests {
             commands_paths: Vec::new(),
             agents_paths: Vec::new(),
             skills_paths: Vec::new(),
-            hooks_config: None,
             mcp_servers: None,
         }
     }
@@ -172,6 +171,7 @@ mod tests {
         PluginLoadError {
             plugin_name: Some(name.to_string()),
             path: PathBuf::from(format!("/fake/{name}")),
+            kind: PluginLoadErrorKind::Other,
             error: err.to_string(),
         }
     }

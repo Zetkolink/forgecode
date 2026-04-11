@@ -200,10 +200,7 @@ impl<
         };
 
         let mut all = Vec::new();
-        for plugin in plugins {
-            if !plugin.enabled {
-                continue;
-            }
+        for plugin in plugins.into_iter().filter(|p| p.enabled) {
             for commands_dir in &plugin.commands_paths {
                 match self
                     .init_plugin_command_dir(commands_dir, &plugin.name)
@@ -634,7 +631,6 @@ mod tests {
             commands_paths: vec![commands_path],
             agents_paths: Vec::new(),
             skills_paths: Vec::new(),
-            hooks_config: None,
             mcp_servers: None,
         }
     }

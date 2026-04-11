@@ -99,10 +99,7 @@ where
         let project_dir = env.cwd.display().to_string();
 
         let mut servers: BTreeMap<ServerName, McpServerConfig> = BTreeMap::new();
-        for plugin in plugins {
-            if !plugin.enabled {
-                continue;
-            }
+        for plugin in plugins.into_iter().filter(|p| p.enabled) {
             let Some(plugin_servers) = plugin.mcp_servers.as_ref() else {
                 continue;
             };
@@ -309,7 +306,6 @@ mod tests {
             commands_paths: Vec::new(),
             agents_paths: Vec::new(),
             skills_paths: Vec::new(),
-            hooks_config: None,
             mcp_servers: servers,
         }
     }

@@ -1,5 +1,5 @@
 {
-  "mcp_servers": {
+  "mcpServers": {
     "full-stack-server": {
       "command": "echo",
       "args": ["full-stack MCP stub"]

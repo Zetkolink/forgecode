@@ -74,6 +74,53 @@ pub enum HookEventName {
     FileChanged,
 }
 
+impl HookEventName {
+    /// Returns the PascalCase wire name matching Claude Code's event format.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PreToolUse => "PreToolUse",
+            Self::PostToolUse => "PostToolUse",
+            Self::PostToolUseFailure => "PostToolUseFailure",
+            Self::Notification => "Notification",
+            Self::UserPromptSubmit => "UserPromptSubmit",
+            Self::SessionStart => "SessionStart",
+            Self::SessionEnd => "SessionEnd",
+            Self::Stop => "Stop",
+            Self::StopFailure => "StopFailure",
+            Self::SubagentStart => "SubagentStart",
+            Self::SubagentStop => "SubagentStop",
+            Self::PreCompact => "PreCompact",
+            Self::PostCompact => "PostCompact",
+            Self::PermissionRequest => "PermissionRequest",
+            Self::PermissionDenied => "PermissionDenied",
+            Self::Setup => "Setup",
+            Self::TeammateIdle => "TeammateIdle",
+            Self::TaskCreated => "TaskCreated",
+            Self::TaskCompleted => "TaskCompleted",
+            Self::Elicitation => "Elicitation",
+            Self::ElicitationResult => "ElicitationResult",
+            Self::ConfigChange => "ConfigChange",
+            Self::WorktreeCreate => "WorktreeCreate",
+            Self::WorktreeRemove => "WorktreeRemove",
+            Self::InstructionsLoaded => "InstructionsLoaded",
+            Self::CwdChanged => "CwdChanged",
+            Self::FileChanged => "FileChanged",
+        }
+    }
+
+    /// Returns `true` for events that support `FORGE_ENV_FILE` write-back.
+    ///
+    /// Hooks for these events can write `KEY=VALUE` pairs to the file
+    /// specified in `FORGE_ENV_FILE`; the runtime reads them back and
+    /// merges them into the session environment cache.
+    pub fn supports_env_file(&self) -> bool {
+        matches!(
+            self,
+            Self::SessionStart | Self::Setup | Self::CwdChanged | Self::FileChanged
+        )
+    }
+}
+
 /// A single entry inside a `hooks.json` event list.
 ///
 /// The optional `matcher` field filters which tool calls (or other event

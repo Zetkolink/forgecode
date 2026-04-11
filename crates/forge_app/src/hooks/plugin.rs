@@ -39,6 +39,17 @@ use crate::hooks::session_hooks::SessionHookStore;
 use crate::infra::HookExecutorInfra;
 use crate::services::Services;
 
+// ---- Environment variable names injected into hook subprocesses ----
+
+const FORGE_PROJECT_DIR: &str = "FORGE_PROJECT_DIR";
+const FORGE_SESSION_ID: &str = "FORGE_SESSION_ID";
+const FORGE_PLUGIN_ROOT: &str = "FORGE_PLUGIN_ROOT";
+const FORGE_PLUGIN_DATA: &str = "FORGE_PLUGIN_DATA";
+const FORGE_PLUGIN_OPTION_PREFIX: &str = "FORGE_PLUGIN_OPTION_";
+const FORGE_ENV_FILE: &str = "FORGE_ENV_FILE";
+/// Subdirectory under `base_path` where per-plugin data is stored.
+const PLUGIN_DATA_DIR: &str = "plugin-data";
+
 /// Identifier for a single hook command within the merged config. Used
 /// to enforce `once` semantics: the first invocation adds the id to
 /// `once_fired`; subsequent invocations skip the hook entirely.
@@ -93,7 +104,7 @@ impl<S: Services> PluginHookHandler<S> {
     }
 
     /// Create a new dispatcher with a shared [`SessionHookStore`].
-    #[allow(dead_code)] // Public API for external consumers (e.g. forge_services wiring)
+    #[allow(dead_code)] // Extension point: SessionHookStore runtime registration is not yet used in production. This constructor will be needed once dynamic per-session hook registration is enabled.
     pub fn with_session_hooks(services: Arc<S>, session_hooks: SessionHookStore) -> Self {
         Self {
             services,
@@ -121,13 +132,13 @@ impl<S: Services> PluginHookHandler<S> {
     /// Callers (e.g. the service-layer wiring) can clone this handle and
     /// pass it to the shell service so that variables written by hooks
     /// via `FORGE_ENV_FILE` are visible in subsequent shell commands.
-    #[allow(dead_code)] // Public API for external consumers (e.g. forge_services wiring)
+    #[allow(dead_code)] // Extension point: accessor for sharing the env cache with external consumers. Currently env cache is internal to the handler.
     pub fn session_env_cache(&self) -> &SessionEnvCache {
         &self.session_env_cache
     }
 
     /// Returns a reference to the session hook store.
-    #[allow(dead_code)] // Public API for external consumers (e.g. forge_services wiring)
+    #[allow(dead_code)] // Extension point: accessor for inspecting/sharing the session hook store. Will be needed once dynamic per-session hook registration is enabled.
     pub fn session_hook_store(&self) -> &SessionHookStore {
         &self.session_hooks
     }
@@ -207,6 +218,7 @@ impl<S: Services> PluginHookHandler<S> {
         // We split the once-ids out so we can pair them with results
         // after execution to decide whether to mark a once-hook as fired.
         let executor = self.services.hook_executor();
+        let base_path = self.services.get_environment().base_path;
         let (once_ids, cmd_src_pairs): (
             Vec<Option<HookId>>,
             Vec<(HookCommand, HookMatcherWithSource)>,
@@ -217,8 +229,11 @@ impl<S: Services> PluginHookHandler<S> {
 
         // Each future returns (Result<HookExecResult>, Option<PathBuf>)
         // where the PathBuf is the FORGE_ENV_FILE path when one was set.
+        let dispatched_event = event.clone();
         let futures = cmd_src_pairs.into_iter().map(|(cmd, source)| {
             let input = input.clone();
+            let base_path = base_path.clone();
+            let dispatched_event = dispatched_event.clone();
             async move {
                 match cmd {
                     HookCommand::Command(ref shell) => {
@@ -242,52 +257,42 @@ impl<S: Services> PluginHookHandler<S> {
                         // Build FORGE_* env vars from the available context.
                         let mut env_vars = HashMap::new();
                         env_vars.insert(
-                            "FORGE_PROJECT_DIR".to_string(),
+                            FORGE_PROJECT_DIR.to_string(),
                             input.base.cwd.display().to_string(),
                         );
                         env_vars.insert(
-                            "FORGE_SESSION_ID".to_string(),
+                            FORGE_SESSION_ID.to_string(),
                             input.base.session_id.clone(),
                         );
                         if let Some(ref root) = source.plugin_root {
                             env_vars.insert(
-                                "FORGE_PLUGIN_ROOT".to_string(),
+                                FORGE_PLUGIN_ROOT.to_string(),
                                 root.display().to_string(),
                             );
                         }
                         if let Some(ref name) = source.plugin_name {
-                            // Derive plugin data dir from HOME.
-                            // forge_app cannot depend on forge_services, so we
-                            // replicate the path convention here:
-                            // <home>/.forge/plugin-data/<name>/
-                            if let Ok(home) = std::env::var("HOME") {
-                                let data_dir = PathBuf::from(home)
-                                    .join(".forge")
-                                    .join("plugin-data")
-                                    .join(name);
-                                env_vars.insert(
-                                    "FORGE_PLUGIN_DATA".to_string(),
-                                    data_dir.display().to_string(),
-                                );
-                            }
+                            let data_dir = base_path
+                                .join(PLUGIN_DATA_DIR)
+                                .join(name);
+                            env_vars.insert(
+                                FORGE_PLUGIN_DATA.to_string(),
+                                data_dir.display().to_string(),
+                            );
                         }
 
                         // Inject FORGE_PLUGIN_OPTION_* from user-configured plugin options.
                         for (key, val) in &source.plugin_options {
                             let env_key = format!(
-                                "FORGE_PLUGIN_OPTION_{}",
+                                "{}{}",
+                                FORGE_PLUGIN_OPTION_PREFIX,
                                 key.to_uppercase().replace('-', "_")
                             );
                             env_vars.insert(env_key, val.clone());
                         }
 
                         // Set FORGE_ENV_FILE for events that support env-file
-                        // write-back (SessionStart, Setup, CwdChanged, FileChanged).
-                        let event_name = input.base.hook_event_name.as_str();
-                        let env_file_path = if matches!(
-                            event_name,
-                            "SessionStart" | "Setup" | "CwdChanged" | "FileChanged"
-                        ) {
+                        // write-back.
+                        let env_file_path = if dispatched_event.supports_env_file() {
                             let env_file = std::env::temp_dir().join(format!(
                                 "forge-hook-env-{}-{}",
                                 input.base.session_id,
@@ -297,7 +302,7 @@ impl<S: Services> PluginHookHandler<S> {
                                     .as_nanos()
                             ));
                             env_vars.insert(
-                                "FORGE_ENV_FILE".to_string(),
+                                FORGE_ENV_FILE.to_string(),
                                 env_file.display().to_string(),
                             );
                             Some(env_file)
@@ -526,7 +531,7 @@ where
 ///   `agent_id` field.
 fn build_hook_input<P>(
     event: &EventData<P>,
-    hook_event_name: &'static str,
+    hook_event_name: &HookEventName,
     payload: HookInputPayload,
     subagent_id: Option<String>,
 ) -> HookInput
@@ -542,7 +547,7 @@ where
             permission_mode: event.permission_mode.clone(),
             agent_id: subagent_id,
             agent_type: Some(agent_type),
-            hook_event_name: hook_event_name.to_string(),
+            hook_event_name: hook_event_name.as_str().to_string(),
         },
         payload,
     }
@@ -557,7 +562,7 @@ impl<S: Services> EventHandle<EventData<PreToolUsePayload>> for PluginHookHandle
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "PreToolUse",
+            &HookEventName::PreToolUse,
             HookInputPayload::PreToolUse {
                 tool_name: event.payload.tool_name.clone(),
                 tool_input: event.payload.tool_input.clone(),
@@ -587,7 +592,7 @@ impl<S: Services> EventHandle<EventData<PostToolUsePayload>> for PluginHookHandl
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "PostToolUse",
+            &HookEventName::PostToolUse,
             HookInputPayload::PostToolUse {
                 tool_name: event.payload.tool_name.clone(),
                 tool_input: event.payload.tool_input.clone(),
@@ -618,7 +623,7 @@ impl<S: Services> EventHandle<EventData<PostToolUseFailurePayload>> for PluginHo
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "PostToolUseFailure",
+            &HookEventName::PostToolUseFailure,
             HookInputPayload::PostToolUseFailure {
                 tool_name: event.payload.tool_name.clone(),
                 tool_input: event.payload.tool_input.clone(),
@@ -650,7 +655,7 @@ impl<S: Services> EventHandle<EventData<UserPromptSubmitPayload>> for PluginHook
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "UserPromptSubmit",
+            &HookEventName::UserPromptSubmit,
             HookInputPayload::UserPromptSubmit { prompt: event.payload.prompt.clone() },
             None,
         );
@@ -671,7 +676,7 @@ impl<S: Services> EventHandle<EventData<SessionStartPayload>> for PluginHookHand
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "SessionStart",
+            &HookEventName::SessionStart,
             HookInputPayload::SessionStart {
                 source: event.payload.source.as_wire_str().to_string(),
                 model: event.payload.model.clone(),
@@ -700,7 +705,7 @@ impl<S: Services> EventHandle<EventData<SessionEndPayload>> for PluginHookHandle
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "SessionEnd",
+            &HookEventName::SessionEnd,
             HookInputPayload::SessionEnd { reason: event.payload.reason.as_wire_str().to_string() },
             None,
         );
@@ -726,7 +731,7 @@ impl<S: Services> EventHandle<EventData<StopPayload>> for PluginHookHandler<S> {
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "Stop",
+            &HookEventName::Stop,
             HookInputPayload::Stop {
                 stop_hook_active: event.payload.stop_hook_active,
                 last_assistant_message: event.payload.last_assistant_message.clone(),
@@ -750,7 +755,7 @@ impl<S: Services> EventHandle<EventData<StopFailurePayload>> for PluginHookHandl
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "StopFailure",
+            &HookEventName::StopFailure,
             HookInputPayload::StopFailure {
                 error: event.payload.error.clone(),
                 error_details: event.payload.error_details.clone(),
@@ -780,7 +785,7 @@ impl<S: Services> EventHandle<EventData<PreCompactPayload>> for PluginHookHandle
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "PreCompact",
+            &HookEventName::PreCompact,
             HookInputPayload::PreCompact {
                 trigger: event.payload.trigger.as_wire_str().to_string(),
                 custom_instructions: event.payload.custom_instructions.clone(),
@@ -809,7 +814,7 @@ impl<S: Services> EventHandle<EventData<PostCompactPayload>> for PluginHookHandl
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "PostCompact",
+            &HookEventName::PostCompact,
             HookInputPayload::PostCompact {
                 trigger: event.payload.trigger.as_wire_str().to_string(),
                 compact_summary: event.payload.compact_summary.clone(),
@@ -840,7 +845,7 @@ impl<S: Services> EventHandle<EventData<NotificationPayload>> for PluginHookHand
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "Notification",
+            &HookEventName::Notification,
             HookInputPayload::Notification {
                 message: event.payload.message.clone(),
                 title: event.payload.title.clone(),
@@ -875,7 +880,7 @@ impl<S: Services> EventHandle<EventData<SetupPayload>> for PluginHookHandler<S> 
         let trigger_wire = event.payload.trigger.as_wire_str();
         let input = build_hook_input(
             event,
-            "Setup",
+            &HookEventName::Setup,
             HookInputPayload::Setup { trigger: trigger_wire.to_string() },
             None,
         );
@@ -899,7 +904,7 @@ impl<S: Services> EventHandle<EventData<ConfigChangePayload>> for PluginHookHand
         let source_wire = event.payload.source.as_wire_str();
         let input = build_hook_input(
             event,
-            "ConfigChange",
+            &HookEventName::ConfigChange,
             HookInputPayload::ConfigChange {
                 source: source_wire.to_string(),
                 file_path: event.payload.file_path.clone(),
@@ -927,7 +932,7 @@ impl<S: Services> EventHandle<EventData<SubagentStartPayload>> for PluginHookHan
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "SubagentStart",
+            &HookEventName::SubagentStart,
             HookInputPayload::SubagentStart {
                 agent_id: event.payload.agent_id.clone(),
                 agent_type: event.payload.agent_type.clone(),
@@ -958,7 +963,7 @@ impl<S: Services> EventHandle<EventData<SubagentStopPayload>> for PluginHookHand
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "SubagentStop",
+            &HookEventName::SubagentStop,
             HookInputPayload::SubagentStop {
                 agent_id: event.payload.agent_id.clone(),
                 agent_type: event.payload.agent_type.clone(),
@@ -991,7 +996,7 @@ impl<S: Services> EventHandle<EventData<PermissionRequestPayload>> for PluginHoo
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "PermissionRequest",
+            &HookEventName::PermissionRequest,
             HookInputPayload::PermissionRequest {
                 tool_name: event.payload.tool_name.clone(),
                 tool_input: event.payload.tool_input.clone(),
@@ -1023,7 +1028,7 @@ impl<S: Services> EventHandle<EventData<PermissionDeniedPayload>> for PluginHook
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "PermissionDenied",
+            &HookEventName::PermissionDenied,
             HookInputPayload::PermissionDenied {
                 tool_name: event.payload.tool_name.clone(),
                 tool_input: event.payload.tool_input.clone(),
@@ -1063,7 +1068,7 @@ impl<S: Services> EventHandle<EventData<CwdChangedPayload>> for PluginHookHandle
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "CwdChanged",
+            &HookEventName::CwdChanged,
             HookInputPayload::CwdChanged {
                 old_cwd: event.payload.old_cwd.clone(),
                 new_cwd: event.payload.new_cwd.clone(),
@@ -1094,7 +1099,7 @@ impl<S: Services> EventHandle<EventData<FileChangedPayload>> for PluginHookHandl
             .unwrap_or_else(|| event.payload.file_path.to_string_lossy().into_owned());
         let input = build_hook_input(
             event,
-            "FileChanged",
+            &HookEventName::FileChanged,
             HookInputPayload::FileChanged {
                 file_path: event.payload.file_path.clone(),
                 event: event.payload.event.as_wire_str().to_string(),
@@ -1120,7 +1125,7 @@ impl<S: Services> EventHandle<EventData<WorktreeCreatePayload>> for PluginHookHa
         let name = event.payload.name.clone();
         let input = build_hook_input(
             event,
-            "WorktreeCreate",
+            &HookEventName::WorktreeCreate,
             HookInputPayload::WorktreeCreate { name: name.clone() },
             None,
         );
@@ -1143,7 +1148,7 @@ impl<S: Services> EventHandle<EventData<WorktreeRemovePayload>> for PluginHookHa
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "WorktreeRemove",
+            &HookEventName::WorktreeRemove,
             HookInputPayload::WorktreeRemove { worktree_path: event.payload.worktree_path.clone() },
             None,
         );
@@ -1169,7 +1174,7 @@ impl<S: Services> EventHandle<EventData<InstructionsLoadedPayload>> for PluginHo
         let reason = event.payload.load_reason.as_wire_str().to_string();
         let input = build_hook_input(
             event,
-            "InstructionsLoaded",
+            &HookEventName::InstructionsLoaded,
             HookInputPayload::InstructionsLoaded {
                 file_path: event.payload.file_path.clone(),
                 memory_type: event.payload.memory_type.as_wire_str().to_string(),
@@ -1205,7 +1210,7 @@ impl<S: Services> EventHandle<EventData<ElicitationPayload>> for PluginHookHandl
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "Elicitation",
+            &HookEventName::Elicitation,
             HookInputPayload::Elicitation {
                 server_name: event.payload.server_name.clone(),
                 message: event.payload.message.clone(),
@@ -1239,7 +1244,7 @@ impl<S: Services> EventHandle<EventData<ElicitationResultPayload>> for PluginHoo
     ) -> anyhow::Result<()> {
         let input = build_hook_input(
             event,
-            "ElicitationResult",
+            &HookEventName::ElicitationResult,
             HookInputPayload::ElicitationResult {
                 server_name: event.payload.server_name.clone(),
                 action: event.payload.action.clone(),

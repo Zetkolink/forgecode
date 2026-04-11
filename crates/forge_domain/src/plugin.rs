@@ -157,10 +157,12 @@ pub enum PluginHooksManifestField {
     Array(Vec<PluginHooksManifestField>),
 }
 
-/// Placeholder for parsed hook configuration.
+/// Inline hooks configuration within a plugin manifest.
 ///
-/// Stores the raw JSON value so the manifest round-trips without
-/// losing data.
+/// Wraps a raw `serde_json::Value` so inline hooks objects
+/// round-trip through serde without losing data. The hook
+/// runtime re-parses the value into [`HooksConfig`] when
+/// building the merged config.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginHooksConfig {
     /// Raw JSON value preserved verbatim.
@@ -222,10 +224,6 @@ pub struct LoadedPlugin {
     /// Resolved absolute paths to all skills directories.
     pub skills_paths: Vec<PathBuf>,
 
-    /// Parsed hooks configuration, if the manifest referenced one and the
-    /// file was readable. Currently stored as an opaque JSON value.
-    pub hooks_config: Option<PluginHooksConfig>,
-
     /// MCP servers contributed by this plugin. Sourced from either
     /// `manifest.mcp_servers` or a sibling `.mcp.json` file.
     pub mcp_servers: Option<BTreeMap<String, McpServerConfig>>,
@@ -262,6 +260,19 @@ impl PluginLoadResult {
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }
+
+    /// Returns an iterator over only the enabled plugins.
+    ///
+    /// Prefer this over `.plugins.iter().filter(|p| p.enabled)` to avoid
+    /// scattering the same filter predicate across every consumer.
+    pub fn enabled(&self) -> impl Iterator<Item = &LoadedPlugin> {
+        self.plugins.iter().filter(|p| p.enabled)
+    }
+
+    /// Returns an iterator over only the disabled plugins.
+    pub fn disabled(&self) -> impl Iterator<Item = &LoadedPlugin> {
+        self.plugins.iter().filter(|p| !p.enabled)
+    }
 }
 
 /// Error encountered while attempting to load a single plugin directory.
@@ -279,10 +290,37 @@ pub struct PluginLoadError {
     /// Absolute path to the plugin directory (or manifest file) that
     /// failed.
     pub path: PathBuf,
+    /// Classifies the failure for programmatic handling.
+    pub kind: PluginLoadErrorKind,
     /// Human-readable error message. Typically the `Display` of the
     /// underlying `anyhow::Error`, captured with its full chain via
     /// `format!("{e:#}")`.
     pub error: String,
+}
+
+/// Classification of a plugin load error.
+///
+/// Enables programmatic handling (e.g. "retry only IO errors") without
+/// parsing the human-readable `error` string. New variants can be added
+/// as the plugin ecosystem grows (marketplace, git auth, etc.).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PluginLoadErrorKind {
+    /// The manifest file (`plugin.json`) could not be parsed.
+    ManifestParseError,
+    /// A filesystem I/O error occurred while reading plugin files.
+    IoError,
+    /// Catch-all for errors that don't fit other categories.
+    Other,
+}
+
+impl std::fmt::Display for PluginLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(ref name) = self.plugin_name {
+            write!(f, "plugin '{}': {}", name, self.error)
+        } else {
+            write!(f, "{}: {}", self.path.display(), self.error)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -442,7 +480,6 @@ mod tests {
             commands_paths: Vec::new(),
             agents_paths: Vec::new(),
             skills_paths: Vec::new(),
-            hooks_config: None,
             mcp_servers: None,
         }
     }
@@ -451,6 +488,7 @@ mod tests {
         PluginLoadError {
             plugin_name: Some(name.to_string()),
             path: PathBuf::from(format!("/fake/{name}")),
+            kind: PluginLoadErrorKind::Other,
             error: err.to_string(),
         }
     }

@@ -131,7 +131,7 @@ fn format_plugin_components(plugin: &forge_domain::LoadedPlugin) -> String {
     let skills = plugin.skills_paths.len();
     let commands = plugin.commands_paths.len();
     let agents = plugin.agents_paths.len();
-    let hooks = if plugin.hooks_config.is_some() { 1 } else { 0 };
+    let hooks = if plugin.manifest.hooks.is_some() { 1 } else { 0 };
     let mcp = plugin.mcp_servers.as_ref().map(|m| m.len()).unwrap_or(0);
     format!("{skills} skills, {commands} cmds, {hooks} hooks, {agents} agents, {mcp} mcp")
 }
@@ -938,6 +938,19 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                 println!(
                     "Workspace trusted. Project-level hooks in .forge/hooks.json will now execute."
                 );
+                return Ok(());
+            }
+            TopLevelCommand::Plugin(plugin_group) => {
+                self.init_state(false).await?;
+                let sub = match plugin_group.command {
+                    crate::cli::PluginCommand::List => PluginSubcommand::List,
+                    crate::cli::PluginCommand::Enable { name } => PluginSubcommand::Enable { name },
+                    crate::cli::PluginCommand::Disable { name } => PluginSubcommand::Disable { name },
+                    crate::cli::PluginCommand::Info { name } => PluginSubcommand::Info { name },
+                    crate::cli::PluginCommand::Reload => PluginSubcommand::Reload,
+                    crate::cli::PluginCommand::Install { path } => PluginSubcommand::Install { path },
+                };
+                self.on_plugin_command(sub).await?;
                 return Ok(());
             }
         }
@@ -4702,7 +4715,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         let skills_count: usize = plugin.skills_paths.len();
         let commands_count: usize = plugin.commands_paths.len();
         let agents_count: usize = plugin.agents_paths.len();
-        let hooks_status = if plugin.hooks_config.is_some() {
+        let hooks_status = if plugin.manifest.hooks.is_some() {
             "configured"
         } else {
             "none"

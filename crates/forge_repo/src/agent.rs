@@ -147,10 +147,7 @@ impl<I: FileInfoInfra + EnvironmentInfra + DirectoryReaderInfra> ForgeAgentRepos
         };
 
         let mut all = Vec::new();
-        for plugin in plugins {
-            if !plugin.enabled {
-                continue;
-            }
+        for plugin in plugins.into_iter().filter(|p| p.enabled) {
             for agents_dir in &plugin.agents_paths {
                 match self
                     .load_plugin_agents_from_dir(agents_dir, &plugin.name)
@@ -305,7 +302,6 @@ mod tests {
             commands_paths: Vec::new(),
             agents_paths: vec![agents_path],
             skills_paths: Vec::new(),
-            hooks_config: None,
             mcp_servers: None,
         }
     }

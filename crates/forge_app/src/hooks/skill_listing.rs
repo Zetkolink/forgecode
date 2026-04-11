@@ -209,11 +209,8 @@ impl DeltaCache {
     /// Removes every `(conversation_id, *)` entry regardless of which agent
     /// had previously been announced to.
     ///
-    /// Reached only via [`SkillListingHandler::reset_sent_skills`], whose
-    /// generic bound hides this method from rustc's non-test dead-code
-    /// analysis — the allow silences a spurious warning until plugin
-    /// hot-reload is wired.
-    #[allow(dead_code)]
+    /// Reached only via [`SkillListingHandler::reset_sent_skills`].
+    #[allow(dead_code)] // Extension point: currently unused because SkillListingHandler is ephemeral (recreated per chat() call). Will become necessary if the delta cache is ever shared/persisted across calls.
     async fn forget(&self, conversation_id: ConversationId) {
         let mut guard = self.sent.lock().await;
         guard.retain(|(conv, _), _| *conv != conversation_id);
@@ -226,9 +223,8 @@ impl DeltaCache {
     /// active conversations must re-announce their catalogs on the next
     /// turn.
     ///
-    /// Reached only via [`SkillListingHandler::reset_all`]; see the note on
-    /// [`forget`](Self::forget) for why the allow is required today.
-    #[allow(dead_code)]
+    /// Reached only via [`SkillListingHandler::reset_all`].
+    #[allow(dead_code)] // Extension point: currently unused because SkillListingHandler is ephemeral (recreated per chat() call). Will become necessary if the delta cache is ever shared/persisted across calls.
     async fn forget_all(&self) {
         let mut guard = self.sent.lock().await;
         guard.clear();
@@ -283,7 +279,7 @@ impl<S> SkillListingHandler<S> {
 
     /// Overrides the fraction of the context window used for the catalog.
     /// Primarily useful for tests.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // builder method used in tests
     pub fn budget_fraction(mut self, fraction: f64) -> Self {
         self.budget_fraction = fraction;
         self
@@ -315,9 +311,7 @@ impl<S> SkillListingHandler<S> {
     /// (`forge` + `sage` + `muse`) all receive a fresh reminder on their
     /// respective next turns.
     ///
-    /// Exposed for plugin hot-reload wiring. The `allow(dead_code)`
-    /// stays until the plugin event loop invokes it.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Extension point: currently unused because SkillListingHandler is ephemeral (recreated per chat() call). Will become necessary if the delta cache is ever shared/persisted across calls.
     pub async fn reset_sent_skills(&self, conversation_id: &ConversationId) {
         self.cache.forget(*conversation_id).await;
     }
@@ -329,9 +323,7 @@ impl<S> SkillListingHandler<S> {
     /// skills was just disabled). Every active conversation will see a
     /// fresh, possibly smaller, catalog on its next turn.
     ///
-    /// Exposed for plugin hot-reload wiring. The `allow(dead_code)`
-    /// stays until the plugin event loop invokes it.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Extension point: currently unused because SkillListingHandler is ephemeral (recreated per chat() call). Will become necessary if the delta cache is ever shared/persisted across calls.
     pub async fn reset_all(&self) {
         self.cache.forget_all().await;
     }

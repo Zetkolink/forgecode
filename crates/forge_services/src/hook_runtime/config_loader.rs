@@ -215,7 +215,7 @@ where
         // the same workspace trust check as project hooks above.
         let trusted = self.is_ci() || is_workspace_trusted(&env.cwd);
         let plugin_result = self.plugin_repository.load_plugins_with_errors().await?;
-        for plugin in plugin_result.plugins.iter().filter(|p| p.enabled) {
+        for plugin in plugin_result.enabled() {
             if plugin.source == forge_domain::PluginSource::Project && !trusted {
                 tracing::warn!(
                     plugin = plugin.name.as_str(),
@@ -667,7 +667,6 @@ mod tests {
             commands_paths: Vec::new(),
             agents_paths: Vec::new(),
             skills_paths: Vec::new(),
-            hooks_config: None,
             mcp_servers: None,
         };
 
@@ -708,7 +707,6 @@ mod tests {
             commands_paths: Vec::new(),
             agents_paths: Vec::new(),
             skills_paths: Vec::new(),
-            hooks_config: None,
             mcp_servers: None,
         };
 
@@ -765,7 +763,6 @@ mod tests {
             commands_paths: Vec::new(),
             agents_paths: Vec::new(),
             skills_paths: Vec::new(),
-            hooks_config: None,
             mcp_servers: None,
         };
 

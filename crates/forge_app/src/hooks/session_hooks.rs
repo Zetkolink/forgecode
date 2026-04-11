@@ -50,7 +50,7 @@ impl SessionHookStore {
     }
 
     /// Register a hook for a specific session and event.
-    #[allow(dead_code)] // Public API; currently exercised only by tests
+    #[allow(dead_code)] // Extension point: runtime hook registration is not yet used in production. Will be activated once plugins can register ephemeral hooks at session scope.
     pub async fn add_hook(
         &self,
         session_id: &str,
@@ -95,14 +95,14 @@ impl SessionHookStore {
     }
 
     /// Remove all hooks for a session (cleanup on session end).
-    #[allow(dead_code)] // Public API; currently exercised only by tests
+    #[allow(dead_code)] // Extension point: cleanup counterpart to add_hook(). Will be called from SessionEnd handler once runtime hook registration is enabled.
     pub async fn clear_session(&self, session_id: &str) {
         let mut guard = self.inner.write().await;
         guard.remove(session_id);
     }
 
     /// Check if any session hooks exist for a given session.
-    #[allow(dead_code)] // Public API; currently exercised only by tests
+    #[allow(dead_code)] // Extension point: introspection counterpart to add_hook(). Will be used to skip dispatch overhead when no session hooks exist.
     pub async fn has_hooks(&self, session_id: &str) -> bool {
         let guard = self.inner.read().await;
         guard.get(session_id).is_some_and(|b| !b.hooks.is_empty())

@@ -98,11 +98,11 @@ mod e2e {
 
         // Write JSON + newline to stdin, then close.
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(input_json.as_bytes())
-                .await
-                .expect("write stdin");
-            stdin.write_all(b"\n").await.expect("write newline");
+            // Ignore BrokenPipe — the hook may exit without reading stdin
+            // (e.g. fire-and-forget loggers). Under concurrent execution the
+            // child can finish before we write, closing the pipe.
+            let _ = stdin.write_all(input_json.as_bytes()).await;
+            let _ = stdin.write_all(b"\n").await;
         }
 
         let output =
