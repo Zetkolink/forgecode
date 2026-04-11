@@ -104,7 +104,11 @@ impl<S: Services> PluginHookHandler<S> {
     }
 
     /// Create a new dispatcher with a shared [`SessionHookStore`].
-    #[allow(dead_code)] // Extension point: SessionHookStore runtime registration is not yet used in production. This constructor will be needed once dynamic per-session hook registration is enabled.
+    ///
+    /// Not used in production yet — the default constructor creates its
+    /// own empty store. This entry point exists for future dynamic
+    /// per-session hook registration.
+    #[allow(dead_code)] // Extension point: dynamic per-session hook registration.
     pub fn with_session_hooks(services: Arc<S>, session_hooks: SessionHookStore) -> Self {
         Self {
             services,
@@ -132,13 +136,13 @@ impl<S: Services> PluginHookHandler<S> {
     /// Callers (e.g. the service-layer wiring) can clone this handle and
     /// pass it to the shell service so that variables written by hooks
     /// via `FORGE_ENV_FILE` are visible in subsequent shell commands.
-    #[allow(dead_code)] // Extension point: accessor for sharing the env cache with external consumers. Currently env cache is internal to the handler.
+    #[allow(dead_code)] // Extension point: env cache sharing with external consumers.
     pub fn session_env_cache(&self) -> &SessionEnvCache {
         &self.session_env_cache
     }
 
     /// Returns a reference to the session hook store.
-    #[allow(dead_code)] // Extension point: accessor for inspecting/sharing the session hook store. Will be needed once dynamic per-session hook registration is enabled.
+    #[allow(dead_code)] // Extension point: dynamic per-session hook registration.
     pub fn session_hook_store(&self) -> &SessionHookStore {
         &self.session_hooks
     }
@@ -764,6 +768,14 @@ impl<S: Services> EventHandle<EventData<StopFailurePayload>> for PluginHookHandl
             )
             .await?;
         conversation.hook_result = aggregated;
+
+        // Clean up session-scoped hooks to prevent unbounded memory
+        // growth. Called after dispatch so all SessionEnd hooks have
+        // finished before their entries are removed.
+        self.session_hooks
+            .clear_session(&event.session_id)
+            .await;
+
         Ok(())
     }
 }
