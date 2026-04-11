@@ -139,7 +139,8 @@ fn format_plugin_components(plugin: &forge_domain::LoadedPlugin) -> String {
     };
     let mcp = plugin.mcp_servers.as_ref().map(|m| m.len()).unwrap_or(0);
     let modes = count_entries(&plugin.path, "modes");
-    let mut parts = format!("{skills} skills, {commands} cmds, {hooks} hooks, {agents} agents, {mcp} mcp");
+    let mut parts =
+        format!("{skills} skills, {commands} cmds, {hooks} hooks, {agents} agents, {mcp} mcp");
     if modes > 0 {
         parts.push_str(&format!(", {modes} modes"));
     }
@@ -4838,16 +4839,13 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         // points to the real plugin root. Re-resolve source, manifest,
         // and name from the effective root.
         let (source, manifest, name) = {
-            let marketplace_path = manifest_path
-                .parent()
-                .map(|p| p.join("marketplace.json"));
+            let marketplace_path = manifest_path.parent().map(|p| p.join("marketplace.json"));
             if let Some(mp) = marketplace_path.filter(|p| p.exists()) {
-                let mp_raw = std::fs::read_to_string(&mp)
+                let mp_raw = std::fs::read_to_string(&mp).with_context(|| {
+                    format!("Failed to read marketplace manifest: {}", mp.display())
+                })?;
+                let mp_manifest: forge_domain::MarketplaceManifest = serde_json::from_str(&mp_raw)
                     .with_context(|| {
-                        format!("Failed to read marketplace manifest: {}", mp.display())
-                    })?;
-                let mp_manifest: forge_domain::MarketplaceManifest =
-                    serde_json::from_str(&mp_raw).with_context(|| {
                         format!("Failed to parse marketplace manifest: {}", mp.display())
                     })?;
 
@@ -4862,8 +4860,8 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                         })?;
 
                     // Re-locate manifest in the effective root.
-                    let effective_manifest_path =
-                        find_install_manifest(&effective_root)?.ok_or_else(|| {
+                    let effective_manifest_path = find_install_manifest(&effective_root)?
+                        .ok_or_else(|| {
                             anyhow::anyhow!(
                                 "No plugin manifest found in marketplace source: {}",
                                 effective_root.display()
@@ -4928,8 +4926,8 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             // Also count MCP servers from .mcp.json sidecar (Claude Code
             // plugins typically declare MCP servers there, not inline).
             let sidecar = source.join(".mcp.json");
-            if sidecar.exists() {
-                if let Ok(raw) = std::fs::read_to_string(&sidecar) {
+            if sidecar.exists()
+                && let Ok(raw) = std::fs::read_to_string(&sidecar) {
                     #[derive(serde::Deserialize)]
                     struct McpJsonFile {
                         #[serde(default, alias = "mcpServers")]
@@ -4949,7 +4947,6 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                         }
                     }
                 }
-            }
             count
         };
 
@@ -5096,8 +5093,7 @@ mod tests {
         // Simulate the marketplace resolution logic from on_plugin_install.
         let manifest_path = find_install_manifest(root).unwrap().unwrap();
         let manifest_raw = std::fs::read_to_string(&manifest_path).unwrap();
-        let manifest: forge_domain::PluginManifest =
-            serde_json::from_str(&manifest_raw).unwrap();
+        let manifest: forge_domain::PluginManifest = serde_json::from_str(&manifest_raw).unwrap();
         let name = manifest.name.clone().unwrap();
         assert_eq!(name, "repo-root");
 
@@ -5114,8 +5110,7 @@ mod tests {
         let effective_root = std::fs::canonicalize(root.join(&mp.plugins[0].source)).unwrap();
         let effective_manifest = find_install_manifest(&effective_root).unwrap().unwrap();
         let effective_raw = std::fs::read_to_string(&effective_manifest).unwrap();
-        let effective: forge_domain::PluginManifest =
-            serde_json::from_str(&effective_raw).unwrap();
+        let effective: forge_domain::PluginManifest = serde_json::from_str(&effective_raw).unwrap();
         assert_eq!(effective.name.as_deref(), Some("nested-plugin"));
         assert_eq!(effective.version.as_deref(), Some("2.0.0"));
     }
@@ -5166,8 +5161,8 @@ mod tests {
         let manifest = forge_domain::PluginManifest::default();
         let mut count = manifest.mcp_servers.as_ref().map(|m| m.len()).unwrap_or(0);
         let sidecar = root.join(".mcp.json");
-        if sidecar.exists() {
-            if let Ok(raw) = std::fs::read_to_string(&sidecar) {
+        if sidecar.exists()
+            && let Ok(raw) = std::fs::read_to_string(&sidecar) {
                 #[derive(serde::Deserialize)]
                 struct McpJsonFile {
                     #[serde(default, alias = "mcpServers")]
@@ -5186,7 +5181,6 @@ mod tests {
                     }
                 }
             }
-        }
         assert_eq!(count, 2);
     }
 }

@@ -449,7 +449,10 @@ mod tests {
             Some("/tmp/plugins/acme")
         );
         assert_eq!(
-            stdio.env.get(CLAUDE_PLUGIN_ROOT_ENV_ALIAS).map(String::as_str),
+            stdio
+                .env
+                .get(CLAUDE_PLUGIN_ROOT_ENV_ALIAS)
+                .map(String::as_str),
             Some("/tmp/plugins/acme")
         );
         assert_eq!(
@@ -457,7 +460,10 @@ mod tests {
             Some("/workspace/test")
         );
         assert_eq!(
-            stdio.env.get(CLAUDE_PROJECT_DIR_ENV_ALIAS).map(String::as_str),
+            stdio
+                .env
+                .get(CLAUDE_PROJECT_DIR_ENV_ALIAS)
+                .map(String::as_str),
             Some("/workspace/test")
         );
     }
@@ -501,12 +507,18 @@ mod tests {
         );
         // CLAUDE_* aliases should also be injected.
         assert_eq!(
-            stdio.env.get(CLAUDE_PLUGIN_ROOT_ENV_ALIAS).map(String::as_str),
+            stdio
+                .env
+                .get(CLAUDE_PLUGIN_ROOT_ENV_ALIAS)
+                .map(String::as_str),
             Some("/tmp/plugins/acme"),
             "CLAUDE_PLUGIN_ROOT should be injected from plugin path"
         );
         assert_eq!(
-            stdio.env.get(CLAUDE_PROJECT_DIR_ENV_ALIAS).map(String::as_str),
+            stdio
+                .env
+                .get(CLAUDE_PROJECT_DIR_ENV_ALIAS)
+                .map(String::as_str),
             Some("/workspace/test")
         );
     }

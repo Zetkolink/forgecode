@@ -221,9 +221,7 @@ where
                 }
                 Ok(None) => {
                     // No manifest found — try marketplace.json indirection.
-                    let mp_result = self
-                        .try_marketplace_resolution(&path, source)
-                        .await;
+                    let mp_result = self.try_marketplace_resolution(&path, source).await;
                     match mp_result {
                         Ok(Some(mp_plugins)) => plugins.extend(mp_plugins),
                         Ok(None) => {
@@ -255,8 +253,7 @@ where
                 }
                 Err(e) => {
                     tracing::warn!("Failed to load plugin: {e:#}");
-                    let plugin_name =
-                        path.file_name().and_then(|s| s.to_str()).map(String::from);
+                    let plugin_name = path.file_name().and_then(|s| s.to_str()).map(String::from);
                     errors.push(PluginLoadError {
                         plugin_name,
                         path,
@@ -383,8 +380,7 @@ where
                 Ok(None) => {}
                 Err(e) => {
                     tracing::warn!("Failed to load plugin in container child: {e:#}");
-                    let plugin_name =
-                        child.file_name().and_then(|s| s.to_str()).map(String::from);
+                    let plugin_name = child.file_name().and_then(|s| s.to_str()).map(String::from);
                     errors.push(PluginLoadError {
                         plugin_name,
                         path: child.clone(),
@@ -453,10 +449,7 @@ where
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            "Failed to load plugin at {}: {e:#}",
-                            grandchild.display()
-                        );
+                        tracing::warn!("Failed to load plugin at {}: {e:#}", grandchild.display());
                     }
                 }
             }
@@ -902,9 +895,10 @@ mod tests {
             plugins.iter().map(|p| &p.name).collect::<Vec<_>>()
         );
 
-        let plugin = plugins.iter().find(|p| p.name == "claude-code-demo").expect(
-            "claude-code-demo plugin should be discovered",
-        );
+        let plugin = plugins
+            .iter()
+            .find(|p| p.name == "claude-code-demo")
+            .expect("claude-code-demo plugin should be discovered");
         assert_eq!(plugin.name, "claude-code-demo");
         assert_eq!(plugin.manifest.version.as_deref(), Some("0.1.0"));
         assert_eq!(
