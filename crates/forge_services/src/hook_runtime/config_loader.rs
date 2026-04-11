@@ -59,6 +59,7 @@ fn extend_from(
     source: HookConfigSource,
     plugin_root: Option<PathBuf>,
     plugin_name: Option<String>,
+    plugin_options: Vec<(String, String)>,
 ) {
     for (event, matchers) in config.0 {
         let entry = merged.entries.entry(event).or_default();
@@ -68,6 +69,7 @@ fn extend_from(
                 source: source.clone(),
                 plugin_root: plugin_root.clone(),
                 plugin_name: plugin_name.clone(),
+                plugin_options: plugin_options.clone(),
             });
         }
     }
@@ -153,7 +155,14 @@ where
             // Load managed hooks from ~/forge/managed-hooks.json
             let managed_path = env.base_path.join("managed-hooks.json");
             if let Some(config) = self.read_hooks_json(&managed_path).await? {
-                extend_from(&mut merged, config, HookConfigSource::Managed, None, None);
+                extend_from(
+                    &mut merged,
+                    config,
+                    HookConfigSource::Managed,
+                    None,
+                    None,
+                    vec![],
+                );
             }
 
             return Ok(merged);
@@ -168,6 +177,7 @@ where
                 HookConfigSource::UserGlobal,
                 None,
                 None,
+                vec![],
             );
         }
 
@@ -182,7 +192,7 @@ where
         if self.infra.exists(&project_path).await? {
             if self.is_ci() || is_workspace_trusted(&env.cwd) {
                 if let Some(config) = self.read_hooks_json(&project_path).await? {
-                    extend_from(&mut merged, config, HookConfigSource::Project, None, None);
+                    extend_from(&mut merged, config, HookConfigSource::Project, None, None, vec![]);
                 }
             } else {
                 tracing::warn!(
@@ -207,7 +217,24 @@ where
                 );
                 continue;
             }
-            if let Err(e) = self.merge_plugin(plugin, &mut merged).await {
+            let plugin_options: Vec<(String, String)> = forge_config
+                .plugins
+                .as_ref()
+                .and_then(|map| map.get(&plugin.name))
+                .and_then(|setting| setting.options.as_ref())
+                .map(|opts| {
+                    opts.iter()
+                        .map(|(k, v)| {
+                            let val = match v {
+                                serde_json::Value::String(s) => s.clone(),
+                                other => other.to_string(),
+                            };
+                            (k.clone(), val)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Err(e) = self.merge_plugin(plugin, &mut merged, plugin_options).await {
                 tracing::warn!(
                     plugin = plugin.name.as_str(),
                     error = %e,
@@ -232,11 +259,12 @@ where
         &self,
         plugin: &LoadedPlugin,
         merged: &mut MergedHooksConfig,
+        plugin_options: Vec<(String, String)>,
     ) -> anyhow::Result<()> {
         let Some(hooks_field) = plugin.manifest.hooks.as_ref() else {
             return Ok(());
         };
-        self.merge_hooks_field(plugin, hooks_field, merged).await
+        self.merge_hooks_field(plugin, hooks_field, merged, plugin_options).await
     }
 
     /// Recursively merges a [`PluginHooksManifestField`] into `merged`.
@@ -249,6 +277,7 @@ where
         plugin: &'a LoadedPlugin,
         field: &'a PluginHooksManifestField,
         merged: &'a mut MergedHooksConfig,
+        plugin_options: Vec<(String, String)>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
             match field {
@@ -261,6 +290,7 @@ where
                             HookConfigSource::Plugin,
                             Some(plugin.path.clone()),
                             Some(plugin.name.clone()),
+                            plugin_options.clone(),
                         );
                     }
                 }
@@ -276,11 +306,12 @@ where
                         HookConfigSource::Plugin,
                         Some(plugin.path.clone()),
                         Some(plugin.name.clone()),
+                        plugin_options.clone(),
                     );
                 }
                 PluginHooksManifestField::Array(items) => {
                     for item in items {
-                        self.merge_hooks_field(plugin, item, merged).await?;
+                        self.merge_hooks_field(plugin, item, merged, plugin_options.clone()).await?;
                     }
                 }
             }

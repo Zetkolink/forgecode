@@ -691,7 +691,7 @@ impl<
             .plugins
             .get_or_insert_with(BTreeMap::new)
             .entry(name.to_string())
-            .or_insert_with(|| PluginSetting { enabled: true });
+            .or_insert_with(|| PluginSetting { enabled: true, options: None });
         entry.enabled = enabled;
 
         // Wave C Part 2: mark this write as internal *before* the

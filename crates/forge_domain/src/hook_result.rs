@@ -437,6 +437,32 @@ pub enum HookOutcome {
     Cancelled,
 }
 
+/// A single permission update requested by a plugin hook.
+///
+/// Mirrors a subset of Claude Code's `PermissionUpdate` discriminated
+/// union, adapted to Forge's glob-based YAML policy system.
+///
+/// Only `addRules` is supported today; unsupported variants are logged
+/// and skipped.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PluginPermissionUpdate {
+    /// Add allow/deny rules to the policy file.
+    #[serde(rename = "addRules")]
+    AddRules {
+        /// The rules to add (glob patterns like `*.rs`, `Bash(*)`).
+        rules: Vec<String>,
+        /// The behavior: `"allow"`, `"deny"`, or `"ask"`.
+        behavior: String,
+    },
+    /// Set the permission mode. Currently a no-op in Forge since
+    /// Forge uses `restricted: bool` rather than a rich mode enum.
+    #[serde(rename = "setMode")]
+    SetMode {
+        mode: String,
+    },
+}
+
 /// A pending result from an async hook with `asyncRewake: true`.
 ///
 /// When an asyncRewake hook completes in the background, the shell executor

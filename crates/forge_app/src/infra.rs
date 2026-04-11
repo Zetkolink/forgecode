@@ -532,4 +532,30 @@ pub trait HookExecutorInfra: Send + Sync {
             "LLM calls for hooks are not available in this mode"
         ))
     }
+
+    /// Execute a multi-turn agent hook loop.
+    ///
+    /// The loop sends context to the LLM with tool definitions, executes
+    /// tool calls, and repeats until the model calls the `StructuredOutput`
+    /// tool (returning `{ok: bool, reason?: string}`) or `max_turns` is
+    /// reached.
+    ///
+    /// Returns `Ok(Some((ok, reason)))` when StructuredOutput was called,
+    /// `Ok(None)` when max turns hit without structured output.
+    ///
+    /// Default returns an error (for test mocks). Concrete implementations
+    /// override this.
+    ///
+    /// Reference: `claude-code/src/utils/hooks/execAgentHook.ts`
+    async fn execute_agent_loop(
+        &self,
+        _model_id: &ModelId,
+        _context: Context,
+        _max_turns: usize,
+        _timeout_secs: u64,
+    ) -> Result<Option<(bool, Option<String>)>> {
+        Err(anyhow::anyhow!(
+            "Multi-turn agent hook loops are not available in this mode"
+        ))
+    }
 }

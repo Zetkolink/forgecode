@@ -1,14 +1,13 @@
-//! Environment variables injected into every shell hook subprocess.
+//! Test-only reference implementation for FORGE_* environment variables.
+//!
+//! Production env var construction is done inline in the dispatcher
+//! (`forge_app::hooks::plugin`) because `forge_app` cannot depend on
+//! `forge_services`. This module exists purely as a readable reference
+//! implementation and as a test helper for verifying env var logic.
 //!
 //! Mirrors Claude Code's `prepareEnv` at
 //! `claude-code/src/utils/hooks.ts:882-909` but uses Forge's `FORGE_`
 //! prefix and a Forge-specific plugin-data layout.
-//!
-//! This module is a pure builder: it produces a `HashMap<String,
-//! String>` given the raw inputs (project directory, plugin info,
-//! session ID, etc.) and does **not** touch the filesystem. The caller
-//! The caller (the dispatcher) is responsible for creating the
-//! `FORGE_PLUGIN_DATA` directory on disk before spawning the hook.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -32,11 +31,7 @@ use std::path::Path;
 /// `plugin_options` is a slice of `(key, value)` pairs rather than a
 /// `HashMap` so the caller controls iteration order (useful for
 /// deterministic test assertions).
-// Reference implementation and test infrastructure for FORGE_* env var building.
-// Production env var construction is done inline in the dispatcher (forge_app::hooks::plugin)
-// because forge_app cannot depend on forge_services.
-#[allow(dead_code)]
-pub(crate) fn build_hook_env_vars(
+fn build_hook_env_vars(
     project_dir: &Path,
     plugin_root: Option<&Path>,
     plugin_name: Option<&str>,

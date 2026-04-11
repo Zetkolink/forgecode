@@ -119,11 +119,18 @@ pub struct PluginSetting {
     /// the field is omitted, matching Claude Code's plugin enable model.
     #[serde(default = "default_plugin_enabled")]
     pub enabled: bool,
+    /// User-configured plugin options. Each key becomes a
+    /// `FORGE_PLUGIN_OPTION_<KEY>` environment variable in hook
+    /// subprocesses. Mirrors Claude Code's
+    /// `pluginConfigs[id].options` in `settings.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[dummy(default)]
+    pub options: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 impl Default for PluginSetting {
     fn default() -> Self {
-        Self { enabled: true }
+        Self { enabled: true, options: None }
     }
 }
 

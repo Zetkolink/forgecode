@@ -5,6 +5,7 @@ use anyhow::anyhow;
 use forge_domain::{CodebaseQueryResult, ToolCallContext, ToolCatalog, ToolOutput};
 
 use crate::fmt::content::FormatContent;
+use crate::lifecycle_fires::fire_cwd_changed_hook;
 use crate::operation::{TempContentFiles, ToolOperation};
 use crate::services::{Services, ShellService};
 use crate::{
@@ -263,28 +264,32 @@ impl<
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| self.services.get_environment().cwd.display().to_string());
                 let normalized_cwd = self.normalize_path(cwd);
-                // TODO(hooks): Fire `fire_cwd_changed_hook` when the effective working
-                // directory changes. Currently Forge forbids `cd` in shell commands and
-                // treats the `cwd` parameter as a per-invocation override without
-                // persistent session state. To wire this properly:
-                //   1. Add a mutable cwd tracker to the session/environment (e.g.
-                //      Arc<RwLock<PathBuf>>) so the "current" cwd can be compared.
-                //   2. After execution, detect if the resolved `normalized_cwd` differs from
-                //      the session's tracked cwd (or inspect post-execution `pwd`).
-                //   3. If changed, update the tracker and call:
-                //      fire_cwd_changed_hook(self.services.clone(), old_cwd, new_cwd).await;
-                // See: crate::lifecycle_fires::fire_cwd_changed_hook
+                let default_cwd = self.services.get_environment().cwd.clone();
                 let output = self
                     .services
                     .execute(
                         input.command.clone(),
-                        PathBuf::from(normalized_cwd),
+                        PathBuf::from(normalized_cwd.clone()),
                         input.keep_ansi,
                         false,
                         input.env.clone(),
                         input.description.clone(),
                     )
                     .await?;
+
+                // Fire CwdChanged hook when the shell's effective cwd differs
+                // from the environment's default. Best-effort: failures are
+                // logged and discarded.
+                let new_cwd = PathBuf::from(&normalized_cwd);
+                if new_cwd != default_cwd {
+                    fire_cwd_changed_hook(
+                        self.services.clone(),
+                        default_cwd,
+                        new_cwd,
+                    )
+                    .await;
+                }
+
                 output.into()
             }
             ToolCatalog::Fetch(input) => {

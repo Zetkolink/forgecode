@@ -15,8 +15,9 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use forge_app::{AppConfigService, EnvironmentInfra, HookExecutorInfra, ProviderService, Services};
 use forge_domain::{
-    AgentHookCommand, Context, HookExecResult, HookInput, HookOutcome, HttpHookCommand, ModelId,
-    PendingHookResult, PromptHookCommand, ResultStreamExt, ShellHookCommand,
+    AgentHookCommand, Context, ContextMessage, HookExecResult, HookInput, HookOutcome,
+    HttpHookCommand, ModelId, PendingHookResult, PromptHookCommand, ResultStreamExt,
+    ShellHookCommand,
 };
 
 use crate::hook_runtime::agent::ForgeAgentHookExecutor;
@@ -240,6 +241,71 @@ where
             )
         })?;
         svc.query_model(model_id, context).await
+    }
+
+    async fn execute_agent_loop(
+        &self,
+        model_id: &ModelId,
+        context: Context,
+        max_turns: usize,
+        _timeout_secs: u64,
+    ) -> anyhow::Result<Option<(bool, Option<String>)>> {
+        let svc = self.model_service.get().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Hook executor LLM service not initialized. \
+                 Call init_services() after ForgeServices construction."
+            )
+        })?;
+
+        let mut ctx = context;
+
+        for turn in 0..max_turns {
+            let response_text = svc.query_model(model_id, ctx.clone()).await?;
+            let trimmed = response_text.trim();
+
+            // Try to parse as {ok: bool, reason?: string}
+            #[derive(serde::Deserialize)]
+            struct HookResp {
+                ok: bool,
+                reason: Option<String>,
+            }
+
+            match serde_json::from_str::<HookResp>(trimmed) {
+                Ok(resp) => return Ok(Some((resp.ok, resp.reason))),
+                Err(_) if turn < max_turns - 1 => {
+                    // Add assistant response and retry prompt
+                    ctx = ctx
+                        .add_message(ContextMessage::assistant(
+                            trimmed.to_string(),
+                            None,
+                            None,
+                            None,
+                        ))
+                        .add_message(ContextMessage::user(
+                            "Your response was not valid JSON. Please respond with a JSON object: \
+                             {\"ok\": true} or {\"ok\": false, \"reason\": \"Explanation\"}. \
+                             You MUST use the exact format."
+                                .to_string(),
+                            Some(model_id.clone()),
+                        ));
+                    tracing::debug!(
+                        turn,
+                        response = %trimmed,
+                        "Agent hook response was not valid JSON; retrying"
+                    );
+                }
+                Err(_) => {
+                    // Last turn, still invalid
+                    tracing::warn!(
+                        response = %trimmed,
+                        "Agent hook exhausted max turns without valid JSON response"
+                    );
+                    return Ok(None);
+                }
+            }
+        }
+
+        Ok(None)
     }
 }
 

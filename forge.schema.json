@@ -4,6 +4,21 @@
   "description": "Top-level Forge configuration merged from all sources (defaults, file,\nenvironment).",
   "type": "object",
   "properties": {
+    "allow_managed_hooks_only": {
+      "description": "When true, only managed hooks run. User, project, plugin, and session\nhooks are ignored.",
+      "type": "boolean",
+      "default": false
+    },
+    "allowed_http_hook_urls": {
+      "description": "Allowlist of URL patterns that HTTP hooks may target.\nSupports `*` as wildcard (e.g., `https://hooks.example.com/*`).\n`None` = all URLs allowed. Empty vec = no HTTP hooks allowed.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
     "auto_dump": {
       "description": "Format used when automatically creating a session dump after task\ncompletion; disabled when absent.",
       "anyOf": [
@@ -65,6 +80,11 @@
         "string",
         "null"
       ]
+    },
+    "disable_all_hooks": {
+      "description": "When true, ALL hooks are disabled (including managed).",
+      "type": "boolean",
+      "default": false
     },
     "http": {
       "description": "HTTP client settings including proxy, TLS, and timeout configuration.",
@@ -620,6 +640,14 @@
           "description": "Whether this plugin is currently active. Defaults to `true` when\nthe field is omitted, matching Claude Code's plugin enable model.",
           "type": "boolean",
           "default": true
+        },
+        "options": {
+          "description": "User-configured plugin options. Each key becomes a\n`FORGE_PLUGIN_OPTION_<KEY>` environment variable in hook\nsubprocesses. Mirrors Claude Code's\n`pluginConfigs[id].options` in `settings.json`.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
         }
       }
     },

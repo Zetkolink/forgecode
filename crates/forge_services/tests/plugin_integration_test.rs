@@ -512,6 +512,7 @@ mod integration {
                         source: HookConfigSource::Plugin,
                         plugin_root: Some(plugin.path.clone()),
                         plugin_name: Some(plugin.name.clone()),
+                        plugin_options: vec![],
                     });
                 }
             }

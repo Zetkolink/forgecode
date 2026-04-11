@@ -103,27 +103,64 @@ impl<'a, S: Services + 'static> Sandbox<'a, S> {
     /// Remove a previously-created worktree and fire the `WorktreeRemove`
     /// plugin hook.
     ///
-    /// # TODO(hooks)
+    /// # Plugin hook semantics
     ///
-    /// This method is a stub — worktree cleanup is not yet implemented.
-    /// To complete this:
-    ///   1. Accept the `worktree_path: PathBuf` of the worktree to remove.
-    ///   2. Fire the hook BEFORE removal so plugins can veto: let hook_result =
-    ///      forge_app::fire_worktree_remove_hook( self.services.clone(),
-    ///      worktree_path.clone() ).await;
-    ///   3. If `hook_result.blocking_error` is set, abort the removal.
-    ///   4. Otherwise, run `git worktree remove --force <path>` (with an `rm
-    ///      -rf` fallback for non-git worktrees).
-    ///   5. Call this from the session exit path in `main.rs` or from a future
-    ///      `ExitWorktreeTool` / `--sandbox-remove` CLI flag.
-    ///
-    /// See: `forge_app::fire_worktree_remove_hook`
-    #[allow(dead_code)]
+    /// - The `WorktreeRemove` plugin hook is fired **before** any filesystem
+    ///   changes so plugins can veto the removal.
+    /// - If a plugin hook sets `blocking_error`, the removal is aborted with
+    ///   that error message.
+    /// - Otherwise, `git worktree remove --force <path>` is executed. If that
+    ///   fails (e.g. the path is not a git worktree), the directory is removed
+    ///   directly via `tokio::fs::remove_dir_all` as a fallback.
     pub async fn remove(services: Arc<S>, worktree_path: PathBuf) -> Result<()> {
-        // TODO(hooks): Implement worktree removal with hook integration.
-        // Fire `forge_app::fire_worktree_remove_hook(services, worktree_path)`
-        // before executing `git worktree remove`.
-        let _ = (services, worktree_path);
-        bail!("Worktree removal is not yet implemented")
+        // Fire the WorktreeRemove plugin hook BEFORE touching the filesystem
+        // so plugins have a chance to veto the removal.
+        let hook_result =
+            forge_app::fire_worktree_remove_hook(services.clone(), worktree_path.clone()).await;
+
+        // Check blocking_error first — plugin can veto worktree removal.
+        if let Some(err) = hook_result.blocking_error {
+            bail!("Worktree removal blocked by plugin hook: {}", err.message);
+        }
+
+        // Attempt `git worktree remove --force <path>`.
+        let git_result = tokio::process::Command::new("git")
+            .args(["worktree", "remove", "--force"])
+            .arg(&worktree_path)
+            .output()
+            .await
+            .context("Failed to spawn git worktree remove")?;
+
+        if git_result.status.success() {
+            tracing::info!(
+                path = %worktree_path.display(),
+                "worktree removed via git worktree remove"
+            );
+            return Ok(());
+        }
+
+        // Fallback: the path may not be a git worktree (e.g. plugin-provided
+        // directory). Remove the directory tree directly.
+        tracing::warn!(
+            path = %worktree_path.display(),
+            stderr = %String::from_utf8_lossy(&git_result.stderr),
+            "git worktree remove failed, falling back to remove_dir_all"
+        );
+
+        tokio::fs::remove_dir_all(&worktree_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to remove worktree directory: {}",
+                    worktree_path.display()
+                )
+            })?;
+
+        tracing::info!(
+            path = %worktree_path.display(),
+            "worktree directory removed via remove_dir_all fallback"
+        );
+
+        Ok(())
     }
 }

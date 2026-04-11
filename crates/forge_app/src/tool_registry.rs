@@ -6,9 +6,9 @@ use console::style;
 use forge_domain::{
     Agent, AgentId, AgentInput, ChatResponse, ChatResponseContent, Conversation, ConversationId,
     Environment, EventData, EventHandle, InputModality, Model, PermissionBehavior,
-    PermissionDeniedPayload, PermissionRequestPayload, SystemContext, TemplateConfig,
-    ToolCallContext, ToolCallFull, ToolCatalog, ToolDefinition, ToolKind, ToolName, ToolOutput,
-    ToolResult,
+    PermissionDeniedPayload, PermissionRequestPayload, PluginPermissionUpdate, SystemContext,
+    TemplateConfig, ToolCallContext, ToolCallFull, ToolCatalog, ToolDefinition, ToolKind, ToolName,
+    ToolOutput, ToolResult,
 };
 use forge_template::Element;
 use futures::future::join_all;
@@ -145,14 +145,31 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
                 anyhow::bail!("session interrupted by plugin hook");
             }
 
-            // updated_permissions — log only for now.
-            // TODO: persist plugin-provided permission scopes — see
-            // plans/2026-04-09-claude-code-plugins-v4/08-phase-7-t3-intermediate.md:180.
-            if aggregated.updated_permissions.is_some() {
-                tracing::info!(
-                    tool_name = %tool_name,
-                    "plugin hook provided updated_permissions; persistence TODO"
-                );
+            // Persist plugin-provided permission scopes.
+            if let Some(ref raw_updates) = aggregated.updated_permissions {
+                match serde_json::from_value::<Vec<PluginPermissionUpdate>>(raw_updates.clone()) {
+                    Ok(updates) if !updates.is_empty() => {
+                        if let Err(e) = self
+                            .services
+                            .persist_plugin_permission_updates(&updates)
+                            .await
+                        {
+                            tracing::warn!(
+                                tool_name = %tool_name,
+                                error = %e,
+                                "failed to persist plugin-provided permission updates"
+                            );
+                        }
+                    }
+                    Ok(_) => {} // empty array, no-op
+                    Err(e) => {
+                        tracing::warn!(
+                            tool_name = %tool_name,
+                            error = %e,
+                            "plugin returned malformed updated_permissions; skipping persistence"
+                        );
+                    }
+                }
             }
 
             // blocking_error → auto-deny + observability fire of PermissionDenied.

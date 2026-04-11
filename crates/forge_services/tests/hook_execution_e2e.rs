@@ -414,6 +414,7 @@ mod e2e {
                     source: HookConfigSource::UserGlobal,
                     plugin_root: None,
                     plugin_name: None,
+                    plugin_options: vec![],
                 });
             }
         }
@@ -428,6 +429,7 @@ mod e2e {
                     source: HookConfigSource::Plugin,
                     plugin_root: Some(plugin_root.clone()),
                     plugin_name: Some("dangerous-guard".to_string()),
+                    plugin_options: vec![],
                 });
             }
         }

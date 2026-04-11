@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use forge_domain::{
     AgentHookCommand, AggregatedHookResult, ConfigChangePayload, Conversation, CwdChangedPayload,
     ElicitationPayload, ElicitationResultPayload, EventData, EventHandle, FileChangedPayload,
-    HookCommand, HookEventName, HookExecResult, HookInput, HookInputBase, HookInputPayload,
+    HookCommand, HookEventName, HookInput, HookInputBase, HookInputPayload,
     HookOutcome, HttpHookCommand, InstructionsLoadedPayload, NotificationPayload,
     PermissionDeniedPayload, PermissionRequestPayload, PostCompactPayload,
     PostToolUseFailurePayload, PostToolUsePayload, PreCompactPayload, PreToolUsePayload,
@@ -93,6 +93,7 @@ impl<S: Services> PluginHookHandler<S> {
     }
 
     /// Create a new dispatcher with a shared [`SessionHookStore`].
+    #[allow(dead_code)] // Public API for external consumers (e.g. forge_services wiring)
     pub fn with_session_hooks(services: Arc<S>, session_hooks: SessionHookStore) -> Self {
         Self {
             services,
@@ -120,11 +121,13 @@ impl<S: Services> PluginHookHandler<S> {
     /// Callers (e.g. the service-layer wiring) can clone this handle and
     /// pass it to the shell service so that variables written by hooks
     /// via `FORGE_ENV_FILE` are visible in subsequent shell commands.
+    #[allow(dead_code)] // Public API for external consumers (e.g. forge_services wiring)
     pub fn session_env_cache(&self) -> &SessionEnvCache {
         &self.session_env_cache
     }
 
     /// Returns a reference to the session hook store.
+    #[allow(dead_code)] // Public API for external consumers (e.g. forge_services wiring)
     pub fn session_hook_store(&self) -> &SessionHookStore {
         &self.session_hooks
     }
@@ -267,6 +270,15 @@ impl<S: Services> PluginHookHandler<S> {
                                     data_dir.display().to_string(),
                                 );
                             }
+                        }
+
+                        // Inject FORGE_PLUGIN_OPTION_* from user-configured plugin options.
+                        for (key, val) in &source.plugin_options {
+                            let env_key = format!(
+                                "FORGE_PLUGIN_OPTION_{}",
+                                key.to_uppercase().replace('-', "_")
+                            );
+                            env_vars.insert(env_key, val.clone());
                         }
 
                         // Set FORGE_ENV_FILE for events that support env-file
@@ -463,6 +475,7 @@ async fn collect_pending_hooks(
 /// `execute_fn` is called for each hook and returns a
 /// [`HookExecResult`]. In tests this returns canned results; production
 /// code uses its own parallel execution path via `futures::future::join_all`.
+#[cfg(test)]
 async fn execute_and_merge<F, Fut>(
     pending: Vec<(HookCommand, HookMatcherWithSource, Option<HookId>)>,
     once_fired: &Mutex<HashSet<HookId>>,
@@ -470,7 +483,7 @@ async fn execute_and_merge<F, Fut>(
 ) -> AggregatedHookResult
 where
     F: FnMut(&HookCommand, &HookMatcherWithSource) -> Fut,
-    Fut: std::future::Future<Output = HookExecResult>,
+    Fut: std::future::Future<Output = forge_domain::HookExecResult>,
 {
     let mut fired_lock = once_fired.lock().await;
     let mut aggregated = AggregatedHookResult::default();
@@ -501,40 +514,34 @@ where
 
 /// Build a [`HookInput`] from any [`EventData`] payload whose Rust type
 /// converts into [`HookInputPayload`]. Centralises the base-field copy
-/// (session_id, transcript_path, ...) so the ten individual trait impls
+/// (session_id, transcript_path, ...) so the individual trait impls
 /// remain one-liners.
 ///
-/// **Divergence from Claude Code:** In Claude Code, `agent_id` is only
-/// populated for sub-agent contexts (it is absent / `null` on the main
-/// REPL thread), and `agent_type` can differ from `agent_id` (e.g.
-/// `agent_type` might be `"code-reviewer"` while `agent_id` is a UUID).
-/// Forge's current `Agent` / `AgentId` types do not distinguish the
-/// main thread from sub-agents — `AgentId` is a plain string with no
-/// sentinel or `is_subagent` flag — so we unconditionally set both
-/// fields to the agent's id for now.
-///
-/// TODO(agent-id-divergence): Once Forge threads a dedicated
-/// sub-agent UUID through `EventData` (see
-/// `TODO(subagent-threading)` in `orch.rs`), update this function to
-/// set `agent_id: None` for the main agent and use the real
-/// sub-agent UUID + type separately.
+/// **`agent_id` / `agent_type` semantics (matching Claude Code):**
+/// - `agent_type` is always derived from `event.agent.id` — a semantic
+///   name like `"forge"`, `"code-reviewer"`, etc.
+/// - `agent_id` is `None` for the main REPL thread (most events). For
+///   sub-agent events (`SubagentStart`, `SubagentStop`), the caller
+///   passes `Some(id)` via the `subagent_id` parameter, where `id`
+///   comes from the payload's `agent_id` field.
 fn build_hook_input<P>(
     event: &EventData<P>,
     hook_event_name: &'static str,
     payload: HookInputPayload,
+    subagent_id: Option<String>,
 ) -> HookInput
 where
     P: Send + Sync,
 {
-    let agent_tag = event.agent.id.as_str().to_string();
+    let agent_type = event.agent.id.as_str().to_string();
     HookInput {
         base: HookInputBase {
             session_id: event.session_id.clone(),
             transcript_path: event.transcript_path.clone(),
             cwd: event.cwd.clone(),
             permission_mode: event.permission_mode.clone(),
-            agent_id: Some(agent_tag.clone()),
-            agent_type: Some(agent_tag),
+            agent_id: subagent_id,
+            agent_type: Some(agent_type),
             hook_event_name: hook_event_name.to_string(),
         },
         payload,
@@ -556,6 +563,7 @@ impl<S: Services> EventHandle<EventData<PreToolUsePayload>> for PluginHookHandle
                 tool_input: event.payload.tool_input.clone(),
                 tool_use_id: event.payload.tool_use_id.clone(),
             },
+            None,
         );
         let aggregated = self
             .dispatch(
@@ -586,6 +594,7 @@ impl<S: Services> EventHandle<EventData<PostToolUsePayload>> for PluginHookHandl
                 tool_response: event.payload.tool_response.clone(),
                 tool_use_id: event.payload.tool_use_id.clone(),
             },
+            None,
         );
         let aggregated = self
             .dispatch(
@@ -617,6 +626,7 @@ impl<S: Services> EventHandle<EventData<PostToolUseFailurePayload>> for PluginHo
                 error: event.payload.error.clone(),
                 is_interrupt: event.payload.is_interrupt,
             },
+            None,
         );
         let aggregated = self
             .dispatch(
@@ -642,6 +652,7 @@ impl<S: Services> EventHandle<EventData<UserPromptSubmitPayload>> for PluginHook
             event,
             "UserPromptSubmit",
             HookInputPayload::UserPromptSubmit { prompt: event.payload.prompt.clone() },
+            None,
         );
         let aggregated = self
             .dispatch(HookEventName::UserPromptSubmit, None, None, input)
@@ -665,6 +676,7 @@ impl<S: Services> EventHandle<EventData<SessionStartPayload>> for PluginHookHand
                 source: event.payload.source.as_wire_str().to_string(),
                 model: event.payload.model.clone(),
             },
+            None,
         );
         let aggregated = self
             .dispatch(
@@ -690,6 +702,7 @@ impl<S: Services> EventHandle<EventData<SessionEndPayload>> for PluginHookHandle
             event,
             "SessionEnd",
             HookInputPayload::SessionEnd { reason: event.payload.reason.as_wire_str().to_string() },
+            None,
         );
         let aggregated = self
             .dispatch(
@@ -718,6 +731,7 @@ impl<S: Services> EventHandle<EventData<StopPayload>> for PluginHookHandler<S> {
                 stop_hook_active: event.payload.stop_hook_active,
                 last_assistant_message: event.payload.last_assistant_message.clone(),
             },
+            None,
         );
         let aggregated = self
             .dispatch(HookEventName::Stop, None, None, input)
@@ -742,6 +756,7 @@ impl<S: Services> EventHandle<EventData<StopFailurePayload>> for PluginHookHandl
                 error_details: event.payload.error_details.clone(),
                 last_assistant_message: event.payload.last_assistant_message.clone(),
             },
+            None,
         );
         let aggregated = self
             .dispatch(
@@ -770,6 +785,7 @@ impl<S: Services> EventHandle<EventData<PreCompactPayload>> for PluginHookHandle
                 trigger: event.payload.trigger.as_wire_str().to_string(),
                 custom_instructions: event.payload.custom_instructions.clone(),
             },
+            None,
         );
         let aggregated = self
             .dispatch(
@@ -798,6 +814,7 @@ impl<S: Services> EventHandle<EventData<PostCompactPayload>> for PluginHookHandl
                 trigger: event.payload.trigger.as_wire_str().to_string(),
                 compact_summary: event.payload.compact_summary.clone(),
             },
+            None,
         );
         let aggregated = self
             .dispatch(
@@ -829,6 +846,7 @@ impl<S: Services> EventHandle<EventData<NotificationPayload>> for PluginHookHand
                 title: event.payload.title.clone(),
                 notification_type: event.payload.notification_type.clone(),
             },
+            None,
         );
         // Notification matchers filter on the `notification_type` field
         // (e.g. `"idle_prompt"`, `"auth_success"`) via the standard
@@ -859,6 +877,7 @@ impl<S: Services> EventHandle<EventData<SetupPayload>> for PluginHookHandler<S> 
             event,
             "Setup",
             HookInputPayload::Setup { trigger: trigger_wire.to_string() },
+            None,
         );
         // Setup matchers filter on the trigger string (`"init"` /
         // `"maintenance"`).
@@ -885,6 +904,7 @@ impl<S: Services> EventHandle<EventData<ConfigChangePayload>> for PluginHookHand
                 source: source_wire.to_string(),
                 file_path: event.payload.file_path.clone(),
             },
+            None,
         );
         // ConfigChange matchers filter on the source wire string
         // (`"user_settings"`, `"plugins"`, ...).
@@ -912,6 +932,7 @@ impl<S: Services> EventHandle<EventData<SubagentStartPayload>> for PluginHookHan
                 agent_id: event.payload.agent_id.clone(),
                 agent_type: event.payload.agent_type.clone(),
             },
+            Some(event.payload.agent_id.clone()),
         );
         // SubagentStart matchers filter on the `agent_type` field
         // (e.g. `"code-reviewer"`, `"muse"`).
@@ -945,6 +966,7 @@ impl<S: Services> EventHandle<EventData<SubagentStopPayload>> for PluginHookHand
                 stop_hook_active: event.payload.stop_hook_active,
                 last_assistant_message: event.payload.last_assistant_message.clone(),
             },
+            Some(event.payload.agent_id.clone()),
         );
         // SubagentStop matchers filter on the `agent_type` field.
         let aggregated = self
@@ -975,6 +997,7 @@ impl<S: Services> EventHandle<EventData<PermissionRequestPayload>> for PluginHoo
                 tool_input: event.payload.tool_input.clone(),
                 permission_suggestions: event.payload.permission_suggestions.clone(),
             },
+            None,
         );
         // PermissionRequest matchers filter on the tool name, mirroring
         // PreToolUse semantics.
@@ -1007,6 +1030,7 @@ impl<S: Services> EventHandle<EventData<PermissionDeniedPayload>> for PluginHook
                 tool_use_id: event.payload.tool_use_id.clone(),
                 reason: event.payload.reason.clone(),
             },
+            None,
         );
         // PermissionDenied matchers filter on the tool name.
         let mut aggregated = self
@@ -1044,6 +1068,7 @@ impl<S: Services> EventHandle<EventData<CwdChangedPayload>> for PluginHookHandle
                 old_cwd: event.payload.old_cwd.clone(),
                 new_cwd: event.payload.new_cwd.clone(),
             },
+            None,
         );
         // CwdChanged broadcasts — no matcher; dispatch with `None`.
         let aggregated = self
@@ -1074,6 +1099,7 @@ impl<S: Services> EventHandle<EventData<FileChangedPayload>> for PluginHookHandl
                 file_path: event.payload.file_path.clone(),
                 event: event.payload.event.as_wire_str().to_string(),
             },
+            None,
         );
         // FileChanged matchers filter on the file basename.
         let aggregated = self
@@ -1096,6 +1122,7 @@ impl<S: Services> EventHandle<EventData<WorktreeCreatePayload>> for PluginHookHa
             event,
             "WorktreeCreate",
             HookInputPayload::WorktreeCreate { name: name.clone() },
+            None,
         );
         // Claude Code does not set a matchQuery for WorktreeCreate — all
         // registered matchers fire unconditionally.
@@ -1118,6 +1145,7 @@ impl<S: Services> EventHandle<EventData<WorktreeRemovePayload>> for PluginHookHa
             event,
             "WorktreeRemove",
             HookInputPayload::WorktreeRemove { worktree_path: event.payload.worktree_path.clone() },
+            None,
         );
         // Claude Code does not set a matchQuery for WorktreeRemove — all
         // registered matchers fire unconditionally.
@@ -1150,6 +1178,7 @@ impl<S: Services> EventHandle<EventData<InstructionsLoadedPayload>> for PluginHo
                 trigger_file_path: event.payload.trigger_file_path.clone(),
                 parent_file_path: event.payload.parent_file_path.clone(),
             },
+            None,
         );
         // Matcher is the load_reason wire string.
         let aggregated = self
@@ -1185,6 +1214,7 @@ impl<S: Services> EventHandle<EventData<ElicitationPayload>> for PluginHookHandl
                 url: event.payload.url.clone(),
                 elicitation_id: event.payload.elicitation_id.clone(),
             },
+            None,
         );
         // Elicitation matchers filter on the MCP server name.
         let aggregated = self
@@ -1217,6 +1247,7 @@ impl<S: Services> EventHandle<EventData<ElicitationResultPayload>> for PluginHoo
                 mode: event.payload.mode.clone(),
                 elicitation_id: event.payload.elicitation_id.clone(),
             },
+            None,
         );
         // ElicitationResult matchers filter on the MCP server name.
         let aggregated = self
@@ -1416,6 +1447,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -1458,6 +1490,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -1498,6 +1531,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -1551,6 +1585,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -1637,6 +1672,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -1687,6 +1723,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -1738,6 +1775,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -1791,6 +1829,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -1841,6 +1880,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -1883,6 +1923,7 @@ mod tests {
                     source: crate::hook_runtime::HookConfigSource::UserGlobal,
                     plugin_root: None,
                     plugin_name: None,
+                    plugin_options: vec![],
                 },
                 HookMatcherWithSource {
                     matcher: HookMatcher {
@@ -1901,6 +1942,7 @@ mod tests {
                     source: crate::hook_runtime::HookConfigSource::UserGlobal,
                     plugin_root: None,
                     plugin_name: None,
+                    plugin_options: vec![],
                 },
             ],
         );
@@ -1947,6 +1989,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -1999,6 +2042,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -2048,6 +2092,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -2086,6 +2131,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -2125,6 +2171,7 @@ mod tests {
                 source: crate::hook_runtime::HookConfigSource::UserGlobal,
                 plugin_root: None,
                 plugin_name: None,
+                plugin_options: vec![],
             }],
         );
 
@@ -2190,6 +2237,7 @@ mod tests {
                     source: crate::hook_runtime::HookConfigSource::UserGlobal,
                     plugin_root: None,
                     plugin_name: None,
+                    plugin_options: vec![],
                 }],
             );
 
@@ -2243,6 +2291,7 @@ mod tests {
                         source: crate::hook_runtime::HookConfigSource::UserGlobal,
                         plugin_root: None,
                         plugin_name: None,
+                        plugin_options: vec![],
                     },
                     HookMatcherWithSource {
                         matcher: HookMatcher {
@@ -2261,6 +2310,7 @@ mod tests {
                         source: crate::hook_runtime::HookConfigSource::UserGlobal,
                         plugin_root: None,
                         plugin_name: None,
+                        plugin_options: vec![],
                     },
                 ],
             );
@@ -2365,6 +2415,7 @@ mod tests {
                     source: crate::hook_runtime::HookConfigSource::UserGlobal,
                     plugin_root: None,
                     plugin_name: None,
+                    plugin_options: vec![],
                 }],
             );
 
@@ -2451,6 +2502,7 @@ mod tests {
                     source: crate::hook_runtime::HookConfigSource::UserGlobal,
                     plugin_root: None,
                     plugin_name: None,
+                    plugin_options: vec![],
                 }],
             );
 

@@ -524,6 +524,16 @@ pub trait PolicyService: Send + Sync {
         &self,
         operation: &forge_domain::PermissionOperation,
     ) -> anyhow::Result<PolicyDecision>;
+
+    /// Persist permission updates from a plugin hook.
+    /// Default implementation is a no-op for test mocks.
+    async fn persist_plugin_permission_updates(
+        &self,
+        updates: &[forge_domain::PluginPermissionUpdate],
+    ) -> anyhow::Result<()> {
+        let _ = updates;
+        Ok(())
+    }
 }
 
 /// A user-facing notification that Forge wants to surface.
@@ -1160,6 +1170,15 @@ impl<I: Services> PolicyService for I {
     ) -> anyhow::Result<PolicyDecision> {
         self.policy_service()
             .check_operation_permission(operation)
+            .await
+    }
+
+    async fn persist_plugin_permission_updates(
+        &self,
+        updates: &[forge_domain::PluginPermissionUpdate],
+    ) -> anyhow::Result<()> {
+        self.policy_service()
+            .persist_plugin_permission_updates(updates)
             .await
     }
 }

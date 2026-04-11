@@ -50,6 +50,7 @@ impl SessionHookStore {
     }
 
     /// Register a hook for a specific session and event.
+    #[allow(dead_code)] // Public API; currently exercised only by tests
     pub async fn add_hook(
         &self,
         session_id: &str,
@@ -88,17 +89,20 @@ impl SessionHookStore {
                 source: HookConfigSource::Session,
                 plugin_root: e.plugin_root.clone(),
                 plugin_name: e.plugin_name.clone(),
+                plugin_options: vec![],
             })
             .collect()
     }
 
     /// Remove all hooks for a session (cleanup on session end).
+    #[allow(dead_code)] // Public API; currently exercised only by tests
     pub async fn clear_session(&self, session_id: &str) {
         let mut guard = self.inner.write().await;
         guard.remove(session_id);
     }
 
     /// Check if any session hooks exist for a given session.
+    #[allow(dead_code)] // Public API; currently exercised only by tests
     pub async fn has_hooks(&self, session_id: &str) -> bool {
         let guard = self.inner.read().await;
         guard.get(session_id).is_some_and(|b| !b.hooks.is_empty())

@@ -49,6 +49,9 @@ pub struct HookMatcherWithSource {
     /// dispatcher's `once_fired` map to give each plugin-scoped hook
     /// a unique identity.
     pub plugin_name: Option<String>,
+    /// User-configured plugin options from ForgeConfig.plugins[name].options.
+    /// Passed to shell hooks as FORGE_PLUGIN_OPTION_<KEY> env vars.
+    pub plugin_options: Vec<(String, String)>,
 }
 
 /// Result of merging `hooks.json` from every configured source.
