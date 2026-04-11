@@ -10,9 +10,9 @@
 //! [`AggregatedHookResult::merge`].
 //!
 //! Integration with the orchestrator (`EventHandle<T>` impls, per-event
-//! side effects, tool input overrides, etc.) lands in Phase 4. Phase 3
-//! only publishes the [`PluginHookHandler::dispatch`] method so Phase 4
-//! can bolt the handler onto each lifecycle event's existing call site.
+//! side effects, tool input overrides, etc.) is wired through the
+//! [`PluginHookHandler::dispatch`] method, which the orchestrator
+//! bolts onto each lifecycle event's existing call site.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -22,8 +22,9 @@ use async_trait::async_trait;
 use forge_domain::{
     AgentHookCommand, AggregatedHookResult, ConfigChangePayload, Conversation, CwdChangedPayload,
     ElicitationPayload, ElicitationResultPayload, EventData, EventHandle, FileChangedPayload,
-    HookCommand, HookEventName, HookInput, HookInputBase, HookInputPayload, HookOutcome,
-    HttpHookCommand, InstructionsLoadedPayload, NotificationPayload, PermissionDeniedPayload,
+    HookCommand, HookEventName, HookExecResult, HookInput, HookInputBase, HookInputPayload,
+    HookOutcome, HttpHookCommand,
+    InstructionsLoadedPayload, NotificationPayload, PermissionDeniedPayload,
     PermissionRequestPayload, PostCompactPayload, PostToolUseFailurePayload, PostToolUsePayload,
     PreCompactPayload, PreToolUsePayload, PromptHookCommand, SessionEndPayload,
     SessionStartPayload, SetupPayload, ShellHookCommand, StopFailurePayload, StopPayload,
@@ -32,8 +33,10 @@ use forge_domain::{
 };
 use tokio::sync::Mutex;
 
+use crate::SessionEnvCache;
 use crate::hook_matcher::{matches_condition, matches_pattern};
 use crate::hook_runtime::{HookConfigLoaderService, HookMatcherWithSource};
+use crate::hooks::session_hooks::SessionHookStore;
 use crate::infra::HookExecutorInfra;
 use crate::services::Services;
 
@@ -63,6 +66,14 @@ pub struct PluginHookHandler<S> {
     /// Scoped to the handler instance, which in practice is created
     /// per-session/per-conversation.
     once_fired: Arc<Mutex<HashSet<HookId>>>,
+    /// Session-scoped cache of environment variables harvested from hook
+    /// env files written via `FORGE_ENV_FILE`. Shared with the shell
+    /// service so subsequent `BashTool` / `Shell` invocations inherit
+    /// these variables.
+    session_env_cache: SessionEnvCache,
+    /// Session-scoped hook store for dynamic runtime hook registration.
+    /// Hooks added here are concatenated with static hooks during dispatch.
+    session_hooks: SessionHookStore,
 }
 
 impl<S> Clone for PluginHookHandler<S> {
@@ -70,6 +81,8 @@ impl<S> Clone for PluginHookHandler<S> {
         Self {
             services: Arc::clone(&self.services),
             once_fired: Arc::clone(&self.once_fired),
+            session_env_cache: self.session_env_cache.clone(),
+            session_hooks: self.session_hooks.clone(),
         }
     }
 }
@@ -77,7 +90,47 @@ impl<S> Clone for PluginHookHandler<S> {
 impl<S: Services> PluginHookHandler<S> {
     /// Create a new dispatcher backed by the given [`Services`] handle.
     pub fn new(services: Arc<S>) -> Self {
-        Self { services, once_fired: Arc::new(Mutex::new(HashSet::new())) }
+        Self::with_env_cache(services, SessionEnvCache::new())
+    }
+
+    /// Create a new dispatcher with a shared [`SessionHookStore`].
+    pub fn with_session_hooks(
+        services: Arc<S>,
+        session_hooks: SessionHookStore,
+    ) -> Self {
+        Self {
+            services,
+            once_fired: Arc::new(Mutex::new(HashSet::new())),
+            session_env_cache: SessionEnvCache::new(),
+            session_hooks,
+        }
+    }
+
+    /// Create a new dispatcher that shares the given [`SessionEnvCache`]
+    /// with external consumers (e.g. the shell service). This lets
+    /// environment variables written by hooks via `FORGE_ENV_FILE`
+    /// propagate to subsequent shell commands.
+    pub fn with_env_cache(services: Arc<S>, session_env_cache: SessionEnvCache) -> Self {
+        Self {
+            services,
+            once_fired: Arc::new(Mutex::new(HashSet::new())),
+            session_env_cache,
+            session_hooks: SessionHookStore::new(),
+        }
+    }
+
+    /// Returns a reference to the session environment cache.
+    ///
+    /// Callers (e.g. the service-layer wiring) can clone this handle and
+    /// pass it to the shell service so that variables written by hooks
+    /// via `FORGE_ENV_FILE` are visible in subsequent shell commands.
+    pub fn session_env_cache(&self) -> &SessionEnvCache {
+        &self.session_env_cache
+    }
+
+    /// Returns a reference to the session hook store.
+    pub fn session_hook_store(&self) -> &SessionHookStore {
+        &self.session_hooks
     }
 
     /// Dispatch a single lifecycle event, running every matching hook in
@@ -109,60 +162,40 @@ impl<S: Services> PluginHookHandler<S> {
     ) -> anyhow::Result<AggregatedHookResult> {
         let merged = self.services.hook_config_loader().load().await?;
 
-        let Some(matchers) = merged.entries.get(&event) else {
+        let static_matchers = merged
+            .entries
+            .get(&event)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+
+        // Load session hooks for this session and event, then combine
+        // with static matchers so both sources flow through the same
+        // match/filter/once pipeline.
+        let session_id = &input.base.session_id;
+        let session_matchers = self.session_hooks.get_hooks(session_id, &event).await;
+
+        if static_matchers.is_empty() && session_matchers.is_empty() {
             return Ok(AggregatedHookResult::default());
-        };
-
-        let empty_input = serde_json::Value::Null;
-        let effective_tool_name = tool_name.unwrap_or("");
-        let effective_tool_input = tool_input.unwrap_or(&empty_input);
-
-        // First pass: collect every hook that passes matcher + condition +
-        // once filters. Cloning is cheap — each `HookCommand` is a small
-        // enum — and it lets us release the once_fired lock before
-        // spawning any futures.
-        //
-        // `once` hooks carry `Some(HookId)` so the second pass can mark
-        // them as fired after successful execution. We do NOT insert
-        // into `once_fired` here — only after success — so that a
-        // failed once-hook can retry on the next event.
-        let mut pending: Vec<(HookCommand, HookMatcherWithSource, Option<HookId>)> = Vec::new();
-        // Local set to prevent the same once-hook from being queued
-        // multiple times within a single dispatch batch.
-        let mut once_claimed: HashSet<HookId> = HashSet::new();
-        {
-            let once_fired = self.once_fired.lock().await;
-            for (matcher_index, matcher_with_source) in matchers.iter().enumerate() {
-                let matcher_pattern = matcher_with_source.matcher.matcher.as_deref().unwrap_or("");
-                if !matches_pattern(matcher_pattern, effective_tool_name) {
-                    continue;
-                }
-
-                for (hook_index, hook_cmd) in matcher_with_source.matcher.hooks.iter().enumerate() {
-                    if let Some(cond) = condition_for(hook_cmd)
-                        && !matches_condition(cond, effective_tool_name, effective_tool_input)
-                    {
-                        continue;
-                    }
-
-                    if is_once(hook_cmd) {
-                        let id = HookId {
-                            event: event.clone(),
-                            matcher_index,
-                            hook_index,
-                            source: source_tag(matcher_with_source),
-                        };
-                        if once_fired.contains(&id) || once_claimed.contains(&id) {
-                            continue;
-                        }
-                        once_claimed.insert(id.clone());
-                        pending.push((hook_cmd.clone(), matcher_with_source.clone(), Some(id)));
-                    } else {
-                        pending.push((hook_cmd.clone(), matcher_with_source.clone(), None));
-                    }
-                }
-            }
         }
+
+        // Concatenate static + session matchers into a single owned vec.
+        let all_matchers: Vec<HookMatcherWithSource> = static_matchers
+            .iter()
+            .cloned()
+            .chain(session_matchers.into_iter())
+            .collect();
+
+        // Collect every hook that passes matcher + condition + once
+        // filters. Uses the shared `collect_pending_hooks` function so
+        // unit tests exercise the exact same match/filter/once logic.
+        let pending = collect_pending_hooks(
+            &all_matchers,
+            &event,
+            tool_name,
+            tool_input,
+            &self.once_fired,
+        )
+        .await;
 
         if pending.is_empty() {
             return Ok(AggregatedHookResult::default());
@@ -183,23 +216,25 @@ impl<S: Services> PluginHookHandler<S> {
             .map(|(cmd, src, id)| (id, (cmd, src)))
             .unzip();
 
+        // Each future returns (Result<HookExecResult>, Option<PathBuf>)
+        // where the PathBuf is the FORGE_ENV_FILE path when one was set.
         let futures = cmd_src_pairs.into_iter().map(|(cmd, source)| {
             let input = input.clone();
             async move {
                 match cmd {
                     HookCommand::Command(ref shell) => {
                         // Validate plugin root exists (if this hook comes from a plugin)
-                        if let Some(ref root) = source.plugin_root
-                            && !root.exists()
-                        {
-                            tracing::warn!(
-                                plugin_root = %root.display(),
-                                "plugin directory no longer exists; skipping hook"
-                            );
-                            return Err(anyhow::anyhow!(
-                                "plugin directory does not exist: {}",
-                                root.display()
-                            ));
+                        if let Some(ref root) = source.plugin_root {
+                            if !root.exists() {
+                                tracing::warn!(
+                                    plugin_root = %root.display(),
+                                    "plugin directory no longer exists; skipping hook"
+                                );
+                                return (Err(anyhow::anyhow!(
+                                    "plugin directory does not exist: {}",
+                                    root.display()
+                                )), None);
+                            }
                         }
 
                         // Build FORGE_* env vars from the available context.
@@ -238,7 +273,7 @@ impl<S: Services> PluginHookHandler<S> {
                         // Set FORGE_ENV_FILE for events that support env-file
                         // write-back (SessionStart, Setup, CwdChanged, FileChanged).
                         let event_name = input.base.hook_event_name.as_str();
-                        if matches!(
+                        let env_file_path = if matches!(
                             event_name,
                             "SessionStart" | "Setup" | "CwdChanged" | "FileChanged"
                         ) {
@@ -254,15 +289,18 @@ impl<S: Services> PluginHookHandler<S> {
                                 "FORGE_ENV_FILE".to_string(),
                                 env_file.display().to_string(),
                             );
-                        }
+                            Some(env_file)
+                        } else {
+                            None
+                        };
 
-                        executor.execute_shell(shell, &input, env_vars).await
+                        (executor.execute_shell(shell, &input, env_vars).await, env_file_path)
                     }
-                    HookCommand::Http(ref http) => executor.execute_http(http, &input).await,
+                    HookCommand::Http(ref http) => (executor.execute_http(http, &input).await, None),
                     HookCommand::Prompt(ref prompt) => {
-                        executor.execute_prompt(prompt, &input).await
+                        (executor.execute_prompt(prompt, &input).await, None)
                     }
-                    HookCommand::Agent(ref agent) => executor.execute_agent(agent, &input).await,
+                    HookCommand::Agent(ref agent) => (executor.execute_agent(agent, &input).await, None),
                 }
             }
         });
@@ -273,11 +311,17 @@ impl<S: Services> PluginHookHandler<S> {
         // can retry on the next event dispatch.
         let mut once_fired = self.once_fired.lock().await;
         let mut aggregated = AggregatedHookResult::default();
-        for (once_id, result) in once_ids.into_iter().zip(results) {
+        let mut env_file_paths: Vec<PathBuf> = Vec::new();
+        for (once_id, (result, env_file_path)) in once_ids.into_iter().zip(results.into_iter()) {
             match result {
                 Ok(ref exec) if exec.outcome == HookOutcome::Success => {
                     if let Some(id) = once_id {
                         once_fired.insert(id);
+                    }
+                    // Collect env file paths from successful hooks for
+                    // read-back after aggregation.
+                    if let Some(path) = env_file_path {
+                        env_file_paths.push(path);
                     }
                     aggregated.merge(exec.clone());
                 }
@@ -293,6 +337,21 @@ impl<S: Services> PluginHookHandler<S> {
                 }
             }
         }
+
+        // Read back FORGE_ENV_FILE contents from successful hooks and
+        // merge their KEY=VALUE pairs into the session env cache.
+        for env_path in &env_file_paths {
+            if let Err(e) = self.session_env_cache.ingest_env_file(env_path).await {
+                tracing::warn!(
+                    path = %env_path.display(),
+                    error = %e,
+                    "failed to ingest hook env file; variables from this hook will be missing"
+                );
+            }
+            // Best-effort cleanup of the temp file.
+            let _ = tokio::fs::remove_file(env_path).await;
+        }
+
         Ok(aggregated)
     }
 }
@@ -327,21 +386,112 @@ fn source_tag(src: &HookMatcherWithSource) -> String {
         HookConfigSource::Plugin => {
             format!("plugin:{}", src.plugin_name.as_deref().unwrap_or(""))
         }
+        HookConfigSource::Managed => "managed".to_string(),
+        HookConfigSource::Session => "session".to_string(),
     }
 }
 
-// ---- EventHandle impls for the T1 plugin-hook lifecycle events ----
+/// Collect hooks that should execute for the given event, applying
+/// matcher patterns, condition checks, and once-firing deduplication.
+///
+/// Used by both production [`PluginHookHandler::dispatch`] and the
+/// test `ExplicitDispatcher` so the match/filter/once logic is shared
+/// in a single source of truth. Changes here are automatically
+/// exercised by both production and unit-test code paths.
+///
+/// Returns a vector of `(HookCommand, HookMatcherWithSource,
+/// Option<HookId>)` tuples for hooks that passed all filters, plus a
+/// set of `HookId`s that were claimed by `once: true` hooks in this
+/// batch (used internally; callers typically ignore this).
+async fn collect_pending_hooks(
+    matchers: &[HookMatcherWithSource],
+    event: &HookEventName,
+    tool_name: Option<&str>,
+    tool_input: Option<&serde_json::Value>,
+    once_fired: &Mutex<HashSet<HookId>>,
+) -> Vec<(HookCommand, HookMatcherWithSource, Option<HookId>)> {
+    let empty = serde_json::Value::Null;
+    let tn = tool_name.unwrap_or("");
+    let ti = tool_input.unwrap_or(&empty);
+
+    let mut pending: Vec<(HookCommand, HookMatcherWithSource, Option<HookId>)> = Vec::new();
+    let mut once_claimed: HashSet<HookId> = HashSet::new();
+    {
+        let fired = once_fired.lock().await;
+        for (mi, matcher_with_source) in matchers.iter().enumerate() {
+            let pat = matcher_with_source.matcher.matcher.as_deref().unwrap_or("");
+            if !matches_pattern(pat, tn) {
+                continue;
+            }
+            for (hi, cmd) in matcher_with_source.matcher.hooks.iter().enumerate() {
+                if let Some(c) = condition_for(cmd)
+                    && !matches_condition(c, tn, ti)
+                {
+                    continue;
+                }
+                if is_once(cmd) {
+                    let id = HookId {
+                        event: event.clone(),
+                        matcher_index: mi,
+                        hook_index: hi,
+                        source: source_tag(matcher_with_source),
+                    };
+                    if fired.contains(&id) || once_claimed.contains(&id) {
+                        continue;
+                    }
+                    once_claimed.insert(id.clone());
+                    pending.push((cmd.clone(), matcher_with_source.clone(), Some(id)));
+                } else {
+                    pending.push((cmd.clone(), matcher_with_source.clone(), None));
+                }
+            }
+        }
+    }
+    pending
+}
+
+/// Execute a list of pending hooks sequentially, merge each result
+/// into an [`AggregatedHookResult`], and mark successful once-hooks as
+/// fired.
+///
+/// `execute_fn` is called for each hook and returns a
+/// [`HookExecResult`]. In tests this returns canned results; production
+/// code uses its own parallel execution path via `futures::future::join_all`.
+async fn execute_and_merge<F, Fut>(
+    pending: Vec<(HookCommand, HookMatcherWithSource, Option<HookId>)>,
+    once_fired: &Mutex<HashSet<HookId>>,
+    mut execute_fn: F,
+) -> AggregatedHookResult
+where
+    F: FnMut(&HookCommand, &HookMatcherWithSource) -> Fut,
+    Fut: std::future::Future<Output = HookExecResult>,
+{
+    let mut fired_lock = once_fired.lock().await;
+    let mut aggregated = AggregatedHookResult::default();
+    for (cmd, src, once_id) in pending {
+        let exec = execute_fn(&cmd, &src).await;
+        if exec.outcome == HookOutcome::Success {
+            if let Some(id) = once_id {
+                fired_lock.insert(id);
+            }
+        }
+        aggregated.merge(exec);
+    }
+    aggregated
+}
+
+// ---- EventHandle impls for the plugin-hook lifecycle events ----
 //
 // Each impl maps an [`EventData<...Payload>`] into a [`HookInput`] via
 // [`build_hook_input`], then forwards to
 // [`PluginHookHandler::dispatch`]. The resulting
 // [`AggregatedHookResult`] is written into `conversation.hook_result`
-// so downstream orchestrator code (Phase 4 Part 2) can consume it.
+// so downstream orchestrator code can consume it.
 //
 // The trait implementations do NOT fire these events themselves — they
 // only define *how* the handler reacts if the orchestrator dispatches
-// the matching [`crate::forge_domain::LifecycleEvent`] variant. Phase 4
-// Part 2 wires the fire sites.
+// the matching [`crate::forge_domain::LifecycleEvent`] variant. The
+// orchestrator wires the fire sites.
 
 /// Build a [`HookInput`] from any [`EventData`] payload whose Rust type
 /// converts into [`HookInputPayload`]. Centralises the base-field copy
@@ -357,11 +507,11 @@ fn source_tag(src: &HookMatcherWithSource) -> String {
 /// sentinel or `is_subagent` flag — so we unconditionally set both
 /// fields to the agent's id for now.
 ///
-/// TODO(hooks-agent-id-divergence): Once Forge threads a dedicated
+/// TODO(agent-id-divergence): Once Forge threads a dedicated
 /// sub-agent UUID through `EventData` (see
-/// `TODO(wave-e-1a-task-7-subagent-threading)` in `orch.rs`), update
-/// this function to set `agent_id: None` for the main agent and use
-/// the real sub-agent UUID + type separately.
+/// `TODO(subagent-threading)` in `orch.rs`), update this function to
+/// set `agent_id: None` for the main agent and use the real
+/// sub-agent UUID + type separately.
 fn build_hook_input<P>(
     event: &EventData<P>,
     hook_event_name: &'static str,
@@ -656,7 +806,7 @@ impl<S: Services> EventHandle<EventData<PostCompactPayload>> for PluginHookHandl
     }
 }
 
-// ---- Phase 6 T2 events ----
+// ---- Notification / Setup / Config events ----
 
 #[async_trait]
 impl<S: Services> EventHandle<EventData<NotificationPayload>> for PluginHookHandler<S> {
@@ -740,7 +890,7 @@ impl<S: Services> EventHandle<EventData<ConfigChangePayload>> for PluginHookHand
     }
 }
 
-// ---- Phase 7 T3 events ----
+// ---- Subagent / Permission / File / Worktree events ----
 
 #[async_trait]
 impl<S: Services> EventHandle<EventData<SubagentStartPayload>> for PluginHookHandler<S> {
@@ -973,7 +1123,7 @@ impl<S: Services> EventHandle<EventData<WorktreeRemovePayload>> for PluginHookHa
     }
 }
 
-// ---- Phase 6D: InstructionsLoaded event ----
+// ---- InstructionsLoaded event ----
 
 #[async_trait]
 impl<S: Services> EventHandle<EventData<InstructionsLoadedPayload>> for PluginHookHandler<S> {
@@ -1009,7 +1159,7 @@ impl<S: Services> EventHandle<EventData<InstructionsLoadedPayload>> for PluginHo
     }
 }
 
-// ---- Phase 8D: Elicitation events ----
+// ---- Elicitation events ----
 
 #[async_trait]
 impl<S: Services> EventHandle<EventData<ElicitationPayload>> for PluginHookHandler<S> {
@@ -1110,16 +1260,11 @@ mod tests {
         }
     }
 
-    /// Hand-written stub that implements just the two trait pieces the
-    /// dispatcher touches. We can't use the full [`crate::Services`]
-    /// trait because it has dozens of associated types — implementing
-    /// even default versions would balloon the test file.
-    ///
-    /// Instead, the tests exercise the dispatch logic via an
-    /// `ExplicitDispatcher` helper that bypasses `Services` entirely and
-    /// calls the same matcher/once/merge pipeline directly. This keeps
-    /// the surface area under test small and deterministic. Phase 4's
-    /// integration tests will cover the full `Services`-backed path.
+    /// Test-only dispatcher that exercises the same match/filter/once
+    /// logic as the production `PluginHookHandler::dispatch` via the
+    /// shared `collect_pending_hooks` and `execute_and_merge` functions.
+    /// Uses `StubExecutor::canned_success()` instead of real executor
+    /// calls so tests stay fast and deterministic.
     struct ExplicitDispatcher {
         merged: Arc<MergedHooksConfig>,
         executor: StubExecutor,
@@ -1162,62 +1307,30 @@ mod tests {
             let Some(matchers) = self.merged.entries.get(&event) else {
                 return AggregatedHookResult::default();
             };
-            let empty = serde_json::Value::Null;
-            let tn = tool_name.unwrap_or("");
-            let ti = tool_input.unwrap_or(&empty);
 
-            let mut pending: Vec<(HookCommand, HookMatcherWithSource, Option<HookId>)> = Vec::new();
-            let mut once_claimed: HashSet<HookId> = HashSet::new();
-            {
-                let once_fired = self.once_fired.lock().await;
-                for (mi, matcher_with_source) in matchers.iter().enumerate() {
-                    let pat = matcher_with_source.matcher.matcher.as_deref().unwrap_or("");
-                    if !matches_pattern(pat, tn) {
-                        continue;
-                    }
-                    for (hi, cmd) in matcher_with_source.matcher.hooks.iter().enumerate() {
-                        if let Some(c) = condition_for(cmd)
-                            && !matches_condition(c, tn, ti)
-                        {
-                            continue;
-                        }
-                        if is_once(cmd) {
-                            let id = HookId {
-                                event: event.clone(),
-                                matcher_index: mi,
-                                hook_index: hi,
-                                source: source_tag(matcher_with_source),
-                            };
-                            if once_fired.contains(&id) || once_claimed.contains(&id) {
-                                continue;
-                            }
-                            once_claimed.insert(id.clone());
-                            pending.push((cmd.clone(), matcher_with_source.clone(), Some(id)));
-                        } else {
-                            pending.push((cmd.clone(), matcher_with_source.clone(), None));
-                        }
-                    }
-                }
-            }
+            let pending = collect_pending_hooks(
+                matchers,
+                &event,
+                tool_name,
+                tool_input,
+                &self.once_fired,
+            )
+            .await;
 
-            let mut once_fired = self.once_fired.lock().await;
-            let mut aggregated = AggregatedHookResult::default();
-            for (_cmd, _src, once_id) in pending {
-                self.executor.calls.lock().await.push("hit".to_string());
-                let exec = StubExecutor::canned_success();
-                if exec.outcome == HookOutcome::Success
-                    && let Some(id) = once_id
-                {
-                    once_fired.insert(id);
+            let executor = &self.executor;
+            execute_and_merge(pending, &self.once_fired, |_cmd, _src| {
+                let executor = executor.clone();
+                async move {
+                    executor.calls.lock().await.push("hit".to_string());
+                    StubExecutor::canned_success()
                 }
-                aggregated.merge(exec);
-            }
-            aggregated
+            })
+            .await
         }
 
         /// Mirror of [`Self::dispatch`] that folds pre-canned
         /// [`HookExecResult`]s into the aggregate instead of the default
-        /// `canned_success()` stub. Used by Wave E-1b PermissionRequest
+        /// `canned_success()` stub. Used by PermissionRequest
         /// merge tests that need the executor to return
         /// [`HookSpecificOutput::PermissionRequest`] values so the
         /// aggregator's permission-merge branch actually runs.
@@ -1231,66 +1344,39 @@ mod tests {
             tool_name: Option<&str>,
             tool_input: Option<&serde_json::Value>,
             _input: HookInput,
-            mut canned: Vec<HookExecResult>,
+            canned: Vec<HookExecResult>,
         ) -> AggregatedHookResult {
             let Some(matchers) = self.merged.entries.get(&event) else {
                 return AggregatedHookResult::default();
             };
-            let empty = serde_json::Value::Null;
-            let tn = tool_name.unwrap_or("");
-            let ti = tool_input.unwrap_or(&empty);
 
-            let mut pending: Vec<(HookCommand, HookMatcherWithSource, Option<HookId>)> = Vec::new();
-            let mut once_claimed: HashSet<HookId> = HashSet::new();
-            {
-                let once_fired = self.once_fired.lock().await;
-                for (mi, matcher_with_source) in matchers.iter().enumerate() {
-                    let pat = matcher_with_source.matcher.matcher.as_deref().unwrap_or("");
-                    if !matches_pattern(pat, tn) {
-                        continue;
-                    }
-                    for (hi, cmd) in matcher_with_source.matcher.hooks.iter().enumerate() {
-                        if let Some(c) = condition_for(cmd)
-                            && !matches_condition(c, tn, ti)
-                        {
-                            continue;
-                        }
-                        if is_once(cmd) {
-                            let id = HookId {
-                                event: event.clone(),
-                                matcher_index: mi,
-                                hook_index: hi,
-                                source: source_tag(matcher_with_source),
-                            };
-                            if once_fired.contains(&id) || once_claimed.contains(&id) {
-                                continue;
-                            }
-                            once_claimed.insert(id.clone());
-                            pending.push((cmd.clone(), matcher_with_source.clone(), Some(id)));
-                        } else {
-                            pending.push((cmd.clone(), matcher_with_source.clone(), None));
-                        }
+            let pending = collect_pending_hooks(
+                matchers,
+                &event,
+                tool_name,
+                tool_input,
+                &self.once_fired,
+            )
+            .await;
+
+            // Wrap the canned results in an Arc<Mutex<_>> so the closure
+            // can drain them in order.
+            let canned = Arc::new(Mutex::new(canned));
+            let executor = &self.executor;
+            execute_and_merge(pending, &self.once_fired, |_cmd, _src| {
+                let executor = executor.clone();
+                let canned = Arc::clone(&canned);
+                async move {
+                    executor.calls.lock().await.push("hit".to_string());
+                    let mut canned_lock = canned.lock().await;
+                    if canned_lock.is_empty() {
+                        StubExecutor::canned_success()
+                    } else {
+                        canned_lock.remove(0)
                     }
                 }
-            }
-
-            // Drain canned results in order. Using `into_iter` + a drain
-            // counter would also work; `remove(0)` is fine here because
-            // tests only enqueue a handful of results.
-            let mut once_fired = self.once_fired.lock().await;
-            let mut aggregated = AggregatedHookResult::default();
-            canned.reverse();
-            for (_cmd, _src, once_id) in pending {
-                self.executor.calls.lock().await.push("hit".to_string());
-                let exec = canned.pop().unwrap_or_else(StubExecutor::canned_success);
-                if exec.outcome == HookOutcome::Success
-                    && let Some(id) = once_id
-                {
-                    once_fired.insert(id);
-                }
-                aggregated.merge(exec);
-            }
-            aggregated
+            })
+            .await
         }
     }
 
@@ -1530,7 +1616,7 @@ mod tests {
         assert_eq!(calls_after_third, 2);
     }
 
-    // ---- Phase 6A / 6B: Notification + Setup dispatcher tests ----
+    // ---- Notification + Setup dispatcher tests ----
 
     #[tokio::test]
     async fn test_dispatch_notification_matches_notification_type() {
@@ -1631,7 +1717,7 @@ mod tests {
         assert!(skipped.additional_contexts.is_empty());
     }
 
-    // ---- Phase 6C: ConfigChange dispatcher tests ----
+    // ---- ConfigChange dispatcher tests ----
 
     #[tokio::test]
     async fn test_dispatch_config_change_matches_source_wire_str() {
@@ -1684,7 +1770,7 @@ mod tests {
         assert!(skipped.additional_contexts.is_empty());
     }
 
-    // ---- Phase 7 T3: Subagent dispatcher tests ----
+    // ---- Subagent dispatcher tests ----
 
     #[tokio::test]
     async fn test_dispatch_subagent_start_matches_agent_type() {
@@ -1774,7 +1860,7 @@ mod tests {
         assert_eq!(result.additional_contexts, vec!["canned".to_string()]);
     }
 
-    // Wave E-1a: Verify multiple matched SubagentStart hooks accumulate their
+    // Verify multiple matched SubagentStart hooks accumulate their
     // additional_contexts in execution order. `AgentExecutor::execute` drains
     // this vector and injects each entry into the subagent's initial prompt.
     #[tokio::test]
@@ -1839,7 +1925,7 @@ mod tests {
         );
     }
 
-    // Wave E-1a: Verify `once: true` semantics for SubagentStart. A once hook
+    // Verify `once: true` semantics for SubagentStart. A once hook
     // should fire on the first matching subagent launch but be skipped on
     // subsequent launches of the same agent type.
     #[tokio::test]
@@ -1892,7 +1978,7 @@ mod tests {
         assert!(second.additional_contexts.is_empty());
     }
 
-    // ---- Phase 7B: Permission dispatcher tests ----
+    // ---- Permission dispatcher tests ----
 
     #[tokio::test]
     async fn test_dispatch_permission_request_matches_tool_name() {
@@ -2058,18 +2144,18 @@ mod tests {
         assert_eq!(result.additional_contexts, vec!["canned".to_string()]);
     }
 
-    // ---- Wave E-1b: Phase 7B Permission dispatcher merge tests ----
+    // ---- Permission dispatcher merge tests ----
     //
-    // These three tests live in a nested `wave_e1b_permission` module so
-    // they can reuse the literal names called out in the Wave E-1b test
-    // plan without colliding with the pre-existing matcher-level tests
+    // These three tests live in a nested module so they can reuse the
+    // literal names called out in the test plan without colliding with
+    // the pre-existing matcher-level tests
     // at the parent level (`test_dispatch_permission_request_matches_tool_name`
     // / `test_dispatch_permission_denied_matches_tool_name`). The nested
     // module inherits the parent test scope via `use super::*;`, so all
     // of `ExplicitDispatcher`, `StubExecutor`, `sample_input`, the
     // `HookId` internal, and every domain type imported at the top of
     // the parent `tests` mod are available with no extra plumbing.
-    mod wave_e1b_permission {
+    mod permission_merge {
         use forge_domain::{HookMatcher, ShellHookCommand};
         use pretty_assertions::assert_eq;
 
@@ -2241,7 +2327,7 @@ mod tests {
             assert_eq!(result.permission_behavior, Some(PermissionBehavior::Deny));
 
             // Neither hook set interrupt or retry, so they remain latched
-            // off. These are the new Wave E-1b fields on
+            // off. These are the fields on
             // `AggregatedHookResult`.
             assert!(!result.interrupt);
             assert!(!result.retry);
@@ -2253,7 +2339,7 @@ mod tests {
         }
 
         // Task C / Test 3: PermissionDenied is meant to be
-        // observability-only per the Wave E-1b plan — plugins listening
+        // observability-only per the design contract — plugins listening
         // to PermissionDenied should be able to log or alert but must
         // NOT be able to flip a decision back to Allow or mutate the
         // tool input. The dispatcher today does not gate the
@@ -2337,7 +2423,7 @@ mod tests {
             assert_eq!(result.updated_input, None);
         }
 
-        // ---- Wave E-2c-i: WorktreeCreate dispatcher test ----
+        // ---- WorktreeCreate dispatcher test ----
 
         /// A `WorktreeCreate` hook returning a `worktreePath` override
         /// must have its path folded into

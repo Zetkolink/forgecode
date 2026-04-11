@@ -66,14 +66,13 @@ pub struct PluginManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
 
-    /// Names of other plugins this plugin depends on. Phase 1 records the
-    /// list but does not enforce ordering.
+    /// Names of other plugins this plugin depends on. Recorded but
+    /// ordering is not currently enforced.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dependencies: Vec<String>,
 
     /// Hook configuration: either a path to `hooks.json`, an inline object,
-    /// or an array mixing both. Phase 3 will replace the placeholder body
-    /// with typed hook definitions.
+    /// or an array mixing both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<PluginHooksManifestField>,
 
@@ -93,7 +92,7 @@ pub struct PluginManifest {
     pub skills: Option<PluginComponentPath>,
 
     /// Inline MCP server definitions, keyed by server name. Merged into the
-    /// global MCP manager during Phase 4 implementation.
+    /// global MCP manager during plugin loading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_servers: Option<BTreeMap<String, McpServerConfig>>,
 }
@@ -141,7 +140,6 @@ impl PluginComponentPath {
 
 /// Hook configuration field on a plugin manifest.
 ///
-/// Phase 1 only records the shape — actual hook execution lives in Phase 3.
 /// The variants mirror Claude Code's `HooksField` schema:
 ///
 /// - `Path`: relative path to a `hooks.json` file
@@ -161,13 +159,11 @@ pub enum PluginHooksManifestField {
 
 /// Placeholder for parsed hook configuration.
 ///
-/// Phase 1 only stores the raw JSON value so the manifest round-trips
-/// without losing data. Phase 3 will replace `raw` with typed
-/// `LifecycleHook` definitions.
+/// Stores the raw JSON value so the manifest round-trips without
+/// losing data.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginHooksConfig {
-    /// Raw JSON value preserved verbatim until Phase 3 introduces the
-    /// typed schema.
+    /// Raw JSON value preserved verbatim.
     #[serde(flatten)]
     pub raw: serde_json::Value,
 }
@@ -227,8 +223,7 @@ pub struct LoadedPlugin {
     pub skills_paths: Vec<PathBuf>,
 
     /// Parsed hooks configuration, if the manifest referenced one and the
-    /// file was readable. Phase 1 keeps this opaque; Phase 3 introduces a
-    /// typed schema.
+    /// file was readable. Currently stored as an opaque JSON value.
     pub hooks_config: Option<PluginHooksConfig>,
 
     /// MCP servers contributed by this plugin. Sourced from either
@@ -242,7 +237,7 @@ pub struct LoadedPlugin {
 ///
 /// This is the richer return type used by
 /// [`crate::PluginRepository::load_plugins_with_errors`] and is preserved by
-/// the service-layer cache so that UI surfaces (notably the Phase 9
+/// the service-layer cache so that UI surfaces (notably the
 /// `:plugin list` command) can render "broken" entries alongside healthy
 /// ones. The legacy [`crate::PluginRepository::load_plugins`] method
 /// discards the `errors` field for backward compatibility.

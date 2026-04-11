@@ -253,9 +253,10 @@ impl CommandInfra for ForgeInfra {
         working_dir: PathBuf,
         silent: bool,
         env_vars: Option<Vec<String>>,
+        extra_env: Option<std::collections::HashMap<String, String>>,
     ) -> anyhow::Result<CommandOutput> {
         self.command_executor_service
-            .execute_command(command, working_dir, silent, env_vars)
+            .execute_command(command, working_dir, silent, env_vars, extra_env)
             .await
     }
 
@@ -264,9 +265,10 @@ impl CommandInfra for ForgeInfra {
         command: &str,
         working_dir: PathBuf,
         env_vars: Option<Vec<String>>,
+        extra_env: Option<std::collections::HashMap<String, String>>,
     ) -> anyhow::Result<ExitStatus> {
         self.command_executor_service
-            .execute_command_raw(command, working_dir, env_vars)
+            .execute_command_raw(command, working_dir, env_vars, extra_env)
             .await
     }
 }

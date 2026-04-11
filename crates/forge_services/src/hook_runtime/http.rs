@@ -233,6 +233,36 @@ pub fn map_env_lookup(map: HashMap<String, String>) -> impl Fn(&str) -> Option<S
     move |name| map.get(name).cloned()
 }
 
+/// Check whether `url` matches the given wildcard `pattern`.
+///
+/// Pattern semantics (matching Claude Code):
+/// - All regex metacharacters in `pattern` are escaped **except** `*`.
+/// - Each `*` is replaced with `.*` (match any sequence of characters).
+/// - The resulting regex is anchored with `^…$`.
+///
+/// Returns `true` when the URL matches the pattern.
+pub fn url_matches_pattern(url: &str, pattern: &str) -> bool {
+    // Split on `*`, escape each segment, then rejoin with `.*`.
+    let escaped_parts: Vec<String> = pattern.split('*').map(regex::escape).collect();
+    let regex_str = format!("^{}$", escaped_parts.join(".*"));
+    match regex::Regex::new(&regex_str) {
+        Ok(re) => re.is_match(url),
+        Err(_) => false,
+    }
+}
+
+/// Check whether `url` is allowed by the given allowlist patterns.
+///
+/// - `None` → all URLs allowed (returns `true`).
+/// - `Some([])` → no HTTP hooks allowed (returns `false`).
+/// - `Some(patterns)` → URL must match at least one pattern.
+pub fn is_url_allowed(url: &str, allowlist: Option<&[String]>) -> bool {
+    match allowlist {
+        None => true,
+        Some(patterns) => patterns.iter().any(|p| url_matches_pattern(url, p)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -461,5 +491,117 @@ mod tests {
         let lookup = |_: &str| None;
         let actual = substitute_header_value("plain text", &["TOKEN"], &lookup);
         assert_eq!(actual, "plain text");
+    }
+
+    // --- URL allowlist tests ---
+
+    #[test]
+    fn test_url_matches_pattern_exact_match() {
+        assert!(url_matches_pattern(
+            "https://hooks.example.com/webhook",
+            "https://hooks.example.com/webhook"
+        ));
+    }
+
+    #[test]
+    fn test_url_matches_pattern_wildcard_suffix() {
+        assert!(url_matches_pattern(
+            "https://hooks.example.com/webhook/abc",
+            "https://hooks.example.com/*"
+        ));
+    }
+
+    #[test]
+    fn test_url_matches_pattern_wildcard_middle() {
+        assert!(url_matches_pattern(
+            "https://hooks.example.com/v1/webhook",
+            "https://hooks.example.com/*/webhook"
+        ));
+    }
+
+    #[test]
+    fn test_url_matches_pattern_no_match() {
+        assert!(!url_matches_pattern(
+            "https://evil.com/steal",
+            "https://hooks.example.com/*"
+        ));
+    }
+
+    #[test]
+    fn test_url_matches_pattern_escapes_dots() {
+        // The dot in "example.com" should be escaped and not match arbitrary chars.
+        assert!(!url_matches_pattern(
+            "https://exampleXcom/hook",
+            "https://example.com/hook"
+        ));
+        assert!(url_matches_pattern(
+            "https://example.com/hook",
+            "https://example.com/hook"
+        ));
+    }
+
+    #[test]
+    fn test_url_matches_pattern_escapes_question_mark() {
+        assert!(!url_matches_pattern(
+            "https://example.com/hookX",
+            "https://example.com/hook?"
+        ));
+        assert!(url_matches_pattern(
+            "https://example.com/hook?",
+            "https://example.com/hook?"
+        ));
+    }
+
+    #[test]
+    fn test_url_matches_pattern_multiple_wildcards() {
+        assert!(url_matches_pattern(
+            "https://hooks.example.com/v2/webhook/fire",
+            "https://*.example.com/*/webhook/*"
+        ));
+    }
+
+    #[test]
+    fn test_is_url_allowed_none_allows_all() {
+        assert!(is_url_allowed("https://anything.com/hook", None));
+    }
+
+    #[test]
+    fn test_is_url_allowed_empty_vec_blocks_all() {
+        assert!(!is_url_allowed(
+            "https://hooks.example.com/hook",
+            Some(&[])
+        ));
+    }
+
+    #[test]
+    fn test_is_url_allowed_matching_pattern_passes() {
+        let patterns = vec!["https://hooks.example.com/*".to_string()];
+        assert!(is_url_allowed(
+            "https://hooks.example.com/webhook",
+            Some(&patterns)
+        ));
+    }
+
+    #[test]
+    fn test_is_url_allowed_non_matching_pattern_blocked() {
+        let patterns = vec!["https://hooks.example.com/*".to_string()];
+        assert!(!is_url_allowed("https://evil.com/steal", Some(&patterns)));
+    }
+
+    #[test]
+    fn test_is_url_allowed_multiple_patterns() {
+        let patterns = vec![
+            "https://hooks.example.com/*".to_string(),
+            "https://api.internal.corp/*".to_string(),
+        ];
+        assert!(is_url_allowed(
+            "https://api.internal.corp/v1/hook",
+            Some(&patterns)
+        ));
+        assert!(is_url_allowed(
+            "https://hooks.example.com/a",
+            Some(&patterns)
+        ));
+        assert!(!is_url_allowed("https://other.com/a", Some(&patterns)));
     }
 }

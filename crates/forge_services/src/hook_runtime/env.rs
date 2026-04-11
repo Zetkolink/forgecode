@@ -7,7 +7,7 @@
 //! This module is a pure builder: it produces a `HashMap<String,
 //! String>` given the raw inputs (project directory, plugin info,
 //! session ID, etc.) and does **not** touch the filesystem. The caller
-//! (Part 3's dispatcher) is responsible for creating the
+//! The caller (the dispatcher) is responsible for creating the
 //! `FORGE_PLUGIN_DATA` directory on disk before spawning the hook.
 
 use std::collections::HashMap;

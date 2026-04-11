@@ -28,6 +28,10 @@ pub enum HookConfigSource {
     Project,
     /// A plugin's `manifest.hooks` — inline, path, or array.
     Plugin,
+    /// Enterprise-managed hooks loaded from a managed hooks path.
+    Managed,
+    /// Runtime-registered hooks scoped to a session's lifetime.
+    Session,
 }
 
 /// A [`HookMatcher`] tagged with its source so the dispatcher can
@@ -61,6 +65,18 @@ impl MergedHooksConfig {
     /// Returns `true` when no matchers were loaded from any source.
     pub fn is_empty(&self) -> bool {
         self.entries.values().all(|v| v.is_empty())
+    }
+
+    /// Returns `true` when at least one matcher is loaded from any source.
+    ///
+    /// This is the semantic inverse of [`is_empty`](Self::is_empty) and
+    /// exists so callers can express fast-path guards naturally:
+    ///
+    /// ```ignore
+    /// if !merged.has_hooks() { return Ok(default); }
+    /// ```
+    pub fn has_hooks(&self) -> bool {
+        !self.is_empty()
     }
 
     /// Total number of matchers across every event. Useful for tests

@@ -103,7 +103,7 @@ pub fn estimate_token_count(count: usize) -> usize {
 }
 
 /// Where an [`Agent`] definition was loaded from. Mirrors
-/// [`crate::SkillSource`] / [`crate::CommandSource`] so the Phase 2 plugin
+/// [`crate::SkillSource`] / [`crate::CommandSource`] so the plugin
 /// pipeline can track provenance uniformly across the three asset types.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -191,8 +191,8 @@ pub struct Agent {
     pub max_requests_per_turn: Option<usize>,
 
     /// Origin of the agent definition. Defaults to [`AgentSource::Builtin`]
-    /// and is `#[serde(default)]` so on-disk agent manifests that predate
-    /// Phase 2 continue to deserialize without a `source` key.
+    /// and is `#[serde(default)]` so existing on-disk agent manifests
+    /// continue to deserialize without a `source` key.
     #[serde(default)]
     pub source: AgentSource,
 }

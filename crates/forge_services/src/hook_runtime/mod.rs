@@ -9,8 +9,11 @@
 //! - [`shell`] — the `tokio::process::Command` shell executor.
 //! - [`http`] — the HTTP webhook executor (POSTs the input JSON and parses the
 //!   response body).
-//! - [`prompt`] — stub LLM prompt executor. Full support is deferred.
-//! - [`agent`] — stub sub-agent executor. Full support is deferred.
+//! - [`prompt`] — LLM-backed prompt hook executor. Makes a single model
+//!   call and parses the `{"ok": bool, "reason"?: string}` response.
+//! - [`agent`] — LLM-backed agent hook executor. Makes a single model
+//!   call with a condition-verification system prompt and parses the
+//!   `{"ok": bool, "reason"?: string}` response.
 //! - [`config_loader`] — merges `hooks.json` from user/project/plugin sources
 //!   into a single [`forge_app::hook_runtime::MergedHooksConfig`] used by the
 //!   dispatcher.

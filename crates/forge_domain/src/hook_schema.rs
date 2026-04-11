@@ -34,8 +34,8 @@ pub struct HooksConfig(pub BTreeMap<HookEventName, Vec<HookMatcher>>);
 ///
 /// 27 variants total — matches Claude Code's `HOOK_EVENTS` enum exactly.
 /// Several variants (`TeammateIdle`, `TaskCreated`, `TaskCompleted`) are
-/// deferred in v4: they are accepted by the parser so that manifests using
-/// them don't break, but Forge never fires them.
+/// parsed but not currently fired: they are accepted by the parser so that
+/// manifests using them don't break.
 ///
 /// Uses Rust's default PascalCase enum serialization, which matches Claude
 /// Code's wire format. `Ord` / `PartialOrd` are derived so the enum can be
@@ -58,11 +58,11 @@ pub enum HookEventName {
     PermissionRequest,
     PermissionDenied,
     Setup,
-    /// Deferred in v4 — parsed but never fired.
+    /// Parsed but not currently fired.
     TeammateIdle,
-    /// Deferred in v4 — parsed but never fired.
+    /// Parsed but not currently fired.
     TaskCreated,
-    /// Deferred in v4 — parsed but never fired.
+    /// Parsed but not currently fired.
     TaskCompleted,
     Elicitation,
     ElicitationResult,
@@ -219,8 +219,8 @@ pub struct HttpHookCommand {
 /// so the hook can take multiple turns and invoke tools. Used for agentic
 /// verification scenarios like "Verify tests pass before continuing".
 ///
-/// Full execution is deferred to a later phase; the type exists in Part 1 so
-/// manifests parse correctly.
+/// Full execution is not yet implemented; the type exists so manifests
+/// parse correctly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentHookCommand {
@@ -381,9 +381,9 @@ mod tests {
     }
 
     #[test]
-    fn test_deferred_event_variants_parse_successfully() {
-        // These three events never fire in v4 but the parser must still accept
-        // them so Claude-Code-authored manifests load without error.
+    fn test_unfired_event_variants_parse_successfully() {
+        // These three events are not currently fired but the parser must still
+        // accept them so Claude-Code-authored manifests load without error.
         let fixture = r#"{
             "TeammateIdle": [],
             "TaskCreated": [],

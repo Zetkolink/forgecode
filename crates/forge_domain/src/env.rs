@@ -144,8 +144,7 @@ impl Environment {
     ///
     /// Transcripts live at `<base>/transcripts/<session_id>.jsonl`. This
     /// method only computes the path — callers are responsible for
-    /// creating the parent directory and writing transcript events
-    /// (Phase 4 Part 2 wires the actual writer).
+    /// creating the parent directory and writing transcript events.
     pub fn transcript_path(&self, session_id: &str) -> PathBuf {
         self.base_path
             .join("transcripts")

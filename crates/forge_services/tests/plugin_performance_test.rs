@@ -1,15 +1,14 @@
 //! Wave G-4: Performance smoke tests (Phase 11.3).
 //!
 //! These tests verify that key plugin-system operations complete within
-//! generous time budgets. The assertions use 2× the nominal target so
-//! CI machines with variable load do not produce flaky failures.
+//! acceptable time budgets.
 //!
-//! | Test                                      | Nominal | Assert  |
-//! |-------------------------------------------|---------|---------|
-//! | Plugin discovery (20 plugins)             | 200 ms  | 400 ms  |
-//! | Hook execution (10 noop hooks)            | 500 ms  | 2 s / 10 s CI |
-//! | File watcher responds to write            | 500 ms  | 1000 ms |
-//! | Config watcher debounce fires once/window | —       | 1 event |
+//! | Test                                      | Nominal | Assert       |
+//! |-------------------------------------------|---------|--------------|
+//! | Plugin discovery (20 plugins)             | 200 ms  | 400 ms       |
+//! | Hook execution (10 hooks, real executor)   | 250 ms  | 1 s / 2 s   |
+//! | File watcher responds to write            | 500 ms  | 1000 ms      |
+//! | Config watcher debounce fires once/window | —       | 1 event      |
 //!
 //! All tests are `#[cfg(unix)]` because hook commands use `bash`.
 
@@ -19,13 +18,13 @@ mod performance {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
+    use forge_app::{HookExecResult, HookOutcome};
     use forge_domain::{
-        HookCommand, HookEventName, HookInput, HookInputBase, HookInputPayload, HookMatcher,
-        HooksConfig, PluginManifest, ShellHookCommand,
+        HookInput, HookInputBase, HookInputPayload, PluginManifest, ShellHookCommand,
     };
+    use forge_services::ForgeShellHookExecutor;
     use futures::future::join_all;
     use serde_json::json;
-    use tokio::io::AsyncWriteExt;
 
     // ---------------------------------------------------------------
     // (a) Plugin discovery: 20 plugins under 400 ms (2× 200 ms target)
@@ -103,74 +102,41 @@ mod performance {
     }
 
     // ---------------------------------------------------------------
-    // (b) Hook execution: 10 noop hooks under 1000 ms (2× 500 ms)
+    // (b) Hook execution: 10 hooks under 500 ms using the real
+    //     ForgeShellHookExecutor (variable substitution, env vars,
+    //     stdin JSON piping, stdout JSON parsing, exit code
+    //     classification — the full production wire protocol).
     // ---------------------------------------------------------------
 
-    /// Execute a shell hook command the same way `ForgeShellHookExecutor`
-    /// does: serialize `HookInput` to JSON, pipe it to `bash -c <command>`
-    /// on stdin, read stdout/stderr, and return the exit code.
-    async fn execute_shell_hook(command: &str, input: &HookInput) -> i32 {
-        let input_json = serde_json::to_string(input).expect("HookInput serialization");
-
-        let mut cmd = tokio::process::Command::new("bash");
-        cmd.arg("-c")
-            .arg(command)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-
-        let mut child = cmd.spawn().expect("failed to spawn bash");
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(input_json.as_bytes())
-                .await
-                .expect("write stdin");
-            stdin.write_all(b"\n").await.expect("write newline");
-        }
-
-        let output = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
-            .await
-            .expect("hook timed out")
-            .expect("hook wait failed");
-
-        output.status.code().unwrap_or(-1)
-    }
-
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_hook_execution_10_noop_hooks_under_500ms() {
-        // Build a HooksConfig with 10 PreToolUse matchers, each running `exit 0`.
-        let matchers: Vec<HookMatcher> = (0..10)
-            .map(|_| HookMatcher {
-                matcher: Some("*".to_string()),
-                hooks: vec![HookCommand::Command(ShellHookCommand {
-                    command: "exit 0".to_string(),
-                    condition: None,
-                    shell: None,
-                    timeout: None,
-                    status_message: None,
-                    once: false,
-                    async_mode: false,
-                    async_rewake: false,
-                })],
+    async fn test_hook_execution_10_hooks_real_executor() {
+        let executor = ForgeShellHookExecutor::new();
+
+        // Each hook reads stdin (the JSON input) and writes a valid
+        // HookOutput JSON to stdout. This exercises the full executor:
+        // input serialization → ${VAR} substitution → env var injection
+        // → spawn → stdin pipe → stdout JSON parse → classify_outcome.
+        let shell_configs: Vec<ShellHookCommand> = (0..10)
+            .map(|_| ShellHookCommand {
+                command: "read input && echo '{\"continue\": true}'".to_string(),
+                condition: None,
+                shell: None,
+                timeout: None,
+                status_message: None,
+                once: false,
+                async_mode: false,
+                async_rewake: false,
             })
             .collect();
 
-        let event = HookEventName::PreToolUse;
-        let config = HooksConfig(std::collections::BTreeMap::from([(
-            event.clone(),
-            matchers.clone(),
-        )]));
-
-        // Build a minimal HookInput for PreToolUse.
+        // Build a realistic HookInput for PreToolUse.
         let cwd = std::env::current_dir().unwrap();
         let input = HookInput {
             base: HookInputBase {
                 hook_event_name: "PreToolUse".to_string(),
                 session_id: "perf-test".to_string(),
                 transcript_path: cwd.join("transcript.jsonl"),
-                cwd,
+                cwd: cwd.clone(),
                 permission_mode: None,
                 agent_id: None,
                 agent_type: None,
@@ -182,47 +148,62 @@ mod performance {
             },
         };
 
-        // Extract all 10 shell commands and execute them sequentially,
-        // timing the total wall-clock cost.
-        let all_commands: Vec<String> = config
-            .0
-            .get(&HookEventName::PreToolUse)
-            .unwrap()
-            .iter()
-            .flat_map(|m| &m.hooks)
-            .filter_map(|h| match h {
-                HookCommand::Command(shell) => Some(shell.command.clone()),
-                _ => None,
-            })
-            .collect();
+        // Build env vars matching the production dispatcher.
+        let mut env_vars = std::collections::HashMap::new();
+        env_vars.insert(
+            "FORGE_PROJECT_DIR".to_string(),
+            cwd.display().to_string(),
+        );
+        env_vars.insert(
+            "FORGE_SESSION_ID".to_string(),
+            "perf-test".to_string(),
+        );
 
-        assert_eq!(all_commands.len(), 10);
-
-        // Execute all 10 hooks in parallel (mirrors the real dispatcher
-        // which uses `futures::future::join_all`).
+        // Execute all 10 hooks in parallel through the real executor
+        // (mirrors the production dispatcher which uses join_all).
         let start = Instant::now();
-        let futs: Vec<_> = all_commands
+        let futs: Vec<_> = shell_configs
             .iter()
-            .map(|cmd| execute_shell_hook(cmd, &input))
+            .map(|cfg| executor.execute(cfg, &input, env_vars.clone(), None))
             .collect();
-        let results = join_all(futs).await;
+        let results: Vec<anyhow::Result<HookExecResult>> = join_all(futs).await;
         let elapsed = start.elapsed();
 
-        for (i, exit_code) in results.iter().enumerate() {
-            assert_eq!(*exit_code, 0, "noop hook {i} should exit 0");
+        // Verify each hook went through the full pipeline.
+        for (i, result) in results.iter().enumerate() {
+            let result = result
+                .as_ref()
+                .unwrap_or_else(|e| panic!("hook {i} failed: {e}"));
+            assert_eq!(
+                result.outcome,
+                HookOutcome::Success,
+                "hook {i}: expected Success, got {:?}",
+                result.outcome
+            );
+            assert!(
+                result.output.is_some(),
+                "hook {i}: expected parsed HookOutput from JSON stdout"
+            );
+            assert_eq!(
+                result.exit_code,
+                Some(0),
+                "hook {i}: expected exit code 0"
+            );
         }
 
-        // CI runners (GitHub Actions, etc.) have significantly slower
-        // fork+exec than local machines. Use a generous 10 s budget on
-        // CI and a tighter 2 s budget locally.
+        // Budget: 1 s local, 2 s on CI. The local budget accounts for
+        // debug-mode overhead (no inlining, full debug info), CPU contention
+        // from parallel test runners, and 10 fork+exec cycles with full
+        // stdin/stdout JSON piping through ForgeShellHookExecutor.
         let budget = if std::env::var("CI").is_ok() {
-            Duration::from_secs(10)
+            Duration::from_secs(2)
         } else {
-            Duration::from_millis(2000)
+            Duration::from_millis(1000)
         };
         assert!(
             elapsed < budget,
-            "10 parallel noop hook executions took {elapsed:?}, expected < {budget:?}"
+            "10 parallel hook executions via ForgeShellHookExecutor took \
+             {elapsed:?}, expected < {budget:?}"
         );
     }
 

@@ -13,6 +13,7 @@ use tokio::sync::Notify;
 use tracing::warn;
 
 use crate::agent::AgentService;
+use crate::async_hook_queue::AsyncHookResultQueue;
 use crate::lifecycle_fires::add_file_changed_watch_paths;
 use crate::{EnvironmentInfra, TemplateEngine};
 
@@ -28,12 +29,18 @@ pub struct Orchestrator<S> {
     error_tracker: ToolErrorTracker,
     hook: Arc<Hook>,
     config: forge_config::ForgeConfig,
-    /// Optional most-recent user prompt text. Part 2b-ii uses this to
-    /// populate the `UserPromptSubmit` hook payload fired on the first
-    /// iteration of [`Orchestrator::run`]. Callers set it via the
-    /// derived [`Orchestrator::user_prompt`] setter.
+    /// Optional most-recent user prompt text. Used to populate the
+    /// `UserPromptSubmit` hook payload fired on the first iteration of
+    /// [`Orchestrator::run`]. Callers set it via the derived
+    /// [`Orchestrator::user_prompt`] setter.
     #[setters(into, strip_option)]
     user_prompt: Option<String>,
+    /// Shared queue for async-rewake hook results. The orchestrator
+    /// drains this queue before each conversation turn and injects
+    /// pending results as `<system_reminder>` context messages —
+    /// mirroring Claude Code's `enqueuePendingNotification` pipeline.
+    #[setters(into, strip_option)]
+    async_hook_queue: Option<AsyncHookResultQueue>,
 }
 
 impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orchestrator<S> {
@@ -54,6 +61,7 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
             error_tracker: Default::default(),
             hook: Arc::new(Hook::default()),
             user_prompt: None,
+            async_hook_queue: None,
         }
     }
 
@@ -66,26 +74,22 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
     /// cwd) for the current conversation. Used by every fire site to
     /// build [`EventData::with_context`] without duplicating the lookup.
     ///
-    /// TODO(wave-e-1a-task-7-subagent-threading): Phase 7A.4 requires
-    /// that when the Orchestrator runs inside a subagent, every
-    /// event it fires should carry the subagent's UUID in the
-    /// wire-level `HookInputBase.agent_id` instead of the main
-    /// conversation's agent id. Implementing this cleanly is
-    /// invasive — it requires adding `current_subagent_id:
+    /// TODO(subagent-threading): When the Orchestrator runs inside a
+    /// subagent, every event it fires should carry the subagent's
+    /// UUID in the wire-level `HookInputBase.agent_id` instead of
+    /// the main conversation's agent id. Implementing this cleanly
+    /// is invasive — it requires adding `current_subagent_id:
     /// Option<String>` to `Orchestrator`, threading it via either
     /// `ChatRequest` or `Conversation`, plumbing a new
     /// `subagent_id: Option<String>` field through `EventData` and
     /// `PluginHookHandler::build_hook_input`, and updating every
     /// fire site in `orch.rs` that currently destructures the
-    /// 3-tuple from this helper. See
-    /// `plans/2026-04-09-claude-code-plugins-v4/08-phase-7-t3-intermediate.md:
-    /// 97-102` for the original design note. Wave E-1a Pass 1 ships the
-    /// explicit `SubagentStart` / `SubagentStop` fire sites at the
-    /// executor boundary — those carry the subagent UUID directly
-    /// inside the payload so plugins that need to distinguish
-    /// main-vs-subagent context can still filter on them today.
-    /// Wave G can revisit the full inner-orchestrator threading if a
-    /// use case materializes.
+    /// 3-tuple from this helper. The explicit `SubagentStart` /
+    /// `SubagentStop` fire sites at the executor boundary carry the
+    /// subagent UUID directly inside the payload so plugins that
+    /// need to distinguish main-vs-subagent context can still
+    /// filter on them today. Full inner-orchestrator threading can
+    /// be revisited if a use case materializes.
     fn plugin_hook_context(&self) -> (String, PathBuf, PathBuf) {
         let session_id = self.conversation.id.into_string();
         let environment = self.services.get_environment();
@@ -96,6 +100,7 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
 
     // Helper function to get all tool results from a vector of tool calls
     #[async_recursion]
+    #[allow(deprecated)]
     async fn execute_tool_calls(
         &mut self,
         tool_calls: &[ToolCallFull],
@@ -136,9 +141,9 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
             .map(|tool| &tool.name)
             .collect::<HashSet<_>>();
 
-        // Resolve plugin-hook context once per tool-call batch. Phase 4
-        // Part 2b will use the same values when firing PreToolUse /
-        // PostToolUse / PostToolUseFailure hooks.
+        // Resolve plugin-hook context once per tool-call batch. The
+        // same values are used when firing PreToolUse / PostToolUse /
+        // PostToolUseFailure hooks.
         let (session_id, transcript_path, cwd) = self.plugin_hook_context();
 
         // Process non-task tool calls sequentially (preserving UI notifier handshake
@@ -323,7 +328,7 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                 }
             }
 
-            // Apply updated_mcp_tool_output override if present (Phase 4: simple
+            // Apply updated_mcp_tool_output override if present (simple
             // text replacement of the tool's output values)
             let tool_result = if let Some(override_value) = post_hook_result.updated_mcp_tool_output
             {
@@ -460,16 +465,16 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
     // Core orchestration loop. All existing `run` behavior lives here;
     // the public `run` wrapper adds `StopFailure` fire-site dispatch on
     // error.
+    #[allow(deprecated)]
     async fn run_inner(&mut self) -> anyhow::Result<()> {
         let model_id = self.get_model();
 
         let mut context = self.conversation.context.clone().unwrap_or_default();
 
         // Resolve plugin-hook context (session id, transcript path, cwd)
-        // once per `run` invocation. Every legacy `EventData::new` fire
-        // below is migrated to `EventData::with_context` so the Phase 4
-        // plugin hook dispatcher sees real values instead of the
-        // Phase 3 sentinels.
+        // once per `run` invocation. Every fire site below uses
+        // `EventData::with_context` so the plugin hook dispatcher sees
+        // real values instead of legacy sentinels.
         let (session_id, transcript_path, cwd) = self.plugin_hook_context();
 
         // Ensure the transcript directory + file exist before any hooks run.
@@ -511,7 +516,7 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
         // Consume SessionStart hook_result:
         //  - initial_user_message → push as a User ContextMessage
         //  - additional_contexts → push as <system_reminder> messages
-        //  - watch_paths → install runtime FileChanged watchers (Phase 7C Wave E-2b)
+        //  - watch_paths → install runtime FileChanged watchers
         let session_start_hook_result = std::mem::take(&mut self.conversation.hook_result);
 
         if let Some(init_msg) = session_start_hook_result.initial_user_message {
@@ -529,8 +534,8 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
             }
         }
 
-        // Phase 7C Wave E-2b: forward any dynamic watch_paths returned by
-        // the `SessionStart` hook into the running `FileChangedWatcher`.
+        // Forward any dynamic watch_paths returned by the
+        // `SessionStart` hook into the running `FileChangedWatcher`.
         //
         // Wire semantics: per Claude Code, a
         // `hookSpecificOutput.SessionStart.watch_paths` entry is a
@@ -606,6 +611,26 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
             ToolCallContext::new(self.conversation.metrics.clone()).sender(self.sender.clone());
 
         while !should_yield {
+            // Drain any pending async-rewake hook results and inject them
+            // as <system_reminder> messages so the LLM sees them on the
+            // current turn. This mirrors Claude Code's
+            // `enqueuePendingNotification` + `queued_command` attachment
+            // pipeline.
+            if let Some(queue) = &self.async_hook_queue {
+                let pending = queue.drain().await;
+                for result in pending {
+                    let prefix = if result.is_blocking { "BLOCKING: " } else { "" };
+                    let text = format!(
+                        "Async hook '{}' completed: {}{}",
+                        result.hook_name, prefix, result.message
+                    );
+                    let wrapped = Element::new("system_reminder").text(&text);
+                    context.messages.push(
+                        ContextMessage::system_reminder(wrapped, Some(model_id.clone())).into(),
+                    );
+                }
+            }
+
             // Set context for the current loop iteration
             self.conversation.context = Some(context.clone());
             self.services.update(self.conversation.clone()).await?;
@@ -720,7 +745,7 @@ impl<S: AgentService + EnvironmentInfra<Config = forge_config::ForgeConfig>> Orc
                 .handle(&response_event, &mut self.conversation)
                 .await?;
 
-            // Capture for Stop payload (Phase 4 Part 2b-i)
+            // Capture for Stop payload
             last_assistant_content = Some(message.content.clone());
 
             // Turn is completed, if finish_reason is 'stop'. Gemini models return stop as

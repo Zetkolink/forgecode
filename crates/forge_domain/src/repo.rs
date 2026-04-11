@@ -188,7 +188,7 @@ pub trait SkillRepository: Send + Sync {
     /// [`load_skills`](Self::load_skills) re-reads from disk.
     ///
     /// Default implementation is a no-op for repositories that do not
-    /// maintain their own cache. Used by Phase 9's plugin hot-swap to
+    /// maintain their own cache. Used by plugin hot-swap to
     /// pick up newly-installed plugin skills without requiring a
     /// process restart.
     async fn reload(&self) -> Result<()> {
@@ -222,7 +222,7 @@ pub trait PluginRepository: Send + Sync {
     /// Discovers all plugins and returns both the successes and any
     /// per-plugin errors encountered along the way.
     ///
-    /// Used by the Phase 9 `:plugin list` command (and anywhere else a
+    /// Used by the `:plugin list` command (and anywhere else a
     /// "broken plugin" diagnostic surface is wanted) so that a malformed
     /// manifest or unreadable `hooks.json` doesn't silently disappear.
     ///

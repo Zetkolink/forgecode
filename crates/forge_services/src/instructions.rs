@@ -71,6 +71,7 @@ impl<F: EnvironmentInfra + FileReaderInfra + CommandInfra> ForgeCustomInstructio
                 self.infra.get_environment().cwd,
                 true, // silent mode - don't print git output
                 None, // no environment variables needed for git command
+                None, // no extra env vars
             )
             .await
             .ok()?;
@@ -318,6 +319,7 @@ mod tests {
             _working_dir: PathBuf,
             _silent: bool,
             _env_vars: Option<Vec<String>>,
+            _extra_env: Option<std::collections::HashMap<String, String>>,
         ) -> anyhow::Result<CommandOutput> {
             // Only `git rev-parse --show-toplevel` is used by the
             // instructions service; every other command should be an
@@ -347,6 +349,7 @@ mod tests {
             _command: &str,
             _working_dir: PathBuf,
             _env_vars: Option<Vec<String>>,
+            _extra_env: Option<std::collections::HashMap<String, String>>,
         ) -> anyhow::Result<std::process::ExitStatus> {
             unimplemented!()
         }

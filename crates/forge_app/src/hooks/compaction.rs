@@ -16,10 +16,8 @@ use crate::services::Services;
 /// The handler mutates the conversation's context in-place if compaction
 /// is triggered.
 ///
-/// The `plugin_handler` field is held so that Phase 4 Part 2b can fire
-/// `PreCompact` and `PostCompact` plugin hook events around the actual
-/// compaction call. Part 2a wires the field through the constructor but
-/// does not yet invoke those fires.
+/// The `plugin_handler` field fires `PreCompact` and `PostCompact`
+/// plugin hook events around the actual compaction call.
 pub struct CompactionHandler<S> {
     agent: Agent,
     environment: Environment,
@@ -43,7 +41,7 @@ impl<S> CompactionHandler<S> {
     /// * `agent` - The agent configuration containing compaction settings
     /// * `environment` - The environment configuration
     /// * `plugin_handler` - Shared plugin hook dispatcher used to fire
-    ///   `PreCompact` / `PostCompact` events in Part 2b
+    ///   `PreCompact` / `PostCompact` events
     pub fn new(
         agent: Agent,
         environment: Environment,
@@ -119,9 +117,8 @@ where
                         .compact(context_snapshot, false)?;
                 conversation.context = Some(compacted);
 
-                // Fire PostCompact. Phase 4 uses an empty summary — the
-                // real compaction summary extraction lives in Part 2b-iii
-                // follow-ups.
+                // Fire PostCompact. Uses an empty summary — a richer
+                // compaction summary extraction can be added later.
                 conversation.reset_hook_result();
                 let post_payload = PostCompactPayload {
                     trigger: CompactTrigger::Auto,
@@ -143,8 +140,8 @@ where
                     )
                     .await?;
                 }
-                // Drain hook_result — Phase 4 doesn't consume PostCompact
-                // extras on this path.
+                // Drain hook_result — PostCompact extras are not
+                // consumed on this path.
                 let _ = std::mem::take(&mut conversation.hook_result);
             } else {
                 debug!(agent_id = %self.agent.id, "Compaction not needed");

@@ -1,4 +1,4 @@
-//! Wave B — Phase 6A/6B lifecycle fire helpers.
+//! Lifecycle fire helpers for plugin hook events.
 //!
 //! This module hosts the out-of-orchestrator fire sites for
 //! [`NotificationPayload`] and [`SetupPayload`]. Both helpers live in
@@ -34,9 +34,11 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use forge_domain::{
     Agent, AggregatedHookResult, ConfigChangePayload, ConfigSource, Conversation, ConversationId,
-    ElicitationPayload, ElicitationResultPayload, EventData, EventHandle, FileChangeEvent,
-    FileChangedPayload, InstructionsLoadedPayload, LoadedInstructions, ModelId,
-    NotificationPayload, SetupPayload, SetupTrigger, WorktreeCreatePayload,
+    CwdChangedPayload, ElicitationPayload, ElicitationResultPayload, EventData, EventHandle,
+    FileChangeEvent, FileChangedPayload, InstructionsLoadedPayload, LoadedInstructions, ModelId,
+    NotificationPayload, PermissionDeniedPayload, PermissionRequestPayload, PermissionUpdate,
+    SetupPayload, SetupTrigger, SubagentStartPayload, SubagentStopPayload,
+    WorktreeCreatePayload, WorktreeRemovePayload,
 };
 use notify_debouncer_full::notify::RecursiveMode;
 use tracing::{debug, warn};
@@ -67,8 +69,7 @@ async fn resolve_agent_from_services<S: Services>(services: &S) -> Option<Agent>
 }
 
 /// Runtime-settable accessor for the background
-/// `FileChangedWatcher` used by the Phase 7C Wave E-2b dynamic
-/// `watch_paths` wiring.
+/// `FileChangedWatcher` used by the dynamic `watch_paths` wiring.
 ///
 /// The orchestrator's `SessionStart` fire site needs to push
 /// watch-path additions from a hook's
@@ -341,7 +342,7 @@ pub async fn fire_setup_hook<S: Services>(
 /// file/directory change.
 ///
 /// Used by `ForgeAPI` as the out-of-orchestrator entry point for the
-/// `ConfigWatcher` service (Wave C Part 1). The watcher hands us a
+/// `ConfigWatcher` service. The watcher hands us a
 /// classified [`ConfigSource`] and absolute `file_path`; we wrap them
 /// in a [`ConfigChangePayload`] and dispatch through
 /// [`PluginHookHandler`] on a scratch [`Conversation`].
@@ -408,17 +409,16 @@ pub async fn fire_config_change_hook<S: Services>(
 /// change under one of the user's watched paths.
 ///
 /// Used by `ForgeAPI` as the out-of-orchestrator entry point for the
-/// Phase 7C `FileChangedWatcher` service. The watcher hands us an
+/// `FileChangedWatcher` service. The watcher hands us an
 /// absolute `file_path` and a [`FileChangeEvent`] discriminator; we
 /// wrap them in a [`FileChangedPayload`] and dispatch through
 /// [`PluginHookHandler`] on a scratch [`Conversation`].
 ///
 /// Per Claude Code's `FileChanged` semantics, the event is
-/// **observability-only** for Wave E-2a — any `blocking_error`
-/// returned by a plugin hook is drained and discarded, and dispatch
-/// failures are logged at `warn!` but never propagated. Dynamic
-/// extension of the watched-paths set based on hook results is
-/// deferred to Wave E-2b.
+/// **observability-only** — any `blocking_error` returned by a
+/// plugin hook is drained and discarded, and dispatch failures are
+/// logged at `warn!` but never propagated. Dynamic extension of the
+/// watched-paths set based on hook results is pending.
 ///
 /// This function is safe to call even when no plugins are configured:
 /// the hook dispatcher returns an empty result which is then drained.
@@ -460,10 +460,9 @@ pub async fn fire_file_changed_hook<S: Services>(
     }
 
     // Drain and explicitly ignore the blocking_error. FileChanged is
-    // observability-only in Wave E-2a — the watcher callback runs
-    // asynchronously on a background thread with no conversation to
-    // block against. Dynamic watch-path extension based on hook
-    // results is deferred to Wave E-2b.
+    // observability-only — the watcher callback runs asynchronously
+    // on a background thread with no conversation to block against.
+    // Dynamic watch-path extension based on hook results is pending.
     let aggregated = std::mem::take(&mut scratch.hook_result);
     if let Some(err) = aggregated.blocking_error {
         debug!(
@@ -480,11 +479,11 @@ pub async fn fire_file_changed_hook<S: Services>(
 ///
 /// Used by `ForgeApp::chat` to dispatch one hook event per AGENTS.md
 /// file returned by
-/// [`crate::CustomInstructionsService::get_custom_instructions_detailed`]. Pass
-/// 1 of Wave D only fires with
+/// [`crate::CustomInstructionsService::get_custom_instructions_detailed`].
+/// Currently fires with
 /// [`forge_domain::InstructionsLoadReason::SessionStart`]; the nested
 /// traversal, conditional-rule, `@include` and post-compact reasons
-/// are deferred to Pass 2.
+/// are pending.
 ///
 /// Per Claude Code semantics, `InstructionsLoaded` is an
 /// **observability-only** event — any `blocking_error` returned by a
@@ -746,6 +745,378 @@ pub async fn fire_elicitation_result_hook<S: Services>(
     // result and discard it. Plugins cannot block or modify the
     // response via this event.
     let _ = std::mem::take(&mut scratch.hook_result);
+}
+
+/// Fire the `SubagentStart` lifecycle event when a sub-agent (Task tool)
+/// begins execution.
+///
+/// Used by the orchestrator's sub-agent spawning path to notify plugin
+/// hooks that a new sub-agent has started. Per Claude Code semantics,
+/// `SubagentStart` is an **observability-only** event — any
+/// `blocking_error` returned by a plugin hook is drained and discarded,
+/// and dispatch failures are logged at `warn!` but never propagated.
+///
+/// This function is safe to call even when no plugins are configured:
+/// the hook dispatcher returns an empty result which is then drained.
+pub async fn fire_subagent_start_hook<S: Services>(
+    services: Arc<S>,
+    agent_id: String,
+    agent_type: String,
+) {
+    let Some(agent) = resolve_agent_from_services(services.as_ref()).await else {
+        debug!("no agent available — skipping SubagentStart hook fire");
+        return;
+    };
+    let model_id: ModelId = agent.model.clone();
+
+    let environment = services.get_environment();
+    let mut scratch = Conversation::new(ConversationId::generate());
+    let session_id = scratch.id.into_string();
+    let transcript_path = environment.transcript_path(&session_id);
+    let cwd = environment.cwd.clone();
+
+    let payload = SubagentStartPayload { agent_id: agent_id.clone(), agent_type: agent_type.clone() };
+    let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+
+    let plugin_handler = PluginHookHandler::new(services.clone());
+    if let Err(err) =
+        <PluginHookHandler<S> as EventHandle<EventData<SubagentStartPayload>>>::handle(
+            &plugin_handler,
+            &event,
+            &mut scratch,
+        )
+        .await
+    {
+        warn!(
+            agent_id = %agent_id,
+            agent_type = %agent_type,
+            error = %err,
+            "failed to dispatch SubagentStart hook; ignoring per Claude Code semantics"
+        );
+    }
+
+    // Drain and explicitly ignore the blocking_error — SubagentStart is
+    // observability-only.
+    let aggregated = std::mem::take(&mut scratch.hook_result);
+    if let Some(err) = aggregated.blocking_error {
+        debug!(
+            agent_id = %agent_id,
+            agent_type = %agent_type,
+            error = %err.message,
+            "SubagentStart hook returned blocking_error; ignoring (observability only)"
+        );
+    }
+}
+
+/// Fire the `SubagentStop` lifecycle event when a sub-agent finishes
+/// execution.
+///
+/// Used by the orchestrator's sub-agent completion path to notify plugin
+/// hooks that a sub-agent has stopped. Per Claude Code semantics,
+/// `SubagentStop` is an **observability-only** event — any
+/// `blocking_error` is drained and discarded.
+///
+/// This function is safe to call even when no plugins are configured:
+/// the hook dispatcher returns an empty result which is then drained.
+pub async fn fire_subagent_stop_hook<S: Services>(
+    services: Arc<S>,
+    agent_id: String,
+    agent_type: String,
+    agent_transcript_path: PathBuf,
+    stop_hook_active: bool,
+    last_assistant_message: Option<String>,
+) {
+    let Some(agent) = resolve_agent_from_services(services.as_ref()).await else {
+        debug!("no agent available — skipping SubagentStop hook fire");
+        return;
+    };
+    let model_id: ModelId = agent.model.clone();
+
+    let environment = services.get_environment();
+    let mut scratch = Conversation::new(ConversationId::generate());
+    let session_id = scratch.id.into_string();
+    let transcript_path = environment.transcript_path(&session_id);
+    let cwd = environment.cwd.clone();
+
+    let payload = SubagentStopPayload {
+        agent_id: agent_id.clone(),
+        agent_type: agent_type.clone(),
+        agent_transcript_path,
+        stop_hook_active,
+        last_assistant_message,
+    };
+    let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+
+    let plugin_handler = PluginHookHandler::new(services.clone());
+    if let Err(err) =
+        <PluginHookHandler<S> as EventHandle<EventData<SubagentStopPayload>>>::handle(
+            &plugin_handler,
+            &event,
+            &mut scratch,
+        )
+        .await
+    {
+        warn!(
+            agent_id = %agent_id,
+            agent_type = %agent_type,
+            error = %err,
+            "failed to dispatch SubagentStop hook; ignoring per Claude Code semantics"
+        );
+    }
+
+    // Drain and explicitly ignore the blocking_error — SubagentStop is
+    // observability-only.
+    let aggregated = std::mem::take(&mut scratch.hook_result);
+    if let Some(err) = aggregated.blocking_error {
+        debug!(
+            agent_id = %agent_id,
+            agent_type = %agent_type,
+            error = %err.message,
+            "SubagentStop hook returned blocking_error; ignoring (observability only)"
+        );
+    }
+}
+
+/// Fire the `PermissionRequest` lifecycle event when the policy engine
+/// encounters a tool call that requires permission.
+///
+/// Returns the [`AggregatedHookResult`] so the caller (the policy
+/// engine) can consume:
+///
+/// - `permission_behavior == Allow` → auto-grant permission.
+/// - `permission_behavior == Deny` → deny without prompting.
+/// - `blocking_error` → surface an error to the orchestrator.
+///
+/// Fail-open on dispatch errors: logs via `tracing::warn` and returns
+/// [`AggregatedHookResult::default`] so the policy engine falls through
+/// to the interactive permission prompt.
+pub async fn fire_permission_request_hook<S: Services>(
+    services: Arc<S>,
+    tool_name: String,
+    tool_input: serde_json::Value,
+    permission_suggestions: Vec<PermissionUpdate>,
+) -> AggregatedHookResult {
+    let Some(agent) = resolve_agent_from_services(services.as_ref()).await else {
+        debug!("no agent available — skipping PermissionRequest hook fire");
+        return AggregatedHookResult::default();
+    };
+    let model_id: ModelId = agent.model.clone();
+
+    let environment = services.get_environment();
+    let mut scratch = Conversation::new(ConversationId::generate());
+    let session_id = scratch.id.into_string();
+    let transcript_path = environment.transcript_path(&session_id);
+    let cwd = environment.cwd.clone();
+
+    let payload = PermissionRequestPayload {
+        tool_name: tool_name.clone(),
+        tool_input,
+        permission_suggestions,
+    };
+    let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+
+    let plugin_handler = PluginHookHandler::new(services.clone());
+    if let Err(err) =
+        <PluginHookHandler<S> as EventHandle<EventData<PermissionRequestPayload>>>::handle(
+            &plugin_handler,
+            &event,
+            &mut scratch,
+        )
+        .await
+    {
+        warn!(
+            tool_name = %tool_name,
+            error = %err,
+            "failed to dispatch PermissionRequest hook; falling back to interactive prompt"
+        );
+        return AggregatedHookResult::default();
+    }
+
+    // Drain the aggregated result so the caller can inspect
+    // permission_behavior / blocking_error. The scratch conversation
+    // itself is dropped at the end of the function scope.
+    std::mem::take(&mut scratch.hook_result)
+}
+
+/// Fire the `PermissionDenied` lifecycle event after a permission
+/// request is rejected.
+///
+/// This is fire-and-forget — the aggregated result is drained and
+/// discarded per the observability-only contract. Plugins use this
+/// event for audit logging or analytics.
+///
+/// Fail-open on dispatch errors: logs via `tracing::warn` and returns
+/// without propagating so the denial path is never blocked by a
+/// misbehaving plugin.
+pub async fn fire_permission_denied_hook<S: Services>(
+    services: Arc<S>,
+    tool_name: String,
+    tool_input: serde_json::Value,
+    tool_use_id: String,
+    reason: String,
+) {
+    let Some(agent) = resolve_agent_from_services(services.as_ref()).await else {
+        debug!("no agent available — skipping PermissionDenied hook fire");
+        return;
+    };
+    let model_id: ModelId = agent.model.clone();
+
+    let environment = services.get_environment();
+    let mut scratch = Conversation::new(ConversationId::generate());
+    let session_id = scratch.id.into_string();
+    let transcript_path = environment.transcript_path(&session_id);
+    let cwd = environment.cwd.clone();
+
+    let payload = PermissionDeniedPayload {
+        tool_name: tool_name.clone(),
+        tool_input,
+        tool_use_id,
+        reason,
+    };
+    let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+
+    let plugin_handler = PluginHookHandler::new(services.clone());
+    if let Err(err) =
+        <PluginHookHandler<S> as EventHandle<EventData<PermissionDeniedPayload>>>::handle(
+            &plugin_handler,
+            &event,
+            &mut scratch,
+        )
+        .await
+    {
+        warn!(
+            tool_name = %tool_name,
+            error = %err,
+            "failed to dispatch PermissionDenied hook (observability-only, ignoring)"
+        );
+        return;
+    }
+
+    // PermissionDenied is observability-only; drain the aggregated
+    // result and discard it.
+    let aggregated = std::mem::take(&mut scratch.hook_result);
+    if let Some(err) = aggregated.blocking_error {
+        debug!(
+            tool_name = %tool_name,
+            error = %err.message,
+            "PermissionDenied hook returned blocking_error; ignoring (observability only)"
+        );
+    }
+}
+
+/// Fire the `CwdChanged` lifecycle event when the orchestrator's
+/// working directory changes.
+///
+/// Used by the Shell tool's cwd tracking to notify plugin hooks when
+/// a `cd` command or worktree switch changes the effective working
+/// directory. Per Claude Code semantics, `CwdChanged` is an
+/// **observability-only** event — any `blocking_error` is drained and
+/// discarded.
+///
+/// This function is safe to call even when no plugins are configured:
+/// the hook dispatcher returns an empty result which is then drained.
+pub async fn fire_cwd_changed_hook<S: Services>(
+    services: Arc<S>,
+    old_cwd: PathBuf,
+    new_cwd: PathBuf,
+) {
+    let Some(agent) = resolve_agent_from_services(services.as_ref()).await else {
+        debug!("no agent available — skipping CwdChanged hook fire");
+        return;
+    };
+    let model_id: ModelId = agent.model.clone();
+
+    let environment = services.get_environment();
+    let mut scratch = Conversation::new(ConversationId::generate());
+    let session_id = scratch.id.into_string();
+    let transcript_path = environment.transcript_path(&session_id);
+    let cwd = environment.cwd.clone();
+
+    let payload = CwdChangedPayload { old_cwd: old_cwd.clone(), new_cwd: new_cwd.clone() };
+    let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+
+    let plugin_handler = PluginHookHandler::new(services.clone());
+    if let Err(err) =
+        <PluginHookHandler<S> as EventHandle<EventData<CwdChangedPayload>>>::handle(
+            &plugin_handler,
+            &event,
+            &mut scratch,
+        )
+        .await
+    {
+        warn!(
+            old_cwd = %old_cwd.display(),
+            new_cwd = %new_cwd.display(),
+            error = %err,
+            "failed to dispatch CwdChanged hook; ignoring per Claude Code semantics"
+        );
+    }
+
+    // Drain and explicitly ignore the blocking_error — CwdChanged is
+    // observability-only.
+    let aggregated = std::mem::take(&mut scratch.hook_result);
+    if let Some(err) = aggregated.blocking_error {
+        debug!(
+            old_cwd = %old_cwd.display(),
+            new_cwd = %new_cwd.display(),
+            error = %err.message,
+            "CwdChanged hook returned blocking_error; ignoring (observability only)"
+        );
+    }
+}
+
+/// Fire the `WorktreeRemove` lifecycle event when a worktree is
+/// cleaned up.
+///
+/// Used by the worktree / sandbox cleanup path to notify plugin hooks
+/// that a worktree has been removed. Returns the
+/// [`AggregatedHookResult`] so the caller can consume any
+/// `blocking_error` (a plugin veto of the removal) or
+/// `additional_contexts` / `system_messages`.
+///
+/// Fail-open on dispatch errors: logs via `tracing::warn` and returns
+/// [`AggregatedHookResult::default`] so the built-in `git worktree
+/// remove` path proceeds.
+pub async fn fire_worktree_remove_hook<S: Services>(
+    services: Arc<S>,
+    worktree_path: PathBuf,
+) -> AggregatedHookResult {
+    let Some(agent) = resolve_agent_from_services(services.as_ref()).await else {
+        debug!("no agent available — skipping WorktreeRemove hook fire");
+        return AggregatedHookResult::default();
+    };
+    let model_id: ModelId = agent.model.clone();
+
+    let environment = services.get_environment();
+    let mut scratch = Conversation::new(ConversationId::generate());
+    let session_id = scratch.id.into_string();
+    let transcript_path = environment.transcript_path(&session_id);
+    let cwd = environment.cwd.clone();
+
+    let payload = WorktreeRemovePayload { worktree_path: worktree_path.clone() };
+    let event = EventData::with_context(agent, model_id, session_id, transcript_path, cwd, payload);
+
+    let plugin_handler = PluginHookHandler::new(services.clone());
+    if let Err(err) =
+        <PluginHookHandler<S> as EventHandle<EventData<WorktreeRemovePayload>>>::handle(
+            &plugin_handler,
+            &event,
+            &mut scratch,
+        )
+        .await
+    {
+        warn!(
+            worktree_path = %worktree_path.display(),
+            error = %err,
+            "failed to dispatch WorktreeRemove hook; falling back to built-in git worktree remove"
+        );
+        return AggregatedHookResult::default();
+    }
+
+    // Drain the aggregated result so the caller can inspect
+    // blocking_error / worktree_path override. The scratch
+    // conversation itself is dropped at the end of the function scope.
+    std::mem::take(&mut scratch.hook_result)
 }
 
 #[cfg(test)]

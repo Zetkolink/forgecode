@@ -33,7 +33,7 @@ pub struct ToolRegistry<S> {
     agent_executor: AgentExecutor<S>,
     mcp_executor: McpExecutor<S>,
     services: Arc<S>,
-    /// Wave E-1b: shared plugin hook dispatcher used for the
+    /// Shared plugin hook dispatcher used for the
     /// `PermissionRequest` / `PermissionDenied` fire sites inside
     /// [`ToolRegistry::check_tool_permission`]. Cloned from the same
     /// handler passed to [`AgentExecutor`] so the once-fired tracking
@@ -72,7 +72,7 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
 
     /// Check if a tool operation is allowed based on the workflow policies.
     ///
-    /// Wave E-1b: this is the fire site for the `PermissionRequest` and
+    /// This is the fire site for the `PermissionRequest` and
     /// `PermissionDenied` lifecycle events. The dispatch happens against a
     /// **scratch** [`Conversation`] because the live orchestrator conversation
     /// is not reachable through the [`crate::services::AgentService`] call
@@ -90,11 +90,11 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
     /// Errors are returned when the plugin dispatcher signals an `interrupt`,
     /// which the caller is expected to propagate up the orchestrator stack.
     ///
-    /// TODO(wave-e-1b-tool-registry-integration-tests): ToolRegistry lacks a
+    /// TODO(tool-registry-integration-tests): ToolRegistry lacks a
     /// mock-Services test harness, so the plugin consume paths here are
     /// covered only by dispatcher-level tests in
-    /// `crates/forge_app/src/hooks/plugin.rs`. A full integration suite is
-    /// deferred until a ToolRegistry test harness is introduced.
+    /// `crates/forge_app/src/hooks/plugin.rs`. A full integration suite
+    /// will be added once a ToolRegistry test harness is introduced.
     async fn check_tool_permission(
         &self,
         tool_input: &ToolCatalog,
@@ -106,7 +106,7 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
             return Ok(false);
         };
 
-        // Wave E-1b: fire PermissionRequest before delegating to the policy
+        // Fire PermissionRequest before delegating to the policy
         // service. Allows plugin hooks to auto-approve, auto-deny, mutate
         // the tool input, or interrupt the session.
         let tool_name = ToolName::new(tool_input);
@@ -239,8 +239,8 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
         let model_id = agent.model.clone();
 
         // TODO: compute real permission_suggestions from the policy engine —
-        // Phase 7B ships an empty vec per the plan; real suggestion logic
-        // lands in the Phase 7 expansion (see `hook_payloads.rs:476-479`).
+        // currently ships an empty vec; real suggestion logic is pending
+        // (see `hook_payloads.rs:476-479`).
         let payload = PermissionRequestPayload {
             tool_name: tool_name.as_str().to_string(),
             tool_input: tool_input.clone(),
@@ -278,8 +278,8 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ToolReg
         let model_id = agent.model.clone();
 
         // TODO: thread the real tool_use_id through the policy path —
-        // `ToolCallContext` does not carry it today, so Phase 7B forwards
-        // an empty string as a placeholder.
+        // `ToolCallContext` does not carry it today, so an empty string
+        // is forwarded as a placeholder.
         let payload = PermissionDeniedPayload {
             tool_name: tool_name.as_str().to_string(),
             tool_input: tool_input.clone(),

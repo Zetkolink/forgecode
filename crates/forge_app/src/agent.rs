@@ -61,7 +61,7 @@ impl<T: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> AgentSe
         context: &ToolCallContext,
         call: ToolCallFull,
     ) -> ToolResult {
-        // Phase 7A: construct a fresh `PluginHookHandler` for this
+        // Construct a fresh `PluginHookHandler` for this
         // per-tool-call `ToolRegistry`. The blanket `AgentService::call`
         // blanket-impl path is invoked by the main orchestrator when
         // dispatching a tool call — each invocation builds a throwaway

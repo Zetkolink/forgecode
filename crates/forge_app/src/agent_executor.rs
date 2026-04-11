@@ -18,7 +18,7 @@ use crate::{AgentRegistry, ConversationService, EnvironmentInfra, Services};
 pub struct AgentExecutor<S> {
     services: Arc<S>,
     pub tool_agents: Arc<RwLock<Option<Vec<ToolDefinition>>>>,
-    /// Phase 7A: shared plugin hook dispatcher used for the
+    /// Shared plugin hook dispatcher used for the
     /// `SubagentStart` / `SubagentStop` fire sites inside
     /// [`AgentExecutor::execute`]. Reuses the handler constructed by
     /// `ForgeApp::chat` so the once-fired tracking stays consistent
@@ -88,7 +88,7 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> AgentEx
             conversation
         };
 
-        // ---- Phase 7A: SubagentStart fire site ----
+        // ---- SubagentStart fire site ----
         //
         // Generate a stable subagent UUID for this execution. Using
         // `ConversationId::generate()` keeps the id a uuid v4 string
@@ -98,7 +98,7 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> AgentEx
         let agent_type: String = agent_id.as_str().to_string();
 
         // Resolve the child agent for the event context. Fall back to
-        // a stub Agent built from the id (matching the
+        // a minimal Agent built from the id (matching the
         // `lifecycle_fires::fire_setup_hook` fallback pattern) so the
         // fire site never panics when the registry lookup fails.
         let env = self.services.get_environment();
@@ -112,7 +112,7 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> AgentEx
                 // Fall back to the first registered agent so we have a
                 // real ModelId on the event, mirroring the
                 // `fire_setup_hook` fallback. If the registry is
-                // empty, build a minimal stub — the ModelId is unused
+                // empty, build a minimal placeholder — the ModelId is unused
                 // by the plugin dispatcher for `SubagentStart` /
                 // `SubagentStop` (the matcher filters on agent_type).
                 let agents = self.services.get_agents().await.ok().unwrap_or_default();
@@ -168,17 +168,16 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> AgentEx
 
         // Consume additional_contexts emitted by SubagentStart hooks.
         //
-        // TODO(wave-e-1a-subagent-context-injection): This uses the
-        // fallback simplification documented in the task prompt —
-        // prepend each additional context wrapped in
+        // TODO(subagent-context-injection): This uses the fallback
+        // simplification — prepend each additional context wrapped in
         // `<system_reminder>` tags to the `task` string so the inner
         // orchestrator receives them via the `UserPromptSubmit` event.
         // A cleaner refactor (injecting
         // `ContextMessage::system_reminder` into the subagent's
-        // `Conversation.context` before `upsert_conversation`) can
-        // land in Pass 2 / Wave G; the fallback keeps Pass 1 simple
-        // and robust against the `SystemPrompt::add_system_message`
-        // overwrite that happens inside `ForgeApp::chat`.
+        // `Conversation.context` before `upsert_conversation`) is
+        // pending; the fallback keeps things simple and robust against
+        // the `SystemPrompt::add_system_message` overwrite that
+        // happens inside `ForgeApp::chat`.
         let extra_contexts: Vec<String> = conversation
             .hook_result
             .additional_contexts
@@ -230,8 +229,8 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> AgentEx
                 agent_id: subagent_id,
                 agent_type,
                 agent_transcript_path: transcript_path.clone(),
-                // Pass 2 can wire this from hook-driven
-                // `prevent_continuation` output.
+                // Can be wired from hook-driven
+                // `prevent_continuation` output in the future.
                 stop_hook_active: false,
                 last_assistant_message,
             };
@@ -370,13 +369,13 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> AgentEx
     }
 }
 
-// ---- Wave E-1a: Fire-site payload construction tests ----
+// ---- Fire-site payload construction tests ----
 //
-// TODO(wave-e-1a-full-executor-tests): These are construction-level unit
+// TODO(full-executor-tests): These are construction-level unit
 // tests for the `SubagentStart` / `SubagentStop` payloads built inside
 // `AgentExecutor::execute`. A full integration harness that mocks
 // `Services` (including `ConversationService`, `AgentRegistry`,
-// `hook_config_loader`, `hook_executor`) is out of scope for Pass 1 —
+// `hook_config_loader`, `hook_executor`) is not yet available —
 // the full end-to-end happy-path, blocking-error, and context-injection
 // flows will be covered once a shared `MockServices` test kit lands.
 // Until then, these tests document the field wiring that
@@ -506,8 +505,8 @@ mod tests {
         assert_eq!(event_data.payload.agent_type, "muse");
         // The EventData carries the child agent, so the wire-level
         // HookInputBase.agent_id defaults to the child agent's id —
-        // Task 7's subagent UUID override is deferred (see
-        // `TODO(wave-e-1a-task-7-subagent-threading)` in orch.rs).
+        // Task 7's subagent UUID override is pending (see
+        // `TODO(subagent-threading)` in orch.rs).
         assert_eq!(event_data.agent.id.as_str(), "muse");
     }
 }

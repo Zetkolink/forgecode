@@ -74,8 +74,8 @@ pub struct HookInput {
 /// that role.
 ///
 /// The final `Generic(serde_json::Value)` variant catches any event shape
-/// we haven't modeled yet (including the deferred `Teammates`/`Tasks`
-/// events). This keeps the parser forward-compatible.
+/// we haven't modeled yet (including the `Teammates`/`Tasks` events that
+/// are not currently fired). This keeps the parser forward-compatible.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(untagged, rename_all = "snake_case")]
 pub enum HookInputPayload {
@@ -217,7 +217,7 @@ pub enum HookInputPayload {
         elicitation_id: Option<String>,
     },
     /// Fallback for event payload shapes we haven't modeled yet — including
-    /// deferred v4 events like `TeammateIdle`. The raw JSON is preserved.
+    /// unrecognized v4 events like `TeammateIdle`. The raw JSON is preserved.
     Generic(serde_json::Value),
 }
 
@@ -303,9 +303,8 @@ pub enum HookDecision {
 ///
 /// Discriminated by the `hookEventName` JSON key (note: this one is
 /// camelCase even though the input side uses snake_case — that's the
-/// asymmetry Claude Code ships with). Part 1 models the four most common
-/// variants (PreToolUse, PostToolUse, UserPromptSubmit, SessionStart);
-/// later phases extend this enum as more events are wired up.
+/// asymmetry Claude Code ships with). Currently models the most common
+/// variants; the enum is extended as more events are wired up.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "hookEventName")]
 pub enum HookSpecificOutput {
@@ -442,6 +441,43 @@ pub enum PermissionDecision {
     Allow,
     Deny,
     Ask,
+}
+
+// ---------- Prompt Request Protocol (bidirectional stdin) ----------
+
+/// A prompt request emitted by a hook process via stdout.
+///
+/// The Claude Code hook protocol allows hooks to request interactive prompts
+/// during execution. The runtime parses these from stdout line-by-line, shows
+/// the prompt to the user, and writes the response back to the hook's stdin.
+///
+/// Reference: `claude-code/src/utils/hooks.ts:1068-1109`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookPromptRequest {
+    pub prompt: HookPromptPayload,
+}
+
+/// Payload inside a [`HookPromptRequest`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookPromptPayload {
+    /// The type of prompt: `"confirm"`, `"input"`, or `"select"`.
+    #[serde(rename = "type")]
+    pub prompt_type: String,
+    /// The message to display to the user.
+    pub message: String,
+    /// Default value (optional).
+    #[serde(default)]
+    pub default: Option<String>,
+    /// Options for `select`-type prompts.
+    #[serde(default)]
+    pub options: Option<Vec<String>>,
+}
+
+/// Response sent back to the hook process via stdin after the user answers a
+/// prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookPromptResponse {
+    pub response: String,
 }
 
 #[cfg(test)]
@@ -607,9 +643,9 @@ mod tests {
 
     #[test]
     fn test_hook_output_sync_parses_permission_request_specific_output() {
-        // Wave E-1b: PermissionRequest hook output carries a permission
-        // decision, optional reason, updated_input/updated_permissions
-        // overrides, plus interrupt/retry signals.
+        // PermissionRequest hook output carries a permission decision,
+        // optional reason, updated_input/updated_permissions overrides,
+        // plus interrupt/retry signals.
         let fixture = r#"{
             "hookSpecificOutput": {
                 "hookEventName": "PermissionRequest",
@@ -690,7 +726,7 @@ mod tests {
         }
     }
 
-    // ---- Phase 6A / 6B: Notification + Setup wire tests ----
+    // ---- Notification + Setup wire tests ----
 
     #[test]
     fn test_hook_input_serializes_notification_with_snake_case_fields() {
@@ -735,7 +771,7 @@ mod tests {
         assert_eq!(json["trigger"], "init");
     }
 
-    // ---- Phase 6C: ConfigChange wire tests ----
+    // ---- ConfigChange wire tests ----
 
     #[test]
     fn test_hook_input_config_change_wire_format() {
@@ -768,7 +804,7 @@ mod tests {
         assert!(json.get("file_path").is_none());
     }
 
-    // ---- Phase 7A: Subagent wire tests ----
+    // ---- Subagent wire tests ----
 
     #[test]
     fn test_hook_input_subagent_start_wire_format() {
@@ -828,7 +864,7 @@ mod tests {
         assert!(json.get("last_assistant_message").is_none());
     }
 
-    // ---- Phase 7B: Permission wire tests ----
+    // ---- Permission wire tests ----
 
     #[test]
     fn test_hook_input_permission_request_wire_format() {
@@ -930,7 +966,7 @@ mod tests {
         assert_eq!(json["worktree_path"], "/tmp/wt/feature");
     }
 
-    /// Wave E-2c-i: parsing a `WorktreeCreate` hook's JSON stdout
+    /// Parsing a `WorktreeCreate` hook's JSON stdout
     /// should surface the `worktreePath` field on the specific-output
     /// variant. Mirrors Claude Code's wire format
     /// (`claude-code/src/utils/hooks.ts:4956`) where a `command`-type
@@ -986,7 +1022,7 @@ mod tests {
         }
     }
 
-    // ---- Phase 6D: InstructionsLoaded wire test ----
+    // ---- InstructionsLoaded wire test ----
 
     #[test]
     fn test_hook_input_instructions_loaded_wire_format() {
@@ -1012,7 +1048,7 @@ mod tests {
         assert!(json.get("parent_file_path").is_none());
     }
 
-    // ---- Phase 8D: Elicitation + ElicitationResult wire tests ----
+    // ---- Elicitation + ElicitationResult wire tests ----
 
     #[test]
     fn test_hook_input_elicitation_wire_format() {

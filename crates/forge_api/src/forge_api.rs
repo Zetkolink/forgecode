@@ -110,6 +110,11 @@ impl ForgeAPI<ForgeServices<ForgeRepo<ForgeInfra>>, ForgeRepo<ForgeInfra>> {
         // request with a warn log.
         app.init_elicitation_dispatcher();
 
+        // Populate the hook executor's LLM service handle so prompt
+        // and agent hooks can make model calls. Same OnceLock pattern
+        // as the elicitation dispatcher — must run after `Arc::new`.
+        app.init_hook_executor_services();
+
         // Phase 8 Wave F-2: plumb the same dispatcher into
         // `ForgeInfra`'s `ForgeMcpServer` slot so the rmcp
         // `ClientHandler::create_elicitation` callback (implemented
@@ -444,7 +449,7 @@ impl<
         working_dir: PathBuf,
     ) -> anyhow::Result<CommandOutput> {
         self.infra
-            .execute_command(command.to_string(), working_dir, false, None)
+            .execute_command(command.to_string(), working_dir, false, None, None)
             .await
     }
     async fn read_mcp_config(&self, scope: Option<&Scope>) -> Result<McpConfig> {
@@ -466,7 +471,7 @@ impl<
         command: &str,
     ) -> anyhow::Result<std::process::ExitStatus> {
         let cwd = self.environment().cwd;
-        self.infra.execute_command_raw(command, cwd, None).await
+        self.infra.execute_command_raw(command, cwd, None, None).await
     }
 
     async fn get_agent_provider(&self, agent_id: AgentId) -> anyhow::Result<Provider<Url>> {

@@ -1,7 +1,7 @@
-//! In-process Rust payloads for the T1 Claude-Code-style lifecycle events.
+//! In-process Rust payloads for the Claude-Code-style lifecycle events.
 //!
 //! These structs are the orchestrator-side shape of the new events added in
-//! Phase 4: they travel inside [`crate::EventData`] and are handed to the
+//! They travel inside [`crate::EventData`] and are handed to the
 //! registered [`crate::EventHandle`] implementations when an event fires.
 //!
 //! They are distinct from [`crate::HookInputPayload`] (in `hook_io.rs`),
@@ -200,11 +200,10 @@ pub struct StopFailurePayload {
 /// Kind of user-facing notification. Serialized as snake_case on the wire
 /// (`"idle_prompt"`, `"auth_success"`, ...).
 ///
-/// The set is intentionally closed for now — Phase 6A only needs the four
-/// notification sources that will show up once Phase 8 wires real emission
-/// points (REPL idle, OAuth completion, elicitation). A free-form
-/// `Custom(String)` variant can be added later without breaking the wire
-/// format.
+/// The set is intentionally closed for now — only the four notification
+/// sources below are supported (REPL idle, OAuth completion, elicitation).
+/// A free-form `Custom(String)` variant can be added later without
+/// breaking the wire format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationKind {
     /// REPL has been idle waiting for user input past the configured
@@ -237,8 +236,8 @@ impl NotificationKind {
 /// The `notification_type` field holds the already-serialized
 /// [`NotificationKind`] so the same struct doubles as the in-process
 /// payload and as the input to the `From<NotificationPayload> for
-/// HookInputPayload` impl below. Phase 6A does not yet fire this event —
-/// Phase 8 will add the real emission points.
+/// HookInputPayload` impl below. This event is not yet fired — real
+/// emission points are pending.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationPayload {
     /// Body of the notification as shown to the user.
@@ -278,9 +277,8 @@ impl SetupTrigger {
 /// Payload for the `Setup` event — fired once per `forge --init` /
 /// `forge --maintenance` invocation.
 ///
-/// Phase 6B ships only the infrastructure (payload + dispatcher impl).
-/// The CLI flags and fire site in `forge_main` are deferred to a later
-/// phase so this phase stays scoped to hook plumbing.
+/// Currently ships only the infrastructure (payload + dispatcher impl).
+/// The CLI flags and fire site in `forge_main` are pending.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetupPayload {
     /// What triggered the setup pass.
@@ -388,15 +386,14 @@ pub struct PostCompactPayload {
     pub compact_summary: String,
 }
 
-// ---------- Subagent events (Phase 7A) ----------
+// ---------- Subagent events ----------
 
 /// Payload for the `SubagentStart` event — fired when a sub-agent begins
 /// running inside the orchestrator (e.g. a spawned `code-reviewer` or
 /// `muse` agent).
 ///
-/// Phase 7A ships only the infrastructure slot; the real fire sites in
-/// `agent_executor.rs` are deferred until the Phase 7 expansion that
-/// also threads `agent_id` through the orchestrator.
+/// Currently ships only the infrastructure slot; the real fire sites in
+/// `agent_executor.rs` are pending.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentStartPayload {
     /// Stable identifier for the running sub-agent instance. Used by
@@ -428,7 +425,7 @@ pub struct SubagentStopPayload {
     pub last_assistant_message: Option<String>,
 }
 
-// ---------- Permission events (Phase 7B) ----------
+// ---------- Permission events ----------
 
 /// Where a permission rule update should be persisted. Serialized as
 /// camelCase strings on the wire (`"userSettings"`, `"projectSettings"`,
@@ -451,9 +448,9 @@ pub enum PermissionDestination {
 /// requested tool to one of the permission stores.
 ///
 /// Mirrors Claude Code's `permissionUpdates` schema field on the
-/// PermissionRequest event. Phase 7B ships only the type — computing
+/// PermissionRequest event. Currently ships only the type — computing
 /// actual suggestions (and wiring them through the policy engine)
-/// lands in the Phase 7 expansion.
+/// is pending.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionUpdate {
@@ -469,8 +466,8 @@ pub struct PermissionUpdate {
 /// needs permission that hasn't been granted yet and the policy engine
 /// wants to let plugin hooks suggest or auto-allow it.
 ///
-/// Phase 7B ships only the payload + dispatcher infra; fire sites in
-/// `policy.rs` are deferred until the Phase 7 expansion.
+/// Currently ships only the payload + dispatcher infra; fire sites in
+/// `policy.rs` are pending.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionRequestPayload {
     /// Name of the tool requesting permission.
@@ -478,8 +475,7 @@ pub struct PermissionRequestPayload {
     /// Raw tool input as JSON — matches whatever the model emitted.
     pub tool_input: serde_json::Value,
     /// Suggested permission updates computed by the policy engine.
-    /// Empty for Phase 7B — populated once the real suggestion logic
-    /// lands in the Phase 7 expansion.
+    /// Currently empty — populated once the real suggestion logic lands.
     pub permission_suggestions: Vec<PermissionUpdate>,
 }
 
@@ -498,14 +494,14 @@ pub struct PermissionDeniedPayload {
     pub reason: String,
 }
 
-// ---------- Cwd + FileChanged events (Phase 7C) ----------
+// ---------- Cwd + FileChanged events ----------
 
 /// Payload for the `CwdChanged` event — fired whenever the
 /// orchestrator's current working directory changes (e.g. after
 /// `cd` inside a shell tool, or when switching worktrees).
 ///
-/// Phase 7C ships only the payload + dispatcher infra; cwd tracking
-/// inside the `Shell` tool is deferred to the Phase 7 expansion.
+/// Currently ships only the payload + dispatcher infra; cwd tracking
+/// inside the `Shell` tool is pending.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CwdChangedPayload {
     /// The working directory before the change.
@@ -542,9 +538,8 @@ impl FileChangeEvent {
 /// Payload for the `FileChanged` event — fired when a watched path on
 /// disk changes.
 ///
-/// Phase 7C ships only the payload + dispatcher infra; the real
-/// `FileChangedWatcher` service that fires this event is deferred to
-/// the Phase 7 expansion.
+/// Currently ships only the payload + dispatcher infra; the real
+/// `FileChangedWatcher` service that fires this event is pending.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileChangedPayload {
     /// Absolute path of the file that changed.
@@ -553,15 +548,14 @@ pub struct FileChangedPayload {
     pub event: FileChangeEvent,
 }
 
-// ---------- Worktree events (Phase 7D) ----------
+// ---------- Worktree events ----------
 
 /// Payload for the `WorktreeCreate` event — fired when the agent enters
 /// a new git worktree via `EnterWorktreeTool` or when a hook-driven VCS
 /// integration provisions one on its behalf.
 ///
-/// Phase 7D ships only the payload + dispatcher plumbing; the real fire
-/// sites in the worktree tools and sandbox layer are deferred to the
-/// Phase 7 expansion.
+/// Currently ships only the payload + dispatcher plumbing; the real fire
+/// sites in the worktree tools and sandbox layer are pending.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorktreeCreatePayload {
     /// User-provided name for the worktree. Plugin hooks receive this as
@@ -574,18 +568,18 @@ pub struct WorktreeCreatePayload {
 /// a worktree via `ExitWorktreeTool`, either through git or via a
 /// plugin-provided VCS hook.
 ///
-/// Phase 7D ships only the payload; real fire sites are deferred.
+/// Currently ships only the payload; real fire sites are pending.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorktreeRemovePayload {
     /// Absolute path of the worktree that was removed.
     pub worktree_path: std::path::PathBuf,
 }
 
-// ---------- InstructionsLoaded event (Phase 6D) ----------
+// ---------- InstructionsLoaded event ----------
 //
 // The [`MemoryType`] and [`InstructionsLoadReason`] enums referenced by
-// the payload below used to live inline in this file. Wave D Pass 1
-// moved them into `crate::memory` so the in-process
+// the payload below used to live inline in this file. They were
+// moved into `crate::memory` so the in-process
 // [`crate::LoadedInstructions`] struct can share the same classification
 // vocabulary without a circular dependency. They are re-exported at the
 // crate root so the payload continues to reference them via plain
@@ -596,11 +590,10 @@ use crate::{InstructionsLoadReason, MemoryType};
 /// Payload for the `InstructionsLoaded` event — fired whenever
 /// Forge loads an instructions / memory file (`AGENTS.md` etc).
 ///
-/// Phase 6D minimal ships only the payload + dispatcher plumbing; the
+/// Currently ships only the payload + dispatcher plumbing; the
 /// full multi-layer memory system with nested traversal, conditional
-/// rules, and `@include` resolution is deferred to the Phase 6D
-/// expansion. The existing `CustomInstructionsService` is **not**
-/// modified in this pass.
+/// rules, and `@include` resolution is pending. The existing
+/// `CustomInstructionsService` is **not** modified.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstructionsLoadedPayload {
     pub file_path: std::path::PathBuf,
@@ -618,16 +611,15 @@ pub struct InstructionsLoadedPayload {
     pub parent_file_path: Option<std::path::PathBuf>,
 }
 
-// ---------- Elicitation events (Phase 8D) ----------
+// ---------- Elicitation events ----------
 
 /// Payload for the `Elicitation` event — fired by the MCP client
 /// before it prompts the user for additional input on behalf of an
 /// MCP server.
 ///
-/// Phase 8D minimal ships only the payload + dispatcher plumbing; the
+/// Currently ships only the payload + dispatcher plumbing; the
 /// actual MCP client integration (handling `elicitation/create`
-/// requests from servers, terminal UI for form/URL modes) is deferred
-/// to the Phase 8 expansion.
+/// requests from servers, terminal UI for form/URL modes) is pending.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElicitationPayload {
     /// Name of the MCP server that requested the elicitation.
@@ -1059,7 +1051,7 @@ mod tests {
         }
     }
 
-    // ---- Phase 6A: Notification payload tests ----
+    // ---- Notification payload tests ----
 
     #[test]
     fn test_notification_kind_as_wire_str_covers_all_variants() {
@@ -1118,7 +1110,7 @@ mod tests {
         }
     }
 
-    // ---- Phase 6C: ConfigChange payload tests ----
+    // ---- ConfigChange payload tests ----
 
     #[test]
     fn test_config_source_wire_str_all_variants() {
@@ -1173,7 +1165,7 @@ mod tests {
         }
     }
 
-    // ---- Phase 6B: Setup payload tests ----
+    // ---- Setup payload tests ----
 
     #[test]
     fn test_setup_trigger_serializes_as_snake_case() {
@@ -1199,7 +1191,7 @@ mod tests {
         }
     }
 
-    // ---- Phase 7A: Subagent payload tests ----
+    // ---- Subagent payload tests ----
 
     #[test]
     fn test_subagent_start_payload_serializes_with_snake_case_fields() {
@@ -1276,7 +1268,7 @@ mod tests {
         }
     }
 
-    // ---- Phase 7B: Permission payload tests ----
+    // ---- Permission payload tests ----
 
     #[test]
     fn test_permission_destination_serializes_as_camel_case() {
@@ -1358,7 +1350,7 @@ mod tests {
         }
     }
 
-    // ---- Phase 7C: Cwd + FileChanged payload tests ----
+    // ---- Cwd + FileChanged payload tests ----
 
     #[test]
     fn test_file_change_event_wire_str_all_variants() {
@@ -1399,7 +1391,7 @@ mod tests {
         }
     }
 
-    // ---- Phase 7D: Worktree payload tests ----
+    // ---- Worktree payload tests ----
 
     #[test]
     fn test_worktree_create_payload_serializes_with_name_field() {
@@ -1441,7 +1433,7 @@ mod tests {
         }
     }
 
-    // ---- Phase 6D: InstructionsLoaded payload tests ----
+    // ---- InstructionsLoaded payload tests ----
     //
     // Wire-string coverage for [`MemoryType`] and [`InstructionsLoadReason`]
     // lives next to the type definitions in `crate::memory`; here we
@@ -1479,7 +1471,7 @@ mod tests {
         }
     }
 
-    // ---- Phase 8D: Elicitation payload tests ----
+    // ---- Elicitation payload tests ----
 
     #[test]
     fn test_elicitation_payload_into_hook_input_payload_form_mode() {

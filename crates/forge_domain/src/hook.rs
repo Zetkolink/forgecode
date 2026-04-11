@@ -15,8 +15,9 @@ use crate::{
 };
 
 /// Sentinel session id attached to legacy [`EventData::new`] callers that
-/// pre-date the Phase 4 plugin-hook fields. Phase 4 Part 2 replaces these
-/// sentinels with real session ids sourced from the orchestrator.
+/// pre-date the plugin-hook context fields. [`EventData::with_context`]
+/// replaces these sentinels with real session ids sourced from the
+/// orchestrator.
 pub const LEGACY_SESSION_ID: &str = "legacy";
 
 /// Sentinel transcript path used by the legacy [`EventData::new`] ctor.
@@ -29,22 +30,21 @@ pub const LEGACY_TRANSCRIPT_PATH: &str = "/tmp/forge-legacy-transcript";
 /// context.
 ///
 /// This struct provides a consistent structure for all lifecycle events,
-/// containing the agent, model ID, and the base fields every T1 Claude
-/// Code plugin hook expects (`session_id`, `transcript_path`, `cwd`,
+/// containing the agent, model ID, and the base fields every Claude Code
+/// plugin hook expects (`session_id`, `transcript_path`, `cwd`,
 /// `permission_mode`) along with the event-specific payload data.
 ///
-/// The Phase 3 legacy constructor [`EventData::new`] keeps existing call
-/// sites working by filling the new fields with sentinel values; Phase 4
-/// Part 2 migrates firing sites to [`EventData::with_context`], which
-/// accepts the real values.
+/// The legacy constructor [`EventData::new`] keeps existing call sites
+/// working by filling the new fields with sentinel values;
+/// [`EventData::with_context`] accepts the real values.
 #[derive(Debug, PartialEq, Clone)]
 pub struct EventData<P: Send + Sync> {
     /// The agent associated with this event
     pub agent: Agent,
     /// The model ID being used
     pub model_id: ModelId,
-    /// Current session ID. For legacy callers this is
-    /// [`LEGACY_SESSION_ID`]; Phase 4 firing sites pass the real id.
+    /// Current session ID. Legacy callers get
+    /// [`LEGACY_SESSION_ID`]; context-aware firing sites pass the real id.
     pub session_id: String,
     /// Absolute path to the transcript file for this session.
     pub transcript_path: PathBuf,
@@ -59,17 +59,17 @@ pub struct EventData<P: Send + Sync> {
 impl<P: Send + Sync> EventData<P> {
     /// Creates a new event with the given agent, model ID, and payload.
     ///
-    /// **Legacy constructor** — kept as a thin wrapper so Phase 3 call
-    /// sites that didn't know about plugin hooks still compile. The new
-    /// base fields are filled with sentinels:
+    /// **Legacy constructor** — kept as a thin wrapper so call sites that
+    /// do not supply plugin-hook context still compile. The base fields
+    /// are filled with sentinels:
     ///
     /// - `session_id` → [`LEGACY_SESSION_ID`]
     /// - `transcript_path` → [`LEGACY_TRANSCRIPT_PATH`]
     /// - `cwd` → `std::env::current_dir()` or the empty path on error
     /// - `permission_mode` → `None`
     ///
-    /// Phase 4 Part 2 replaces these with proper values sourced from the
-    /// orchestrator via [`EventData::with_context`].
+    /// Prefer [`EventData::with_context`] for new code, which accepts
+    /// proper values sourced from the orchestrator.
     pub fn new(agent: Agent, model_id: ModelId, payload: P) -> Self {
         Self {
             agent,
@@ -84,7 +84,7 @@ impl<P: Send + Sync> EventData<P> {
 
     /// Creates a new event with fully-populated plugin-hook context.
     ///
-    /// Used by Phase 4 firing sites that know the real session id,
+    /// Used by firing sites that know the real session id,
     /// transcript path, cwd, and (optional) permission mode.
     pub fn with_context(
         agent: Agent,
@@ -184,49 +184,54 @@ impl ToolcallEndPayload {
 
 /// Lifecycle events that can occur during conversation processing.
 ///
-/// The first block of variants is the legacy set established in Phase 2 —
-/// they drive Forge's internal handlers (tracing, title generation, etc.).
-/// The second block is the T1 Claude-Code plugin-hook set introduced in
-/// Phase 4: these variants exist today so [`Hook`] can hold slots for
-/// them, but the orchestrator only starts firing them in Phase 4 Part 2.
+/// The first block of variants is the legacy set — they drive Forge's
+/// internal handlers (tracing, title generation, etc.). The second block
+/// is the Claude-Code plugin-hook set: these variants map 1-to-1 with the
+/// hook slots on [`Hook`] and are fired by the orchestrator.
 ///
 /// Marked `#[non_exhaustive]` so downstream consumers are nudged into
-/// matching with a wildcard arm — future phases will add more variants.
+/// matching with a wildcard arm — new variants may be added in the future.
 #[derive(Debug, PartialEq, Clone, From)]
 #[non_exhaustive]
 pub enum LifecycleEvent {
-    // ---- Legacy (Phase 2) ----
+    // ---- Legacy ----
     /// INTERNAL: Used by tracing and title generation only. External
     /// plugins should use `SessionStart`.
     #[doc(hidden)]
+    #[deprecated(since = "0.1.0", note = "use SessionStart instead")]
     Start(EventData<StartPayload>),
 
     /// INTERNAL: Used by tracing and title generation only. External
     /// plugins should use `SessionEnd` or `Stop`.
     #[doc(hidden)]
+    #[deprecated(since = "0.1.0", note = "use SessionEnd instead")]
     End(EventData<EndPayload>),
 
     /// INTERNAL: Used by doom-loop detection and skill listing. No
     /// external plugin equivalent.
     #[doc(hidden)]
+    #[deprecated(since = "0.1.0", note = "use UserPromptSubmit instead")]
     Request(EventData<RequestPayload>),
 
     /// INTERNAL: Used by tracing and compaction trigger. External
     /// plugins should use `PreCompact`/`PostCompact`.
     #[doc(hidden)]
+    #[deprecated(since = "0.1.0", note = "use PostToolUse/PostToolUseFailure instead")]
     Response(EventData<ResponsePayload>),
 
     /// INTERNAL: Used by tracing only. External plugins should use
     /// `PreToolUse`.
     #[doc(hidden)]
+    #[deprecated(since = "0.1.0", note = "use PreToolUse instead")]
     ToolcallStart(EventData<ToolcallStartPayload>),
 
     /// INTERNAL: Used by tracing only. External plugins should use
     /// `PostToolUse`/`PostToolUseFailure`.
     #[doc(hidden)]
+    #[deprecated(since = "0.1.0", note = "use PostToolUse instead")]
     ToolcallEnd(EventData<ToolcallEndPayload>),
 
-    // ---- Claude Code T1 plugin-hook events (Phase 4) ----
+    // ---- Claude Code plugin-hook events ----
     /// Fired before a tool call executes. Hooks can approve, deny, or
     /// rewrite the tool input.
     PreToolUse(EventData<PreToolUsePayload>),
@@ -258,83 +263,71 @@ pub enum LifecycleEvent {
     /// Fired after a compaction cycle finishes.
     PostCompact(EventData<PostCompactPayload>),
 
-    // ---- Claude Code T2 plugin-hook events (Phase 6) ----
+    // ---- Notification / Setup / Config plugin-hook events ----
     /// Fired when Forge wants to surface a user-facing notification
     /// (idle prompt, OAuth success, elicitation update, …).
     Notification(EventData<NotificationPayload>),
 
     /// Fired once per `forge --init` / `forge --maintenance` invocation.
-    /// Phase 6B only ships the infrastructure slot — the CLI flags and
-    /// real fire site land in a later phase.
     Setup(EventData<SetupPayload>),
 
     /// Fired when a configuration file watched by `ConfigWatcher`
     /// changes on disk (debounced, with internal-write suppression).
-    /// Phase 6C ships only the hook slot + payload plumbing; the
-    /// `ConfigWatcher` fire loop that actually raises this event is
-    /// still a gap tracked in the phase-6 report.
+    /// The hook slot is wired; the `ConfigWatcher` fire loop that
+    /// actually raises this event is not yet implemented.
     ConfigChange(EventData<ConfigChangePayload>),
 
     /// Fired whenever Forge loads an instructions / memory file
-    /// (`AGENTS.md` etc). Phase 6D minimal ships only the hook slot +
-    /// payload plumbing; the actual fire sites inside
-    /// `CustomInstructionsService` are deferred to the Phase 6D
-    /// expansion that adds the full multi-layer memory system.
+    /// (`AGENTS.md` etc). The hook slot is wired; fire sites inside
+    /// `CustomInstructionsService` are pending.
     InstructionsLoaded(EventData<InstructionsLoadedPayload>),
 
-    // ---- Claude Code T3 plugin-hook events (Phase 7) ----
+    // ---- Subagent / Permission / File / Worktree plugin-hook events ----
     /// Fired when a sub-agent starts running inside the orchestrator.
-    /// Phase 7 ships only the hook slot + payload plumbing; the real
-    /// fire sites in `agent_executor.rs` are deferred to the Phase 7
-    /// expansion that threads `agent_id` through the orchestrator.
+    /// The hook slot is wired; fire sites in `agent_executor.rs` are
+    /// pending until `agent_id` is threaded through the orchestrator.
     SubagentStart(EventData<SubagentStartPayload>),
 
     /// Fired when a sub-agent finishes its turn.
     SubagentStop(EventData<SubagentStopPayload>),
 
     /// Fired when a tool call needs permission that hasn't been granted
-    /// yet. Phase 7B ships only the hook slot + payload plumbing; the
-    /// real fire site in `policy.rs` is deferred to the Phase 7
-    /// expansion.
+    /// yet. The hook slot is wired; the fire site in `policy.rs` is
+    /// pending.
     PermissionRequest(EventData<PermissionRequestPayload>),
 
     /// Fired when a permission request is rejected.
     PermissionDenied(EventData<PermissionDeniedPayload>),
 
     /// Fired when the orchestrator's current working directory changes.
-    /// Phase 7C ships only the hook slot + payload plumbing; the real
-    /// fire site in Shell tool / tracker is deferred to the Phase 7
-    /// expansion.
+    /// The hook slot is wired; the fire site in the Shell tool / cwd
+    /// tracker is pending.
     CwdChanged(EventData<CwdChangedPayload>),
 
     /// Fired when a tracked file is added, modified, or removed.
-    /// Phase 7C ships only the hook slot + payload plumbing; the
-    /// `FileChangedWatcher` service is deferred to the Phase 7
-    /// expansion.
+    /// The hook slot is wired; the `FileChangedWatcher` service is
+    /// pending.
     FileChanged(EventData<FileChangedPayload>),
 
     /// Fired when the agent enters a new git worktree via
-    /// `EnterWorktreeTool` or a hook-driven VCS adapter. Phase 7D ships
-    /// only the hook slot + payload plumbing; the worktree tools and
-    /// sandbox fire sites are deferred to the Phase 7 expansion.
+    /// `EnterWorktreeTool` or a hook-driven VCS adapter. The hook slot
+    /// is wired; the worktree tools and sandbox fire sites are pending.
     WorktreeCreate(EventData<WorktreeCreatePayload>),
 
     /// Fired when the agent exits a git worktree via
-    /// `ExitWorktreeTool` or a hook-driven VCS adapter. Phase 7D ships
-    /// only the hook slot + payload plumbing; real fire sites are
-    /// deferred.
+    /// `ExitWorktreeTool` or a hook-driven VCS adapter. The hook slot
+    /// is wired; fire sites are pending.
     WorktreeRemove(EventData<WorktreeRemovePayload>),
 
-    // ---- Phase 8 — MCP elicitation hooks ----
+    // ---- MCP elicitation hooks ----
     /// Fired by the MCP client before it prompts the user for
-    /// additional input on behalf of an MCP server. Phase 8D minimal
-    /// ships only the hook slot + payload plumbing; the real MCP
-    /// client integration is deferred to Phase 8A/8B/8C.
+    /// additional input on behalf of an MCP server. The hook slot is
+    /// wired; the MCP client integration that emits this event is
+    /// pending.
     Elicitation(EventData<ElicitationPayload>),
 
     /// Fired after the user (or an auto-responding plugin hook)
-    /// completes the elicitation. Phase 8D minimal ships only the hook
-    /// slot + payload plumbing.
+    /// completes the elicitation.
     ElicitationResult(EventData<ElicitationResultPayload>),
 }
 
@@ -397,7 +390,7 @@ impl<T: Send + Sync> EventHandle<T> for Box<dyn EventHandle<T>> {
 /// Hooks allow you to attach custom behavior at specific points
 /// during conversation processing.
 pub struct Hook {
-    // ---- Legacy slots (Phase 2) ----
+    // ---- Legacy slots ----
     on_start: Box<dyn EventHandle<EventData<StartPayload>>>,
     on_end: Box<dyn EventHandle<EventData<EndPayload>>>,
     on_request: Box<dyn EventHandle<EventData<RequestPayload>>>,
@@ -405,7 +398,7 @@ pub struct Hook {
     on_toolcall_start: Box<dyn EventHandle<EventData<ToolcallStartPayload>>>,
     on_toolcall_end: Box<dyn EventHandle<EventData<ToolcallEndPayload>>>,
 
-    // ---- Claude Code T1 plugin-hook slots (Phase 4) ----
+    // ---- Claude Code plugin-hook slots ----
     on_pre_tool_use: Box<dyn EventHandle<EventData<PreToolUsePayload>>>,
     on_post_tool_use: Box<dyn EventHandle<EventData<PostToolUsePayload>>>,
     on_post_tool_use_failure: Box<dyn EventHandle<EventData<PostToolUseFailurePayload>>>,
@@ -417,13 +410,13 @@ pub struct Hook {
     on_pre_compact: Box<dyn EventHandle<EventData<PreCompactPayload>>>,
     on_post_compact: Box<dyn EventHandle<EventData<PostCompactPayload>>>,
 
-    // ---- Claude Code T2 plugin-hook slots (Phase 6) ----
+    // ---- Notification / Setup / Config slots ----
     on_notification: Box<dyn EventHandle<EventData<NotificationPayload>>>,
     on_setup: Box<dyn EventHandle<EventData<SetupPayload>>>,
     on_config_change: Box<dyn EventHandle<EventData<ConfigChangePayload>>>,
     on_instructions_loaded: Box<dyn EventHandle<EventData<InstructionsLoadedPayload>>>,
 
-    // ---- Claude Code T3 plugin-hook slots (Phase 7) ----
+    // ---- Subagent / Permission / File / Worktree slots ----
     on_subagent_start: Box<dyn EventHandle<EventData<SubagentStartPayload>>>,
     on_subagent_stop: Box<dyn EventHandle<EventData<SubagentStopPayload>>>,
     on_permission_request: Box<dyn EventHandle<EventData<PermissionRequestPayload>>>,
@@ -433,7 +426,7 @@ pub struct Hook {
     on_worktree_create: Box<dyn EventHandle<EventData<WorktreeCreatePayload>>>,
     on_worktree_remove: Box<dyn EventHandle<EventData<WorktreeRemovePayload>>>,
 
-    // ---- Phase 8 MCP elicitation slots ----
+    // ---- MCP elicitation slots ----
     on_elicitation: Box<dyn EventHandle<EventData<ElicitationPayload>>>,
     on_elicitation_result: Box<dyn EventHandle<EventData<ElicitationResultPayload>>>,
 }
@@ -601,7 +594,7 @@ impl Hook {
         self
     }
 
-    // ---- Claude Code T1 plugin-hook builder methods (Phase 4) ----
+    // ---- Claude Code plugin-hook builder methods ----
 
     /// Sets the PreToolUse event handler.
     pub fn on_pre_tool_use(
@@ -690,7 +683,7 @@ impl Hook {
         self
     }
 
-    // ---- Claude Code T2 plugin-hook builder methods (Phase 6) ----
+    // ---- Notification / Setup / Config builder methods ----
 
     /// Sets the Notification event handler.
     pub fn on_notification(
@@ -712,10 +705,8 @@ impl Hook {
 
     /// Sets the ConfigChange event handler.
     ///
-    /// Phase 6C wires this slot but does not yet fire the event — the
-    /// `ConfigWatcher` service that will emit `ConfigChangePayload`
-    /// values into this slot is still a gap tracked in the phase-6
-    /// report.
+    /// The hook slot is wired; the `ConfigWatcher` service that emits
+    /// `ConfigChangePayload` values is not yet implemented.
     pub fn on_config_change(
         mut self,
         handler: impl EventHandle<EventData<ConfigChangePayload>> + 'static,
@@ -726,10 +717,8 @@ impl Hook {
 
     /// Sets the InstructionsLoaded event handler.
     ///
-    /// Phase 6D minimal wires this slot but does not yet fire the
-    /// event — the `CustomInstructionsService` fire sites that will
-    /// emit `InstructionsLoadedPayload` values are deferred to the
-    /// Phase 6D expansion.
+    /// The hook slot is wired; the `CustomInstructionsService` fire
+    /// sites that emit `InstructionsLoadedPayload` values are pending.
     pub fn on_instructions_loaded(
         mut self,
         handler: impl EventHandle<EventData<InstructionsLoadedPayload>> + 'static,
@@ -738,13 +727,12 @@ impl Hook {
         self
     }
 
-    // ---- Claude Code T3 plugin-hook builder methods (Phase 7) ----
+    // ---- Subagent / Permission / File / Worktree builder methods ----
 
     /// Sets the SubagentStart event handler.
     ///
-    /// Phase 7 ships this slot as infrastructure only — the real fire
-    /// sites in `agent_executor.rs` are added once `agent_id` threading
-    /// lands in the Phase 7 expansion.
+    /// The hook slot is wired; fire sites in `agent_executor.rs` are
+    /// pending until `agent_id` is threaded through the orchestrator.
     pub fn on_subagent_start(
         mut self,
         handler: impl EventHandle<EventData<SubagentStartPayload>> + 'static,
@@ -764,8 +752,7 @@ impl Hook {
 
     /// Sets the PermissionRequest event handler.
     ///
-    /// Phase 7B ships this slot as infrastructure only — the real fire
-    /// site in `policy.rs` is added in the Phase 7 expansion.
+    /// The hook slot is wired; the fire site in `policy.rs` is pending.
     pub fn on_permission_request(
         mut self,
         handler: impl EventHandle<EventData<PermissionRequestPayload>> + 'static,
@@ -785,8 +772,8 @@ impl Hook {
 
     /// Sets the CwdChanged event handler.
     ///
-    /// Phase 7C ships only the hook slot; the actual fire site in the
-    /// Shell tool / cwd tracker is deferred to the Phase 7 expansion.
+    /// The hook slot is wired; the fire site in the Shell tool / cwd
+    /// tracker is pending.
     pub fn on_cwd_changed(
         mut self,
         handler: impl EventHandle<EventData<CwdChangedPayload>> + 'static,
@@ -797,8 +784,8 @@ impl Hook {
 
     /// Sets the FileChanged event handler.
     ///
-    /// Phase 7C ships only the hook slot; the `FileChangedWatcher`
-    /// service is deferred to the Phase 7 expansion.
+    /// The hook slot is wired; the `FileChangedWatcher` service is
+    /// pending.
     pub fn on_file_changed(
         mut self,
         handler: impl EventHandle<EventData<FileChangedPayload>> + 'static,
@@ -809,8 +796,8 @@ impl Hook {
 
     /// Sets the WorktreeCreate event handler.
     ///
-    /// Phase 7D ships only the hook slot; the worktree tools + sandbox
-    /// wiring are deferred to the Phase 7 expansion.
+    /// The hook slot is wired; the worktree tools and sandbox fire
+    /// sites are pending.
     pub fn on_worktree_create(
         mut self,
         handler: impl EventHandle<EventData<WorktreeCreatePayload>> + 'static,
@@ -821,8 +808,7 @@ impl Hook {
 
     /// Sets the WorktreeRemove event handler.
     ///
-    /// Phase 7D ships only the hook slot; real fire sites are deferred
-    /// to the Phase 7 expansion.
+    /// The hook slot is wired; fire sites are pending.
     pub fn on_worktree_remove(
         mut self,
         handler: impl EventHandle<EventData<WorktreeRemovePayload>> + 'static,
@@ -831,13 +817,12 @@ impl Hook {
         self
     }
 
-    // ---- Phase 8 — MCP elicitation builder methods ----
+    // ---- MCP elicitation builder methods ----
 
     /// Sets the Elicitation event handler.
     ///
-    /// Phase 8D minimal wires this slot but does not yet fire the
-    /// event — the MCP client integration that will emit
-    /// `ElicitationPayload` values is deferred to Phase 8A/8B/8C.
+    /// The hook slot is wired; the MCP client integration that emits
+    /// `ElicitationPayload` values is pending.
     pub fn on_elicitation(
         mut self,
         handler: impl EventHandle<EventData<ElicitationPayload>> + 'static,
@@ -847,8 +832,6 @@ impl Hook {
     }
 
     /// Sets the ElicitationResult event handler.
-    ///
-    /// Phase 8D minimal ships only the hook slot.
     pub fn on_elicitation_result(
         mut self,
         handler: impl EventHandle<EventData<ElicitationResultPayload>> + 'static,
@@ -913,6 +896,7 @@ impl Hook {
 // Implement EventHandle for Hook to allow hooks to handle LifecycleEvent
 #[async_trait]
 impl EventHandle<LifecycleEvent> for Hook {
+    #[allow(deprecated)]
     async fn handle(
         &self,
         event: &LifecycleEvent,
@@ -1057,6 +1041,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use pretty_assertions::assert_eq;
 
@@ -1793,7 +1778,7 @@ mod tests {
         assert_eq!(*hook2_title.lock().unwrap(), Some("Ended".to_string()));
     }
 
-    // ---- Phase 4 Part 1: plugin-hook EventData + Hook tests ----
+    // ---- Plugin-hook EventData + Hook tests ----
 
     #[test]
     fn test_event_data_new_fills_legacy_sentinels() {

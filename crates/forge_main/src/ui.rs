@@ -931,6 +931,13 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                 self.on_zsh_doctor().await?;
                 return Ok(());
             }
+            TopLevelCommand::Trust => {
+                use forge_services::accept_workspace_trust;
+                let cwd = self.api.environment().cwd.clone();
+                accept_workspace_trust(&cwd).await?;
+                println!("Workspace trusted. Project-level hooks in .forge/hooks.json will now execute.");
+                return Ok(());
+            }
         }
         Ok(())
     }

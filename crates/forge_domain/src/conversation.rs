@@ -48,7 +48,7 @@ pub struct Conversation {
     pub metadata: MetaData,
     /// Aggregated result of the most recent plugin-hook dispatch.
     ///
-    /// This field holds Phase 4 hook dispatch output (permission
+    /// This field holds hook dispatch output (permission
     /// decisions, additional context, system messages, ...) that the
     /// orchestrator consumes after each fire. It is reset at the start
     /// of every new lifecycle event via [`Conversation::reset_hook_result`].
@@ -400,10 +400,10 @@ mod tests {
             .hook_result
             .additional_contexts
             .push("ctx".to_string());
-        // Wave E-1b: the three new PermissionRequest fields must also be
-        // wiped by `reset_hook_result`. `AggregatedHookResult::default()`
-        // is what powers the reset, so this check effectively asserts
-        // that the new fields are included in the `Default` impl.
+        // The three PermissionRequest fields must also be wiped by
+        // `reset_hook_result`. `AggregatedHookResult::default()` is what
+        // powers the reset, so this check effectively asserts that the
+        // new fields are included in the `Default` impl.
         conversation.hook_result.updated_permissions = Some(json!({"rules": ["Bash(*)"]}));
         conversation.hook_result.interrupt = true;
         conversation.hook_result.retry = true;

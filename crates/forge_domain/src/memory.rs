@@ -8,12 +8,11 @@
 //!
 //! [`MemoryType`] and [`InstructionsLoadReason`] were originally defined
 //! inline next to [`crate::InstructionsLoadedPayload`] in `hook_payloads.rs`
-//! during the Phase 6D bootstrap. Wave D Pass 1 moves them here so that
-//! the in-process [`LoadedInstructions`] struct (also defined in this
-//! module) can reuse the classification enums without creating a
-//! circular dependency back into `hook_payloads`. The payload struct
-//! itself continues to live in `hook_payloads.rs` unchanged and imports
-//! these enums via the crate root re-export.
+//! They live here so that the in-process [`LoadedInstructions`] struct
+//! (also defined in this module) can reuse the classification enums
+//! without creating a circular dependency back into `hook_payloads`.
+//! The payload struct itself continues to live in `hook_payloads.rs`
+//! unchanged and imports these enums via the crate root re-export.
 
 use std::path::PathBuf;
 
@@ -24,17 +23,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryType {
-    /// `~/forge/AGENTS.md` + `~/forge/rules/*.md` (Pass 2). Per-user
+    /// `~/forge/AGENTS.md` + `~/forge/rules/*.md`. Per-user
     /// customisation applied across all projects.
     User,
-    /// `<repo>/AGENTS.md` + nested ancestor `AGENTS.md` files
-    /// (Pass 2). Shared per-project rules committed to the repo.
+    /// `<repo>/AGENTS.md` + nested ancestor `AGENTS.md` files.
+    /// Shared per-project rules committed to the repo.
     Project,
-    /// `<repo>/AGENTS.local.md` (Pass 2). Gitignored per-checkout
-    /// rules. Not loaded in Pass 1.
+    /// `<repo>/AGENTS.local.md`. Gitignored per-checkout rules.
     Local,
-    /// `/etc/forge/AGENTS.md` (Pass 2). Admin-managed policy
-    /// instructions. Not loaded in Pass 1.
+    /// `/etc/forge/AGENTS.md`. Admin-managed policy instructions.
     Managed,
 }
 
@@ -58,19 +55,19 @@ impl MemoryType {
 #[serde(rename_all = "snake_case")]
 pub enum InstructionsLoadReason {
     /// File was loaded at session start as part of the static memory
-    /// layer. This is the ONLY reason fired by Pass 1.
+    /// layer. This is the only currently used reason.
     SessionStart,
     /// File was loaded because the agent touched a file in a directory
-    /// that contained a nested `AGENTS.md`. (Pass 2)
+    /// that contained a nested `AGENTS.md`.
     NestedTraversal,
     /// Conditional rule with a `paths:` glob matched a file the agent
-    /// touched. (Pass 2)
+    /// touched.
     PathGlobMatch,
     /// File was pulled in via an `@include path/to/other.md` directive
-    /// in another instructions file. (Pass 2)
+    /// in another instructions file.
     Include,
     /// File was reloaded after a compaction discarded the prior
-    /// context. (Pass 2)
+    /// context.
     Compact,
 }
 
@@ -87,16 +84,16 @@ impl InstructionsLoadReason {
     }
 }
 
-/// Optional YAML frontmatter on an instructions file. Pass 1 parses
-/// it (so round-tripping via serde survives) but does not act on
-/// the fields — `paths` and `include` are Pass 2 features.
+/// Optional YAML frontmatter on an instructions file. Parsed so
+/// round-tripping via serde survives. The `paths` and `include`
+/// fields are not yet acted on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct InstructionsFrontmatter {
     /// Glob patterns that activate this rule when the agent touches
-    /// a matching file. Pass 2 feature. `None` means unconditional.
+    /// a matching file. `None` means unconditional.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paths: Option<Vec<String>>,
-    /// `@include` target paths to recursively load. Pass 2 feature.
+    /// `@include` target paths to recursively load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include: Option<Vec<String>>,
 }
@@ -111,25 +108,23 @@ pub struct LoadedInstructions {
     pub file_path: PathBuf,
     /// Source category — user / project / local / managed.
     pub memory_type: MemoryType,
-    /// Trigger for this load. Pass 1 only ever emits `SessionStart`.
+    /// Trigger for this load. Currently only `SessionStart` is emitted.
     pub load_reason: InstructionsLoadReason,
     /// File contents after frontmatter has been stripped. This is
     /// the text the system prompt injects.
     pub content: String,
     /// Parsed frontmatter (if any). `None` when the file had no
-    /// YAML frontmatter block. Pass 1 parses but does not act.
+    /// YAML frontmatter block. Parsed but not yet acted on.
     pub frontmatter: Option<InstructionsFrontmatter>,
     /// Path glob patterns copied out of the frontmatter for
     /// convenience on the hook payload. `None` when the frontmatter
-    /// had no `paths:` field. Pass 2 uses this for matching.
+    /// had no `paths:` field.
     pub globs: Option<Vec<String>>,
     /// Absolute path of the file whose access triggered loading this
-    /// instructions file. `None` for `SessionStart` loads. Pass 2 uses
-    /// this for `NestedTraversal` and `PathGlobMatch`.
+    /// instructions file. `None` for `SessionStart` loads.
     pub trigger_file_path: Option<PathBuf>,
     /// Absolute path of the parent instructions file when this one
     /// was pulled in via `@include`. `None` for top-level loads.
-    /// Pass 2 uses this.
     pub parent_file_path: Option<PathBuf>,
 }
 
@@ -168,8 +163,8 @@ mod tests {
     #[test]
     fn test_instructions_load_reason_as_wire_str_all_variants() {
         // Fixture — every load-reason variant paired with its wire
-        // string. `SessionStart` is the only one fired by Pass 1, the
-        // rest are Pass 2 placeholders but must still round-trip.
+        // string. `SessionStart` is the only currently used reason;
+        // the rest must still round-trip.
         let fixture = [
             (InstructionsLoadReason::SessionStart, "session_start"),
             (InstructionsLoadReason::NestedTraversal, "nested_traversal"),

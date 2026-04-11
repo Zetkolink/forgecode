@@ -53,19 +53,31 @@ pub fn matches_pattern(pattern: &str, tool_name: &str) -> bool {
     if contains_regex_metachars(trimmed)
         && let Ok(re) = Regex::new(trimmed)
     {
-        return re.is_match(tool_name);
+        if re.is_match(tool_name) {
+            return true;
+        }
+        // Also check legacy names that map to this Forge tool name.
+        for legacy in get_legacy_names(tool_name) {
+            if re.is_match(legacy) {
+                return true;
+            }
+        }
+        return false;
     }
 
-    // 3. Pipe list — any exact alternative matches.
+    // 3. Pipe list — any exact alternative matches (with legacy normalization).
     if trimmed.contains('|') {
         return trimmed
             .split('|')
             .map(str::trim)
-            .any(|alt| alt == tool_name);
+            .any(|alt| {
+                let normalized = normalize_legacy_tool_name(alt);
+                normalized == tool_name || alt == tool_name
+            });
     }
 
-    // 4. Exact match.
-    trimmed == tool_name
+    // 4. Exact match (with legacy normalization).
+    trimmed == tool_name || normalize_legacy_tool_name(trimmed) == tool_name
 }
 
 /// Evaluate a hook `if` condition (permission-rule syntax) against the
@@ -145,6 +157,35 @@ fn glob_match(pattern: &str, target: &str) -> bool {
     }
 }
 
+/// Maps Claude Code legacy tool names to Forge tool names.
+fn normalize_legacy_tool_name(name: &str) -> &str {
+    match name {
+        "FileRead" | "FileReadTool" => "Read",
+        "FileWrite" | "FileWriteTool" => "Write",
+        "FileEdit" | "FileEditTool" => "Patch",
+        "Grep" | "GrepTool" => "FsSearch",
+        "Glob" | "GlobTool" => "FsSearch",
+        "Bash" | "BashTool" => "Shell",
+        "WebFetch" | "WebFetchTool" => "Fetch",
+        "WebSearch" | "WebSearchTool" => "Fetch",
+        "NotebookEdit" | "NotebookEditTool" => "Write",
+        other => other,
+    }
+}
+
+/// Returns legacy names that map to a given Forge tool name.
+fn get_legacy_names(forge_name: &str) -> &'static [&'static str] {
+    match forge_name {
+        "Read" => &["FileRead", "FileReadTool"],
+        "Write" => &["FileWrite", "FileWriteTool", "NotebookEdit", "NotebookEditTool"],
+        "Patch" => &["FileEdit", "FileEditTool"],
+        "FsSearch" => &["Grep", "GrepTool", "Glob", "GlobTool"],
+        "Shell" => &["Bash", "BashTool"],
+        "Fetch" => &["WebFetch", "WebFetchTool", "WebSearch", "WebSearchTool"],
+        _ => &[],
+    }
+}
+
 /// Cheap heuristic: does this string contain a character that would only
 /// appear in a regex, not in a plain tool name?
 fn contains_regex_metachars(pattern: &str) -> bool {
@@ -217,5 +258,37 @@ mod tests {
     fn test_empty_condition_always_matches() {
         let input = json!({});
         assert!(matches_condition("", "Bash", &input));
+    }
+
+    // --- Legacy tool name normalization tests ---
+
+    #[test]
+    fn test_legacy_fileread_matches_read() {
+        assert!(matches_pattern("FileRead", "Read"));
+    }
+
+    #[test]
+    fn test_legacy_pipe_separated() {
+        assert!(matches_pattern("FileRead|FileWrite", "Read"));
+        assert!(matches_pattern("FileRead|FileWrite", "Write"));
+    }
+
+    #[test]
+    fn test_legacy_regex() {
+        assert!(matches_pattern("^File(Read|Write)$", "Read"));
+        assert!(matches_pattern("^File(Read|Write)$", "Write"));
+    }
+
+    #[test]
+    fn test_legacy_bash_matches_shell() {
+        assert!(matches_pattern("Bash", "Shell"));
+        assert!(matches_pattern("BashTool", "Shell"));
+    }
+
+    #[test]
+    fn test_forge_names_still_work() {
+        assert!(matches_pattern("Read", "Read"));
+        assert!(matches_pattern("Shell", "Shell"));
+        assert!(matches_pattern("Patch", "Patch"));
     }
 }

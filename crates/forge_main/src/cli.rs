@@ -178,6 +178,13 @@ pub enum TopLevelCommand {
 
     /// Run diagnostics on shell environment (alias for `zsh doctor`).
     Doctor,
+
+    /// Accept workspace trust for the current directory.
+    ///
+    /// Creates a `.forge/.trust-accepted` marker file so that project-level
+    /// hooks in `.forge/hooks.json` are allowed to execute. Without this
+    /// marker, project hooks are silently skipped as a security measure.
+    Trust,
 }
 
 /// Command group for custom command management.
@@ -1912,5 +1919,12 @@ mod tests {
         fixture.piped_input = None;
         fixture.subcommands = None;
         assert!(!fixture.is_interactive());
+    }
+
+    #[test]
+    fn test_trust_command() {
+        let fixture = Cli::parse_from(["forge", "trust"]);
+        let actual = matches!(fixture.subcommands, Some(TopLevelCommand::Trust));
+        assert!(actual);
     }
 }

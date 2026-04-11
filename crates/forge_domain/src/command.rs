@@ -2,7 +2,7 @@ use derive_setters::Setters;
 use serde::{Deserialize, Serialize};
 
 /// Where a command was loaded from. Mirrors [`crate::SkillSource`] so that
-/// Phase 2 can attach provenance to every loaded command in the unified
+/// provenance can be attached to every loaded command in the unified
 /// listing pipeline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -100,8 +100,7 @@ mod tests {
 
     #[test]
     fn test_command_deserializes_without_source_field() {
-        // Frontmatter that predates Phase 2 has no `source` field — must
-        // still parse cleanly.
+        // Frontmatter without a `source` field must still parse cleanly.
         let json = r#"{
             "name": "deploy",
             "description": "Ship it"

@@ -15,6 +15,7 @@ use reqwest::header::HeaderMap;
 use reqwest_eventsource::EventSource;
 use url::Url;
 
+use crate::async_hook_queue::AsyncHookResultQueue;
 use crate::hook_runtime::HookConfigLoaderService;
 use crate::infra::HookExecutorInfra;
 use crate::user::{User, UserUsage};
@@ -294,9 +295,9 @@ pub trait CustomInstructionsService: Send + Sync {
     /// Used by the `InstructionsLoaded` hook fire site so it can
     /// populate the payload without re-reading the filesystem.
     ///
-    /// Pass 1 of Wave D always returns entries with
+    /// Currently returns entries with
     /// [`forge_domain::InstructionsLoadReason::SessionStart`]; nested
-    /// traversal, conditional rules, and `@include` are Pass 2.
+    /// traversal, conditional rules, and `@include` are pending.
     async fn get_custom_instructions_detailed(&self) -> Vec<LoadedInstructions>;
 }
 
@@ -507,8 +508,8 @@ pub trait CommandLoaderService: Send + Sync {
     /// Default implementation is a no-op for loaders that do not
     /// maintain their own cache. Production implementations that cache
     /// (e.g. `forge_services::CommandLoaderService`) override this to
-    /// clear their cache so Phase 9's `:plugin reload` picks up newly
-    /// installed plugin commands without a process restart.
+    /// clear their cache so `:plugin reload` picks up newly installed
+    /// plugin commands without a process restart.
     async fn reload(&self) -> anyhow::Result<()> {
         Ok(())
     }
@@ -528,10 +529,7 @@ pub trait PolicyService: Send + Sync {
 /// A user-facing notification that Forge wants to surface.
 ///
 /// This is the in-process shape consumed by [`NotificationService::emit`].
-/// The Phase 6A infrastructure only carries the kind, optional title, and
-/// message body — real emission points (REPL idle, OAuth completion,
-/// elicitation) are deferred to Phase 8 along with the backing
-/// implementation.
+/// Carries the kind, optional title, and message body.
 #[derive(Debug, Clone)]
 pub struct Notification {
     /// Source of the notification (idle prompt, auth success, ...).
@@ -545,9 +543,7 @@ pub struct Notification {
 /// Service that surfaces [`Notification`]s and fires the `Notification`
 /// hook event for each one.
 ///
-/// Phase 6A only defines the trait; no implementation is wired into the
-/// [`Services`] aggregate yet. Later phases (Phase 8) will add a concrete
-/// implementation (`ForgeNotificationService`) that:
+/// The concrete implementation (`ForgeNotificationService`):
 ///
 /// 1. Fires the `Notification` lifecycle event through the plugin hook
 ///    dispatcher so configured hooks run.
@@ -578,9 +574,8 @@ pub trait NotificationService: Send + Sync {
 /// [`invalidate_cache`](Self::invalidate_cache) is invoked.
 ///
 /// Invalidation is triggered explicitly by slash commands such as
-/// `:plugin reload` or `:plugin enable/disable` once those land in Phase 9.
-/// For now only the discovery path is exercised; consumers in Phase 2 can
-/// safely call `list_plugins` as often as they need.
+/// `:plugin reload` or `:plugin enable/disable`. Consumers can safely
+/// call `list_plugins` as often as they need.
 #[async_trait::async_trait]
 pub trait PluginLoader: Send + Sync {
     /// Returns every plugin discovered on disk, after applying the
@@ -591,7 +586,7 @@ pub trait PluginLoader: Send + Sync {
     ///
     /// This variant silently drops per-plugin errors — prefer
     /// [`list_plugins_with_errors`](Self::list_plugins_with_errors) when
-    /// you need to surface malformed plugins in the UI (e.g. the Phase 9
+    /// you need to surface malformed plugins in the UI (e.g. the
     /// `:plugin list` command).
     async fn list_plugins(&self) -> anyhow::Result<Vec<forge_domain::LoadedPlugin>>;
 
@@ -668,7 +663,7 @@ pub trait InvocableCommandsProvider: Send + Sync {
 
 /// Aggregated reload entry point for plugin-provided components.
 ///
-/// Phase 9's `:plugin reload`, `:plugin enable <name>`, and
+/// `:plugin reload`, `:plugin enable <name>`, and
 /// `:plugin disable <name>` slash commands all need to invalidate every
 /// downstream cache that depends on the plugin discovery output: skills,
 /// commands, agents, and the [`PluginLoader`] itself. Centralizing that
@@ -685,8 +680,8 @@ pub trait InvocableCommandsProvider: Send + Sync {
 ///
 /// Per-handler caches (e.g. the per-conversation delta cache inside
 /// `SkillListingHandler`) are deliberately **not** touched here because the
-/// handler is owned by the orchestrator, not by `Services`. Phase 9's CLI
-/// command will reset those handler caches directly after calling
+/// handler is owned by the orchestrator, not by `Services`. The CLI
+/// command resets those handler caches directly after calling
 /// `reload_plugin_components`.
 #[async_trait::async_trait]
 pub trait PluginComponentsReloader: Send + Sync {
@@ -759,8 +754,7 @@ pub trait Services: Send + Sync + 'static + Clone + EnvironmentInfra {
     type HookConfigLoader: HookConfigLoaderService;
     type HookExecutor: HookExecutorInfra;
     /// The elicitation dispatcher used by the MCP client handler to
-    /// route server-initiated elicitation requests. Wave F-1
-    /// establishes the accessor; Wave F-2 wires it into the rmcp
+    /// route server-initiated elicitation requests. Wired into the rmcp
     /// `ClientHandler` in `forge_infra/src/mcp_client.rs`.
     type ElicitationDispatcher: ElicitationDispatcher;
 
@@ -794,10 +788,19 @@ pub trait Services: Send + Sync + 'static + Clone + EnvironmentInfra {
     fn plugin_loader(&self) -> &Self::PluginLoader;
     fn hook_config_loader(&self) -> &Self::HookConfigLoader;
     fn hook_executor(&self) -> &Self::HookExecutor;
-    /// Returns the process-wide elicitation dispatcher. Wave F-2 will
-    /// invoke `elicit` on the return value from
+    /// Returns the process-wide elicitation dispatcher. Invokes `elicit`
+    /// on the return value from
     /// `forge_infra::mcp_client::ForgeMcpHandler::create_elicitation`.
     fn elicitation_dispatcher(&self) -> &Self::ElicitationDispatcher;
+    /// Returns the shared async hook result queue, if one is configured.
+    ///
+    /// The orchestrator drains this queue before each conversation turn and
+    /// injects pending results as `<system_reminder>` context messages.
+    /// Returns `None` by default; concrete service implementations wire
+    /// the queue during construction.
+    fn async_hook_queue(&self) -> Option<&AsyncHookResultQueue> {
+        None
+    }
 }
 
 #[async_trait::async_trait]

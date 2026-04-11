@@ -322,6 +322,21 @@ pub struct ForgeConfig {
     /// files (`enabled = false`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugins: Option<BTreeMap<String, PluginSetting>>,
+
+    /// When true, only managed hooks run. User, project, plugin, and session
+    /// hooks are ignored.
+    #[serde(default)]
+    pub allow_managed_hooks_only: bool,
+
+    /// When true, ALL hooks are disabled (including managed).
+    #[serde(default)]
+    pub disable_all_hooks: bool,
+
+    /// Allowlist of URL patterns that HTTP hooks may target.
+    /// Supports `*` as wildcard (e.g., `https://hooks.example.com/*`).
+    /// `None` = all URLs allowed. Empty vec = no HTTP hooks allowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_http_hook_urls: Option<Vec<String>>,
 }
 
 impl ForgeConfig {

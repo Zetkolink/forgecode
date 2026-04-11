@@ -47,7 +47,7 @@ pub(crate) fn build_template_config(config: &ForgeConfig) -> forge_domain::Templ
 pub struct ForgeApp<S> {
     services: Arc<S>,
     tool_registry: ToolRegistry<S>,
-    /// Phase 7A: shared plugin hook dispatcher. Created once in
+    /// Shared plugin hook dispatcher. Created once in
     /// [`ForgeApp::new`] and reused by both the `ToolRegistry`
     /// (`AgentExecutor::execute` fire sites) and
     /// [`ForgeApp::chat`] (main Hook chain builder). Reusing the
@@ -63,9 +63,8 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         // (so `AgentExecutor` can fire `SubagentStart` / `SubagentStop`
         // from inside `execute`) and later reused verbatim by
         // `ForgeApp::chat` when building the `Hook` chain. Constructing
-        // the handler at `ForgeApp::new` time matches the Phase 4
-        // wiring and keeps the once-fired tracking anchored to a single
-        // instance per chat pipeline.
+        // the handler at `ForgeApp::new` time keeps the once-fired
+        // tracking anchored to a single instance per chat pipeline.
         let plugin_handler = PluginHookHandler::new(services.clone());
         Self {
             tool_registry: ToolRegistry::new(services.clone(), plugin_handler.clone()),
@@ -95,13 +94,11 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
 
         let files = services.list_current_directory().await?;
 
-        // Wave D Pass 1: load instructions with full classification
-        // metadata so we can fire one `InstructionsLoaded` hook per
-        // discovered AGENTS.md file. The system prompt builder still
-        // only needs the raw text, so we project the `content` field
-        // back into a `Vec<String>` for `custom_instructions`. Pass 2
-        // will extend this with nested / conditional / @include /
-        // post-compact reasons.
+        // Load instructions with full classification metadata so we
+        // can fire one `InstructionsLoaded` hook per discovered
+        // AGENTS.md file. The system prompt builder still only needs
+        // the raw text, so we project the `content` field back into a
+        // `Vec<String>` for `custom_instructions`.
         let loaded_instructions = services.get_custom_instructions_detailed().await;
         let custom_instructions: Vec<String> = loaded_instructions
             .iter()
@@ -162,8 +159,8 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
                 .await?;
 
         // Insert user prompt
-        // Capture the raw user prompt text (pre-templating) so Phase 4
-        // Part 2b-ii can populate the UserPromptSubmit hook payload. The
+        // Capture the raw user prompt text (pre-templating) so the
+        // UserPromptSubmit hook payload can be populated. The
         // orchestrator fires UserPromptSubmit on the first iteration of
         // its main loop.
         let raw_user_prompt: Option<String> = chat
@@ -195,9 +192,8 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         let tracing_handler = TracingHandler::new();
         let title_handler = TitleGenerationHandler::new(services.clone());
 
-        // Build the on_end hook. Phase 5 removed `PendingTodosHandler`
-        // from this chain — it now runs on the Claude-Code `Stop` event
-        // instead (see `on_stop_hook` below).
+        // Build the on_end hook. `PendingTodosHandler` now runs on the
+        // Claude-Code `Stop` event instead (see `on_stop_hook` below).
         let on_end_hook = tracing_handler.clone().and(title_handler.clone());
 
         // Determine context window for skill listing budget. Falls back to the
@@ -217,19 +213,18 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         let skill_cache_invalidator = SkillCacheInvalidator::new(services.clone());
 
         // Shared plugin hook dispatcher used for every Claude-Code-compatible
-        // T1 lifecycle event. Part 2a wires the handler into the Hook builder;
-        // Part 2b will add the matching fire sites in `Orchestrator::run`.
+        // lifecycle event.
         //
-        // Phase 7A: reuse the handle constructed in `ForgeApp::new` so
+        // Reuse the handle constructed in `ForgeApp::new` so
         // the `AgentExecutor` fire sites for `SubagentStart` /
         // `SubagentStop` share the same `once_fired` tracking with the
         // rest of the Hook chain.
         let plugin_handler = self.plugin_handler.clone();
 
         // Build the on_stop hook chain, conditionally adding
-        // `PendingTodosHandler` based on config. Phase 5 migrated
-        // `PendingTodosHandler` from the legacy `End` event to Claude
-        // Code's `Stop` event. Both branches must unify to the same
+        // `PendingTodosHandler` based on config. `PendingTodosHandler`
+        // runs on Claude Code's `Stop` event (not the legacy `End`
+        // event). Both branches must unify to the same
         // `Box<dyn EventHandle<_>>` type — `.and(NoOpHandler)` in the
         // else branch gives us that without changing behaviour.
         let on_stop_hook = if forge_config.verify_todos {
@@ -291,6 +286,9 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         .hook(Arc::new(hook));
         if let Some(prompt) = raw_user_prompt {
             orch = orch.user_prompt(prompt);
+        }
+        if let Some(queue) = self.services.async_hook_queue() {
+            orch = orch.async_hook_queue(queue.clone());
         }
 
         // Create and return the stream
@@ -373,7 +371,7 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         // Apply compaction using the Compactor
         let environment = self.services.get_environment();
 
-        // Fire PreCompact plugin hook (Phase 4 Part 2b-ii). Manual compact
+        // Fire PreCompact plugin hook. Manual compact
         // uses CompactTrigger::Manual. A blocking hook aborts the
         // compaction with an error.
         let plugin_handler = PluginHookHandler::new(self.services.clone());
@@ -415,8 +413,8 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         // Update the conversation with the compacted context
         conversation.context = Some(compacted_context);
 
-        // Fire PostCompact plugin hook. Phase 4 uses an empty summary —
-        // real compaction summary extraction is a Part 2b-iii follow-up.
+        // Fire PostCompact plugin hook. Uses an empty summary for now —
+        // real compaction summary extraction is a follow-up.
         conversation.reset_hook_result();
         let post_payload = PostCompactPayload {
             trigger: CompactTrigger::Manual,
@@ -436,7 +434,7 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
             &mut conversation,
         )
         .await?;
-        // Drain hook_result — Phase 4 doesn't consume PostCompact extras
+        // Drain hook_result — PostCompact extras are not consumed
         // on this path.
         let _ = std::mem::take(&mut conversation.hook_result);
 

@@ -33,6 +33,20 @@ use forge_app::hook_runtime::{
 };
 use forge_app::{EnvironmentInfra, FileInfoInfra, FileReaderInfra};
 use forge_domain::{HooksConfig, LoadedPlugin, PluginHooksManifestField, PluginRepository};
+
+/// Wrapper struct for the plugin `hooks.json` format.
+///
+/// Plugin hooks files use `{ "hooks": { EventName: [...] }, "description": "..." }`
+/// while user/project settings use the flat `{ EventName: [...] }` format.
+/// This matches Claude Code's `PluginHooksSchema` at
+/// `claude-code/src/utils/plugins/schemas.ts:328-339`.
+#[derive(serde::Deserialize)]
+struct PluginHooksFile {
+    hooks: HooksConfig,
+    #[allow(dead_code)]
+    #[serde(default)]
+    description: Option<String>,
+}
 use tokio::sync::RwLock;
 
 /// Extension helper for [`MergedHooksConfig`] that owns the merge logic.
@@ -59,6 +73,27 @@ fn extend_from(
     }
 }
 
+/// Check if workspace trust has been accepted.
+///
+/// Trust is considered accepted if the `.forge/.trust-accepted` marker
+/// file exists under `cwd`. This file is user-local and should be
+/// added to `.gitignore` (it must NOT be committed to source control).
+pub fn is_workspace_trusted(cwd: &Path) -> bool {
+    cwd.join(".forge/.trust-accepted").exists()
+}
+
+/// Accept workspace trust by creating the `.forge/.trust-accepted`
+/// marker file. This is user-local and should be listed in `.gitignore`
+/// so it is never committed to the repository.
+pub async fn accept_workspace_trust(cwd: &Path) -> anyhow::Result<()> {
+    let trust_marker = cwd.join(".forge/.trust-accepted");
+    if let Some(parent) = trust_marker.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&trust_marker, "").await?;
+    Ok(())
+}
+
 /// Loads and caches the [`MergedHooksConfig`].
 ///
 /// Generic over `F`, which must provide environment + file access. The
@@ -73,7 +108,7 @@ pub struct ForgeHookConfigLoader<F> {
 
 impl<F> ForgeHookConfigLoader<F>
 where
-    F: EnvironmentInfra + FileReaderInfra + FileInfoInfra + Send + Sync,
+    F: EnvironmentInfra<Config = forge_config::ForgeConfig> + FileReaderInfra + FileInfoInfra + Send + Sync,
 {
     /// Creates a new loader. The cache is empty until
     /// [`load`](HookConfigLoaderService::load) is called for the first
@@ -82,11 +117,49 @@ where
         Self { infra, plugin_repository, cache: RwLock::new(None) }
     }
 
+    /// Returns `true` when the `CI` environment variable is set, which
+    /// implies an automated / non-interactive context where workspace
+    /// trust is implicit (mirrors Claude Code behaviour).
+    fn is_ci(&self) -> bool {
+        self.infra.get_env_var("CI").is_some()
+    }
+
     /// Internal helper: do the actual merge without touching the cache.
     async fn load_uncached(&self) -> anyhow::Result<MergedHooksConfig> {
         let mut merged = MergedHooksConfig::default();
 
+        // Check enterprise hook policy flags.
+        let forge_config = self.infra.get_config()?;
+
+        // If all hooks are disabled, return an empty config immediately.
+        if forge_config.disable_all_hooks {
+            tracing::info!("All hooks disabled via disable_all_hooks config flag");
+            return Ok(merged);
+        }
+
         let env = self.infra.get_environment();
+
+        // If allow_managed_hooks_only is set, skip user/project/plugin hooks
+        // and only load managed hooks.
+        if forge_config.allow_managed_hooks_only {
+            tracing::info!(
+                "allow_managed_hooks_only is enabled; skipping user, project, and plugin hooks"
+            );
+
+            // Load managed hooks from ~/forge/managed-hooks.json
+            let managed_path = env.base_path.join("managed-hooks.json");
+            if let Some(config) = self.read_hooks_json(&managed_path).await? {
+                extend_from(
+                    &mut merged,
+                    config,
+                    HookConfigSource::Managed,
+                    None,
+                    None,
+                );
+            }
+
+            return Ok(merged);
+        }
 
         // 1. User-global: ~/forge/hooks.json
         let user_path = env.base_path.join("hooks.json");
@@ -101,14 +174,41 @@ where
         }
 
         // 2. Project: ./.forge/hooks.json
+        //
+        // Security: project-level hooks can execute arbitrary commands,
+        // so we gate them behind a workspace trust marker
+        // (`.forge/.trust-accepted`). In CI environments the trust
+        // check is bypassed because the user has already opted in by
+        // running the pipeline.
         let project_path = env.cwd.join(".forge/hooks.json");
-        if let Some(config) = self.read_hooks_json(&project_path).await? {
-            extend_from(&mut merged, config, HookConfigSource::Project, None, None);
+        if self.infra.exists(&project_path).await? {
+            if self.is_ci() || is_workspace_trusted(&env.cwd) {
+                if let Some(config) = self.read_hooks_json(&project_path).await? {
+                    extend_from(&mut merged, config, HookConfigSource::Project, None, None);
+                }
+            } else {
+                tracing::warn!(
+                    "Skipping project-level hooks: workspace not trusted. \
+                     Run `forge trust` to accept."
+                );
+            }
         }
 
         // 3. Plugin hooks
+        //
+        // Project-scoped plugins (PluginSource::Project) are gated by
+        // the same workspace trust check as project hooks above.
+        let trusted = self.is_ci() || is_workspace_trusted(&env.cwd);
         let plugin_result = self.plugin_repository.load_plugins_with_errors().await?;
         for plugin in plugin_result.plugins.iter().filter(|p| p.enabled) {
+            if plugin.source == forge_domain::PluginSource::Project && !trusted {
+                tracing::warn!(
+                    plugin = plugin.name.as_str(),
+                    "Skipping project-scoped plugin hooks: workspace not trusted. \
+                     Run `forge trust` to accept."
+                );
+                continue;
+            }
             if let Err(e) = self.merge_plugin(plugin, &mut merged).await {
                 tracing::warn!(
                     plugin = plugin.name.as_str(),
@@ -193,11 +293,32 @@ where
     /// Read a `hooks.json` file at `path` and parse it into a
     /// [`HooksConfig`]. Returns `Ok(None)` when the file is missing (the
     /// common case — most projects don't have a `hooks.json`).
+    ///
+    /// Supports two JSON shapes:
+    ///
+    /// - **Flat format** (user/project settings):
+    ///   `{ "PreToolUse": [...] }`
+    /// - **Wrapper format** (plugin `hooks.json`, matching Claude Code's
+    ///   `PluginHooksSchema`):
+    ///   `{ "hooks": { "PreToolUse": [...] }, "description": "..." }`
+    ///
+    /// The wrapper format is tried first; if the top-level object contains
+    /// a `"hooks"` key whose value is an object, it is unwrapped.
+    /// Otherwise the file is parsed as flat `HooksConfig`.
     async fn read_hooks_json(&self, path: &Path) -> anyhow::Result<Option<HooksConfig>> {
         if !self.infra.exists(path).await? {
             return Ok(None);
         }
         let raw = self.infra.read_utf8(path).await?;
+
+        // Try wrapper format first: { "hooks": { ... }, "description": "..." }
+        // This matches Claude Code's PluginHooksSchema at
+        // `claude-code/src/utils/plugins/schemas.ts:328-339`.
+        if let Ok(wrapper) = serde_json::from_str::<PluginHooksFile>(&raw) {
+            return Ok(Some(wrapper.hooks));
+        }
+
+        // Fall back to flat format: { "EventName": [...] }
         let parsed: HooksConfig = serde_json::from_str(&raw).map_err(|e| {
             anyhow::anyhow!("failed to parse hooks.json at {}: {}", path.display(), e)
         })?;
@@ -208,7 +329,7 @@ where
 #[async_trait::async_trait]
 impl<F> HookConfigLoaderService for ForgeHookConfigLoader<F>
 where
-    F: EnvironmentInfra + FileReaderInfra + FileInfoInfra + Send + Sync + 'static,
+    F: EnvironmentInfra<Config = forge_config::ForgeConfig> + FileReaderInfra + FileInfoInfra + Send + Sync + 'static,
 {
     /// Returns the merged hook config, loading it from disk on first
     /// call (or after [`invalidate`](Self::invalidate)).
@@ -263,6 +384,8 @@ mod tests {
     #[derive(Clone)]
     struct TestInfra {
         env: Environment,
+        env_vars: BTreeMap<String, String>,
+        config: forge_config::ForgeConfig,
     }
 
     impl TestInfra {
@@ -274,7 +397,17 @@ mod tests {
                 shell: "/bin/bash".to_string(),
                 base_path: base,
             };
-            Self { env }
+            Self { env, env_vars: BTreeMap::new(), config: forge_config::ForgeConfig::default() }
+        }
+
+        fn with_env_var(mut self, key: &str, value: &str) -> Self {
+            self.env_vars.insert(key.to_string(), value.to_string());
+            self
+        }
+
+        fn with_config(mut self, config: forge_config::ForgeConfig) -> Self {
+            self.config = config;
+            self
         }
     }
 
@@ -286,19 +419,19 @@ mod tests {
         }
 
         fn get_config(&self) -> anyhow::Result<forge_config::ForgeConfig> {
-            Ok(forge_config::ForgeConfig::default())
+            Ok(self.config.clone())
         }
 
         async fn update_environment(&self, _ops: Vec<ConfigOperation>) -> anyhow::Result<()> {
             Ok(())
         }
 
-        fn get_env_var(&self, _key: &str) -> Option<String> {
-            None
+        fn get_env_var(&self, key: &str) -> Option<String> {
+            self.env_vars.get(key).cloned()
         }
 
         fn get_env_vars(&self) -> BTreeMap<String, String> {
-            BTreeMap::new()
+            self.env_vars.clone()
         }
     }
 
@@ -552,6 +685,7 @@ mod tests {
         let plugin_root = temp.path().join("plugins/demo");
         std::fs::create_dir_all(&base).unwrap();
         std::fs::create_dir_all(cwd.join(".forge")).unwrap();
+        std::fs::write(cwd.join(".forge/.trust-accepted"), "").unwrap();
         std::fs::create_dir_all(&plugin_root).unwrap();
 
         // User global with PreToolUse matcher.
@@ -654,5 +788,278 @@ mod tests {
         loader.invalidate().await.unwrap();
         let fresh = loader.load().await.unwrap();
         assert_eq!(fresh.total_matchers(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_loader_skips_project_hooks_when_not_trusted() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("base");
+        let cwd = temp.path().join("cwd");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(cwd.join(".forge")).unwrap();
+
+        // Project hooks.json exists but NO .trust-accepted marker.
+        std::fs::write(cwd.join(".forge/hooks.json"), sample_hooks_json()).unwrap();
+
+        let infra = Arc::new(TestInfra::new(base, cwd));
+        let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::default());
+        let loader = ForgeHookConfigLoader::new(infra, repo);
+
+        let merged = loader.load().await.unwrap();
+        // Project hooks should be skipped — no matchers loaded.
+        assert!(merged.is_empty());
+        assert_eq!(merged.total_matchers(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_loader_loads_project_hooks_when_trusted() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("base");
+        let cwd = temp.path().join("cwd");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(cwd.join(".forge")).unwrap();
+
+        // Both hooks.json and .trust-accepted exist.
+        std::fs::write(cwd.join(".forge/hooks.json"), sample_hooks_json()).unwrap();
+        std::fs::write(cwd.join(".forge/.trust-accepted"), "").unwrap();
+
+        let infra = Arc::new(TestInfra::new(base, cwd));
+        let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::default());
+        let loader = ForgeHookConfigLoader::new(infra, repo);
+
+        let merged = loader.load().await.unwrap();
+        assert_eq!(merged.total_matchers(), 1);
+        let pre = merged.entries.get(&HookEventName::PreToolUse).unwrap();
+        assert_eq!(pre[0].source, HookConfigSource::Project);
+    }
+
+    #[tokio::test]
+    async fn test_loader_loads_project_hooks_in_ci_mode() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("base");
+        let cwd = temp.path().join("cwd");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(cwd.join(".forge")).unwrap();
+
+        // hooks.json exists but NO .trust-accepted — CI env var is set instead.
+        std::fs::write(cwd.join(".forge/hooks.json"), sample_hooks_json()).unwrap();
+
+        let infra = Arc::new(TestInfra::new(base, cwd).with_env_var("CI", "true"));
+        let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::default());
+        let loader = ForgeHookConfigLoader::new(infra, repo);
+
+        let merged = loader.load().await.unwrap();
+        assert_eq!(merged.total_matchers(), 1);
+        let pre = merged.entries.get(&HookEventName::PreToolUse).unwrap();
+        assert_eq!(pre[0].source, HookConfigSource::Project);
+    }
+
+    #[tokio::test]
+    async fn test_accept_workspace_trust_creates_marker() {
+        let temp = TempDir::new().unwrap();
+        let cwd = temp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        // Marker should not exist yet.
+        assert!(!is_workspace_trusted(&cwd));
+
+        // Accept trust.
+        accept_workspace_trust(&cwd).await.unwrap();
+
+        // Marker should now exist.
+        assert!(is_workspace_trusted(&cwd));
+        assert!(cwd.join(".forge/.trust-accepted").exists());
+    }
+
+    /// Verifies that `read_hooks_json` handles the **wrapper** format
+    /// `{ "hooks": { EventName: [...] }, "description": "..." }` used by
+    /// plugin `hooks.json` files (matching Claude Code's `PluginHooksSchema`).
+    #[tokio::test]
+    async fn test_read_hooks_json_wrapper_format() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("base");
+        let cwd = temp.path().join("cwd");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(cwd.join(".forge")).unwrap();
+
+        // Write a plugin-style wrapper format hooks.json
+        let wrapper_json = r#"{
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "echo plugin-wrapper"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "description": "Test plugin hooks"
+        }"#;
+        let hooks_path = cwd.join(".forge/hooks.json");
+        std::fs::write(&hooks_path, wrapper_json).unwrap();
+
+        let infra = Arc::new(TestInfra::new(base, cwd));
+        let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::default());
+        let loader = ForgeHookConfigLoader::new(infra, repo);
+
+        let result = loader.read_hooks_json(&hooks_path).await.unwrap();
+        assert!(result.is_some(), "should parse wrapper format");
+        let config = result.unwrap();
+        let pre = config.0.get(&HookEventName::PreToolUse).unwrap();
+        assert_eq!(pre.len(), 1);
+        assert_eq!(pre[0].matcher.as_deref(), Some("Bash"));
+    }
+
+    /// Verifies that `read_hooks_json` still handles the **flat** format
+    /// `{ EventName: [...] }` used by user/project settings.
+    #[tokio::test]
+    async fn test_read_hooks_json_flat_format() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("base");
+        let cwd = temp.path().join("cwd");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(cwd.join(".forge")).unwrap();
+
+        let hooks_path = cwd.join(".forge/hooks.json");
+        std::fs::write(&hooks_path, sample_hooks_json()).unwrap();
+
+        let infra = Arc::new(TestInfra::new(base, cwd));
+        let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::default());
+        let loader = ForgeHookConfigLoader::new(infra, repo);
+
+        let result = loader.read_hooks_json(&hooks_path).await.unwrap();
+        assert!(result.is_some(), "should parse flat format");
+        let config = result.unwrap();
+        let pre = config.0.get(&HookEventName::PreToolUse).unwrap();
+        assert_eq!(pre.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_disable_all_hooks_returns_empty_config() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("base");
+        let cwd = temp.path().join("cwd");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        // Write user hooks that would normally be loaded.
+        std::fs::write(base.join("hooks.json"), sample_hooks_json()).unwrap();
+
+        let config = forge_config::ForgeConfig {
+            disable_all_hooks: true,
+            ..Default::default()
+        };
+        let infra = Arc::new(TestInfra::new(base, cwd).with_config(config));
+        let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::default());
+        let loader = ForgeHookConfigLoader::new(infra, repo);
+
+        let merged = loader.load().await.unwrap();
+        assert!(merged.is_empty(), "disable_all_hooks should return empty config");
+        assert_eq!(merged.total_matchers(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_allow_managed_hooks_only_skips_user_and_project_hooks() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("base");
+        let cwd = temp.path().join("cwd");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(cwd.join(".forge")).unwrap();
+        std::fs::write(cwd.join(".forge/.trust-accepted"), "").unwrap();
+
+        // Write user and project hooks.
+        std::fs::write(base.join("hooks.json"), sample_hooks_json()).unwrap();
+        std::fs::write(
+            cwd.join(".forge/hooks.json"),
+            r#"{"PostToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"post"}]}]}"#,
+        )
+        .unwrap();
+
+        let config = forge_config::ForgeConfig {
+            allow_managed_hooks_only: true,
+            ..Default::default()
+        };
+        let infra = Arc::new(TestInfra::new(base, cwd).with_config(config));
+        let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::default());
+        let loader = ForgeHookConfigLoader::new(infra, repo);
+
+        let merged = loader.load().await.unwrap();
+        // No managed-hooks.json exists, so nothing should load.
+        assert!(
+            merged.is_empty(),
+            "allow_managed_hooks_only should skip user/project hooks"
+        );
+        assert_eq!(merged.total_matchers(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_allow_managed_hooks_only_loads_managed_hooks() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("base");
+        let cwd = temp.path().join("cwd");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        // Write user hooks (should be skipped).
+        std::fs::write(base.join("hooks.json"), sample_hooks_json()).unwrap();
+        // Write managed hooks (should be loaded).
+        std::fs::write(
+            base.join("managed-hooks.json"),
+            r#"{"SessionStart":[{"hooks":[{"type":"command","command":"managed-start"}]}]}"#,
+        )
+        .unwrap();
+
+        let config = forge_config::ForgeConfig {
+            allow_managed_hooks_only: true,
+            ..Default::default()
+        };
+        let infra = Arc::new(TestInfra::new(base, cwd).with_config(config));
+        let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::default());
+        let loader = ForgeHookConfigLoader::new(infra, repo);
+
+        let merged = loader.load().await.unwrap();
+        assert_eq!(merged.total_matchers(), 1);
+        let start = merged.entries.get(&HookEventName::SessionStart).unwrap();
+        assert_eq!(start[0].source, HookConfigSource::Managed);
+        // User hooks should NOT be loaded.
+        assert!(merged.entries.get(&HookEventName::PreToolUse).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_default_config_loads_all_hook_sources() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("base");
+        let cwd = temp.path().join("cwd");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(cwd.join(".forge")).unwrap();
+        std::fs::write(cwd.join(".forge/.trust-accepted"), "").unwrap();
+
+        // Both user and project hooks.
+        std::fs::write(base.join("hooks.json"), sample_hooks_json()).unwrap();
+        std::fs::write(
+            cwd.join(".forge/hooks.json"),
+            r#"{"PostToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"post"}]}]}"#,
+        )
+        .unwrap();
+
+        // Default config: no flags set.
+        let infra = Arc::new(TestInfra::new(base, cwd));
+        let repo: Arc<dyn PluginRepository> = Arc::new(TestPluginRepository::default());
+        let loader = ForgeHookConfigLoader::new(infra, repo);
+
+        let merged = loader.load().await.unwrap();
+        assert_eq!(merged.total_matchers(), 2);
+        assert_eq!(
+            merged.entries.get(&HookEventName::PreToolUse).map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            merged.entries.get(&HookEventName::PostToolUse).map(Vec::len),
+            Some(1)
+        );
     }
 }

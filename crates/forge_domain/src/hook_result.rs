@@ -93,8 +93,8 @@ pub struct AggregatedHookResult {
     /// the same event. When present, the CLI `--worktree` handler in
     /// `crates/forge_main/src/sandbox.rs` uses this path instead of
     /// falling back to `git worktree add`. The runtime
-    /// `EnterWorktreeTool` fire site (deferred to a future wave) will
-    /// consume the same field.
+    /// `EnterWorktreeTool` fire site (pending) will consume the same
+    /// field.
     pub worktree_path: Option<PathBuf>,
 }
 
@@ -437,6 +437,24 @@ pub enum HookOutcome {
     Cancelled,
 }
 
+/// A pending result from an async hook with `asyncRewake: true`.
+///
+/// When an asyncRewake hook completes in the background, the shell executor
+/// sends one of these through an mpsc channel. The orchestrator drains
+/// them before each conversation turn and injects them as
+/// `<system_reminder>` context messages — mirroring Claude Code's
+/// `enqueuePendingNotification` + `queued_command` attachment pipeline.
+#[derive(Debug, Clone)]
+pub struct PendingHookResult {
+    /// Human-readable identifier for the hook (e.g. the shell command).
+    pub hook_name: String,
+    /// The message text to inject (stderr for blocking, stdout otherwise).
+    pub message: String,
+    /// `true` when the hook exited with code 2 (blocking). The
+    /// orchestrator prefixes the injected message with "BLOCKING: ".
+    pub is_blocking: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -464,7 +482,7 @@ mod tests {
         assert!(actual.worktree_path.is_none());
     }
 
-    /// Wave E-1b: sanity-check the `Default` impl zeroes the three new
+    /// Sanity-check the `Default` impl zeroes the three
     /// `PermissionRequest` fields.
     #[test]
     fn test_aggregated_default_has_false_interrupt_and_retry() {
@@ -749,7 +767,7 @@ mod tests {
         assert_eq!(agg.permission_behavior, Some(PermissionBehavior::Allow));
     }
 
-    // ---- Wave E-1b: PermissionRequest merge tests ----
+    // ---- PermissionRequest merge tests ----
 
     /// Two hooks vote Allow then Deny — deny takes precedence per
     /// Claude Code's deny > ask > allow model.
@@ -1028,7 +1046,7 @@ mod tests {
         assert!(agg.blocking_error.is_none());
     }
 
-    // ---- Wave E-2c-i: WorktreeCreate merge tests ----
+    // ---- WorktreeCreate merge tests ----
 
     /// Two `WorktreeCreate` hooks both hand back a path — last-write-wins.
     /// Mirrors the `updated_input` semantics so plugins that chain on top
@@ -1116,6 +1134,122 @@ mod tests {
 
         let err = agg.blocking_error.as_ref().expect("blocking_error set");
         assert_eq!(err.message, "Elicitation denied by hook");
+    }
+
+    // ---- Passthrough behavior tests ----
+
+    /// When a hook sets `updated_input` but no `permission_decision`,
+    /// `updated_input` should still be available in the aggregate and
+    /// `permission_behavior` stays `None` (passthrough). This mirrors
+    /// Claude Code's passthrough handling where a hook enriches or
+    /// normalizes the input without making a permission decision.
+    #[test]
+    fn test_merge_passthrough_updated_input_without_permission() {
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: None,
+                permission_decision_reason: None,
+                updated_input: Some(json!({"normalized": true})),
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        // permission_behavior stays None (passthrough)
+        assert!(agg.permission_behavior.is_none());
+        // But updated_input IS captured
+        assert_eq!(agg.updated_input, Some(json!({"normalized": true})));
+    }
+
+    /// Multiple passthrough hooks can chain: each overwrites
+    /// `updated_input` (last-write-wins) while `permission_behavior`
+    /// stays `None` throughout.
+    #[test]
+    fn test_merge_passthrough_multiple_hooks_chain_updated_input() {
+        let mut agg = AggregatedHookResult::default();
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: None,
+                permission_decision_reason: None,
+                updated_input: Some(json!({"step": 1})),
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: None,
+                permission_decision_reason: None,
+                updated_input: Some(json!({"step": 2})),
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert!(agg.permission_behavior.is_none());
+        assert_eq!(agg.updated_input, Some(json!({"step": 2})));
+    }
+
+    /// A passthrough hook (no `permission_decision`) combined with a
+    /// permission-setting hook: the `updated_input` from the passthrough
+    /// hook is preserved alongside the permission decision from the
+    /// other hook.
+    #[test]
+    fn test_merge_passthrough_with_permission_hook_preserves_both() {
+        let mut agg = AggregatedHookResult::default();
+
+        // First hook: passthrough with updated_input
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: None,
+                permission_decision_reason: None,
+                updated_input: Some(json!({"sanitized": true})),
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        // Second hook: permission decision without updated_input
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: Some(PermissionDecision::Allow),
+                permission_decision_reason: None,
+                updated_input: None,
+                additional_context: None,
+            }),
+            ..Default::default()
+        }));
+
+        assert_eq!(agg.permission_behavior, Some(PermissionBehavior::Allow));
+        assert_eq!(agg.updated_input, Some(json!({"sanitized": true})));
+    }
+
+    /// A passthrough hook with `additional_context` but no
+    /// `permission_decision` and no `updated_input` — both
+    /// `permission_behavior` and `updated_input` stay `None` while
+    /// `additional_contexts` accumulates the value.
+    #[test]
+    fn test_merge_passthrough_additional_context_only() {
+        let mut agg = AggregatedHookResult::default();
+        agg.merge(success_with_sync(SyncHookOutput {
+            hook_specific_output: Some(HookSpecificOutput::PreToolUse {
+                permission_decision: None,
+                permission_decision_reason: None,
+                updated_input: None,
+                additional_context: Some("extra info from passthrough".to_string()),
+            }),
+            ..Default::default()
+        }));
+
+        assert!(agg.permission_behavior.is_none());
+        assert!(agg.updated_input.is_none());
+        assert_eq!(
+            agg.additional_contexts,
+            vec!["extra info from passthrough".to_string()]
+        );
     }
 
     #[test]

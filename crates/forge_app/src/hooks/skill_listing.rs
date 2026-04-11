@@ -202,7 +202,7 @@ impl DeltaCache {
     /// Used in two scenarios:
     /// - `SessionEnd` cleanup, to prevent the cache from growing unbounded
     ///   across restart / resume cycles.
-    /// - Plugin hot-reload (Phase 2): when a plugin is enabled or disabled the
+    /// - Plugin hot-reload: when a plugin is enabled or disabled the
     ///   skill catalog may change and every agent in the conversation needs to
     ///   see a fresh announcement on the next turn.
     ///
@@ -211,8 +211,8 @@ impl DeltaCache {
     ///
     /// Reached only via [`SkillListingHandler::reset_sent_skills`], whose
     /// generic bound hides this method from rustc's non-test dead-code
-    /// analysis — the allow silences a spurious warning until Phase 2
-    /// wires the hot-reload event loop.
+    /// analysis — the allow silences a spurious warning until plugin
+    /// hot-reload is wired.
     #[allow(dead_code)]
     async fn forget(&self, conversation_id: ConversationId) {
         let mut guard = self.sent.lock().await;
@@ -315,8 +315,8 @@ impl<S> SkillListingHandler<S> {
     /// (`forge` + `sage` + `muse`) all receive a fresh reminder on their
     /// respective next turns.
     ///
-    /// Exposed ahead of Phase 2's plugin hot-reload wiring. The
-    /// `allow(dead_code)` stays until the plugin event loop invokes it.
+    /// Exposed for plugin hot-reload wiring. The `allow(dead_code)`
+    /// stays until the plugin event loop invokes it.
     #[allow(dead_code)]
     pub async fn reset_sent_skills(&self, conversation_id: &ConversationId) {
         self.cache.forget(*conversation_id).await;
@@ -329,8 +329,8 @@ impl<S> SkillListingHandler<S> {
     /// skills was just disabled). Every active conversation will see a
     /// fresh, possibly smaller, catalog on its next turn.
     ///
-    /// Exposed ahead of Phase 2's plugin hot-reload wiring. The
-    /// `allow(dead_code)` stays until the plugin event loop invokes it.
+    /// Exposed for plugin hot-reload wiring. The `allow(dead_code)`
+    /// stays until the plugin event loop invokes it.
     #[allow(dead_code)]
     pub async fn reset_all(&self) {
         self.cache.forget_all().await;

@@ -486,9 +486,10 @@ where
         working_dir: PathBuf,
         silent: bool,
         env_vars: Option<Vec<String>>,
+        extra_env: Option<std::collections::HashMap<String, String>>,
     ) -> anyhow::Result<CommandOutput> {
         self.infra
-            .execute_command(command, working_dir, silent, env_vars)
+            .execute_command(command, working_dir, silent, env_vars, extra_env)
             .await
     }
 
@@ -497,9 +498,10 @@ where
         command: &str,
         working_dir: PathBuf,
         env_vars: Option<Vec<String>>,
+        extra_env: Option<std::collections::HashMap<String, String>>,
     ) -> anyhow::Result<std::process::ExitStatus> {
         self.infra
-            .execute_command_raw(command, working_dir, env_vars)
+            .execute_command_raw(command, working_dir, env_vars, extra_env)
             .await
     }
 }

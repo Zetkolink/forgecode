@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use forge_app::{
-    AgentRepository, CommandInfra, DirectoryReaderInfra, EnvironmentInfra, FileDirectoryInfra,
-    FileInfoInfra, FileReaderInfra, FileRemoverInfra, FileWriterInfra, HttpInfra, KVStore,
-    McpServerInfra, Services, StrategyFactory, UserInfra, WalkerInfra,
+    AgentRepository, AsyncHookResultQueue, CommandInfra, DirectoryReaderInfra, EnvironmentInfra,
+    FileDirectoryInfra, FileInfoInfra, FileReaderInfra, FileRemoverInfra, FileWriterInfra,
+    HttpInfra, KVStore, McpServerInfra, Services, SessionEnvCache, StrategyFactory, UserInfra,
+    WalkerInfra,
 };
 use forge_domain::{
     ChatRepository, ConversationRepository, FuzzySearchRepository, LoadedPlugin, PluginLoadResult,
@@ -113,6 +114,11 @@ pub struct ForgeServices<
     plugin_loader_service: Arc<ForgePluginLoader<F>>,
     hook_config_loader_service: Arc<ForgeHookConfigLoader<F>>,
     hook_executor_service: Arc<ForgeHookExecutor<F>>,
+    /// Shared queue for async-rewake hook results. Populated by the
+    /// shell executor's background tasks; drained by the orchestrator
+    /// between conversation turns.
+    async_hook_queue: AsyncHookResultQueue,
+    session_env_cache: SessionEnvCache,
     /// Phase 8 elicitation dispatcher. Owns a `OnceLock<Arc<Self>>`
     /// populated after construction via
     /// [`ForgeServices::init_elicitation_dispatcher`]; see the
@@ -176,7 +182,8 @@ impl<
         let file_remove_service = Arc::new(ForgeFsRemove::new(infra.clone()));
         let file_patch_service = Arc::new(ForgeFsPatch::new(infra.clone()));
         let file_undo_service = Arc::new(ForgeFsUndo::new(infra.clone()));
-        let shell_service = Arc::new(ForgeShell::new(infra.clone()));
+        let session_env_cache = SessionEnvCache::new();
+        let shell_service = Arc::new(ForgeShell::new(infra.clone(), session_env_cache.clone()));
         let fetch_service = Arc::new(ForgeFetch::new());
         let followup_service = Arc::new(ForgeFollowup::new(infra.clone()));
         let custom_instructions_service =
@@ -204,7 +211,23 @@ impl<
             Arc::new(InfraPluginRepository { infra: infra.clone() });
         let hook_config_loader_service =
             Arc::new(ForgeHookConfigLoader::new(infra.clone(), hook_plugin_repo));
-        let hook_executor_service = Arc::new(ForgeHookExecutor::new(infra.clone()));
+
+        // Create the async-rewake channel + queue. The sender goes into
+        // the hook executor; the receiver feeds a background pump that
+        // pushes results into the shared queue.
+        let async_hook_queue = AsyncHookResultQueue::new();
+        let (async_result_tx, mut async_result_rx) =
+            tokio::sync::mpsc::unbounded_channel::<forge_domain::PendingHookResult>();
+        {
+            let queue = async_hook_queue.clone();
+            tokio::spawn(async move {
+                while let Some(result) = async_result_rx.recv().await {
+                    queue.push(result).await;
+                }
+            });
+        }
+        let hook_executor_service =
+            Arc::new(ForgeHookExecutor::new(infra.clone()).with_async_result_tx(async_result_tx));
 
         // Phase 8 elicitation dispatcher. Created with an empty
         // services slot; populated by
@@ -243,6 +266,8 @@ impl<
             plugin_loader_service,
             hook_config_loader_service,
             hook_executor_service,
+            async_hook_queue,
+            session_env_cache,
             elicitation_dispatcher,
             chat_service,
             infra,
@@ -263,6 +288,21 @@ impl<
         self.elicitation_dispatcher.init(self.clone());
     }
 
+    /// Populate the hook executor's LLM service handle. Must be called
+    /// from the `forge_api` layer immediately after
+    /// `Arc::new(ForgeServices::new(...))` returns — same timing as
+    /// `init_elicitation_dispatcher`.
+    ///
+    /// Until this method runs, prompt and agent hooks return an error
+    /// instead of making LLM calls.
+    pub fn init_hook_executor_services(self: &Arc<Self>)
+    where
+        ForgeServices<F>: forge_app::Services,
+    {
+        self.hook_executor_service
+            .init_services(self.clone() as std::sync::Arc<dyn crate::hook_runtime::executor::HookModelService>);
+    }
+
     /// Return a type-erased handle to the elicitation dispatcher so
     /// it can be plumbed into [`forge_infra::ForgeInfra`] (which
     /// doesn't know the concrete `ForgeServices<F>` type — and
@@ -279,6 +319,12 @@ impl<
         ForgeServices<F>: forge_app::Services,
     {
         self.elicitation_dispatcher.clone()
+    }
+
+    /// Return a reference to the session env cache so the hook handler
+    /// can later share it.
+    pub fn session_env_cache(&self) -> &SessionEnvCache {
+        &self.session_env_cache
     }
 }
 
@@ -461,6 +507,10 @@ impl<
 
     fn elicitation_dispatcher(&self) -> &Self::ElicitationDispatcher {
         &self.elicitation_dispatcher
+    }
+
+    fn async_hook_queue(&self) -> Option<&AsyncHookResultQueue> {
+        Some(&self.async_hook_queue)
     }
 
     fn provider_service(&self) -> &Self::ProviderService {

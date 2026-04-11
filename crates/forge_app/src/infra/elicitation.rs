@@ -1,7 +1,6 @@
 //! Elicitation dispatcher trait for MCP server-initiated user prompts.
 //!
-//! Phase 8 of the Claude Code plugin compatibility plan. When an MCP
-//! server sends an `elicitation/create` request (per the MCP spec), the
+//! When an MCP server sends an `elicitation/create` request (per the MCP spec), the
 //! rmcp `ClientHandler::create_elicitation` callback needs to route the
 //! request somewhere. This trait is that somewhere — the `forge_infra`
 //! crate will implement a `ForgeMcpHandler` that forwards rmcp's raw
@@ -9,9 +8,7 @@
 //! the `Elicitation` plugin hook, inspects the result for an auto-
 //! response, and falls back to interactive UI when no hook handles it.
 //!
-//! Wave F-1 establishes the trait and the fire path. Wave F-2 wires the
-//! rmcp handler. Wave F-2 also adds the interactive UI fallback — for
-//! now, a non-hook-handled request returns `ElicitationAction::Decline`.
+//! Currently, a non-hook-handled request returns `ElicitationAction::Decline`.
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -20,8 +17,8 @@ use serde_json::Value;
 ///
 /// Mirrors `rmcp::model::CreateElicitationRequestParam` but uses plain
 /// types (no rmcp dep in `forge_app`) so `forge_app` stays decoupled
-/// from the transport layer. Wave F-2 adds a translation layer in
-/// `forge_infra` that converts rmcp types to these.
+/// from the transport layer. A translation layer in `forge_infra`
+/// converts rmcp types to these.
 #[derive(Debug, Clone)]
 pub struct ElicitationRequest {
     /// The logical name of the MCP server that sent the request. Used
