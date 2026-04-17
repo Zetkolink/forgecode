@@ -48,8 +48,8 @@ impl ForgeAPI<ForgeServices<ForgeRepo<ForgeInfra>>, ForgeRepo<ForgeInfra>> {
     /// * `cwd` - The working directory path for environment and file resolution
     /// * `config` - Pre-read application configuration (from startup)
     /// * `services_url` - Pre-validated URL for the gRPC workspace server
-    pub fn init(cwd: PathBuf, config: ForgeConfig, services_url: Url) -> Self {
-        let infra = Arc::new(ForgeInfra::new(cwd, config, services_url));
+    pub fn init(cwd: PathBuf, config: ForgeConfig) -> Self {
+        let infra = Arc::new(ForgeInfra::new(cwd, config));
         let repo = Arc::new(ForgeRepo::new(infra.clone()));
         let app = Arc::new(ForgeServices::new(repo.clone()));
         ForgeAPI::new(app, repo)
@@ -90,6 +90,10 @@ impl<
 
     async fn get_agents(&self) -> Result<Vec<Agent>> {
         self.services.get_agents().await
+    }
+
+    async fn get_agent_infos(&self) -> Result<Vec<AgentInfo>> {
+        self.services.get_agent_infos().await
     }
 
     async fn get_providers(&self) -> Result<Vec<AnyProvider>> {
@@ -293,10 +297,6 @@ impl<
         agent_provider_resolver.get_model(Some(agent_id)).await.ok()
     }
 
-    async fn get_default_model(&self) -> Option<ModelId> {
-        self.services.get_provider_model(None).await.ok()
-    }
-
     async fn reload_mcp(&self) -> Result<()> {
         self.services.mcp_service().reload_mcp().await
     }
@@ -307,7 +307,6 @@ impl<
     async fn get_skills(&self) -> Result<Vec<Skill>> {
         self.infra.load_skills().await
     }
-
     async fn generate_command(&self, prompt: UserPrompt) -> Result<String> {
         use forge_app::CommandGenerator;
         let generator = CommandGenerator::new(self.services.clone());
@@ -399,9 +398,17 @@ impl<
         app.execute(data_parameters).await
     }
 
+    async fn get_session_config(&self) -> Option<forge_domain::ModelConfig> {
+        self.services.get_session_config().await
+    }
+
     async fn get_default_provider(&self) -> Result<Provider<Url>> {
-        let provider_id = self.services.get_default_provider().await?;
-        self.services.get_provider(provider_id).await
+        let model_config = self
+            .services
+            .get_session_config()
+            .await
+            .ok_or_else(|| forge_domain::Error::NoDefaultSession)?;
+        self.services.get_provider(model_config.provider).await
     }
 
     async fn mcp_auth(&self, server_url: &str) -> Result<()> {

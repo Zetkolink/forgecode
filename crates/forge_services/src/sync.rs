@@ -3,10 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use forge_app::{FileReaderInfra, SyncProgressCounter, WorkspaceStatus, compute_hash};
-use forge_domain::{
-    ApiKey, FileHash, SyncFailureDetail, SyncProgress, UserId, WorkspaceId,
-    WorkspaceIndexRepository,
-};
+use forge_domain::{ApiKey, FileHash, SyncProgress, UserId, WorkspaceId, WorkspaceIndexRepository};
 use futures::stream::{Stream, StreamExt};
 use tracing::{info, warn};
 
@@ -44,44 +41,6 @@ fn extract_failed_statuses<T>(results: &[Result<T>]) -> Vec<forge_domain::FileSt
             )
         })
         .collect()
-}
-
-/// Extracts a concise reason from an anyhow error chain, looking for the most
-/// informative inner cause.
-fn extract_short_reason(err: &anyhow::Error) -> String {
-    // Walk the chain and pick the deepest cause (most specific)
-    let root = err.chain().last().unwrap_or(err.as_ref());
-    let msg = root.to_string();
-
-    // Try to extract a short message from gRPC-style errors
-    // Format: message: "Embedding failed for /path: actual reason"
-    if let Some(start) = msg.find("message: \"") {
-        let rest = &msg[start + 10..];
-        if let Some(end) = rest.find('"') {
-            let inner = &rest[..end];
-            // Strip "Prefix for /path: " pattern to get just the reason
-            if let Some(colon_pos) = inner.rfind(": ") {
-                return inner[colon_pos + 2..].to_string();
-            }
-            return inner.to_string();
-        }
-    }
-
-    // Truncate long messages
-    if msg.len() > 120 {
-        format!("{}...", &msg[..120])
-    } else {
-        msg
-    }
-}
-
-/// Strips `workspace_root` prefix from `path` to produce a relative path
-/// string for display.
-fn make_relative(path: &std::path::Path, workspace_root: &std::path::Path) -> String {
-    path.strip_prefix(workspace_root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .into_owned()
 }
 
 /// Handles all sync operations for a workspace.
@@ -179,14 +138,6 @@ impl<F: 'static + WorkspaceIndexRepository + FileReaderInfra, D: FileDiscovery +
             .iter()
             .filter(|s| s.status == forge_domain::SyncStatus::Failed)
             .count();
-        let mut failed_details: Vec<SyncFailureDetail> = statuses
-            .iter()
-            .filter(|s| s.status == forge_domain::SyncStatus::Failed)
-            .map(|s| {
-                let rel = make_relative(std::path::Path::new(&s.path), &self.workspace_root);
-                SyncFailureDetail::new(rel, "failed to read file")
-            })
-            .collect();
 
         // Compute total number of affected files
         let total_file_changes = added + deleted + modified;
@@ -212,35 +163,23 @@ impl<F: 'static + WorkspaceIndexRepository + FileReaderInfra, D: FileDiscovery +
             }
             Err(e) => {
                 warn!(workspace_id = %self.workspace_id, error = ?e, "Failed to delete files during sync");
-                let reason = extract_short_reason(&e);
-                for path in &sync_paths.delete {
-                    failed_details.push(SyncFailureDetail::new(
-                        make_relative(path, &self.workspace_root),
-                        &reason,
-                    ));
-                }
                 failed_files += sync_paths.delete.len();
             }
         }
 
-        // Pass 2: upload files — each file's content is read on-demand
-        // immediately before upload so only one batch occupies memory at a time.
-        let mut upload_stream = self.upload_files(sync_paths.upload);
+        // Pass 2: upload files — files are grouped into batches of `batch_size`
+        // and each batch is sent in a single HTTP request, sequentially.
+        let mut upload_stream = Box::pin(self.upload_files(sync_paths.upload));
 
         // Process uploads as they complete, updating progress incrementally
         while let Some(result) = upload_stream.next().await {
             match result {
-                Ok((count, _path)) => {
+                Ok(count) => {
                     counter.complete(count);
                     emit(counter.sync_progress()).await;
                 }
-                Err((path, e)) => {
-                    let reason = extract_short_reason(&e);
-                    warn!(workspace_id = %self.workspace_id, path = %path.display(), reason = %reason, "Failed to upload file during sync");
-                    failed_details.push(SyncFailureDetail::new(
-                        make_relative(&path, &self.workspace_root),
-                        reason,
-                    ));
+                Err(e) => {
+                    warn!(workspace_id = %self.workspace_id, error = ?e, "Failed to upload file during sync");
                     failed_files += 1;
                     // Continue processing remaining uploads
                 }
@@ -257,7 +196,6 @@ impl<F: 'static + WorkspaceIndexRepository + FileReaderInfra, D: FileDiscovery +
             total_files: total_file_count,
             uploaded_files: total_file_changes,
             failed_files,
-            failed_details,
         })
         .await;
 
@@ -324,56 +262,61 @@ impl<F: 'static + WorkspaceIndexRepository + FileReaderInfra, D: FileDiscovery +
         Ok(files_to_delete.len())
     }
 
-    /// Uploads files in parallel, reading their content on-demand to keep
-    /// memory bounded to a single batch at a time.
+    /// Uploads files in batches, sending one HTTP request per batch of
+    /// `batch_size` files.
     ///
-    /// Each path is read from disk immediately before its upload, so the peak
-    /// memory footprint is `batch_size × avg_file_size` rather than the size
-    /// of the entire upload set. The caller is responsible for processing the
-    /// stream and tracking progress.
+    /// Files within each batch are read from disk, collected into a single
+    /// [`forge_domain::FileUpload`] payload, and uploaded in one request.
+    /// Batches are processed sequentially — only one HTTP request is in-flight
+    /// at a time — which keeps both memory usage and server concurrency
+    /// bounded. The stream yields the number of files successfully uploaded
+    /// per batch.
     fn upload_files(
         &self,
         paths: Vec<PathBuf>,
-    ) -> impl Stream<Item = Result<(usize, PathBuf), (PathBuf, anyhow::Error)>> + Send {
+    ) -> impl Stream<Item = Result<usize, anyhow::Error>> + Send {
         let user_id = self.user_id.clone();
         let workspace_id = self.workspace_id.clone();
         let token = self.token.clone();
         let infra = self.infra.clone();
         let batch_size = self.batch_size;
 
-        futures::stream::iter(paths)
-            .map(move |file_path| {
-                let user_id = user_id.clone();
-                let workspace_id = workspace_id.clone();
-                let token = token.clone();
-                let infra = infra.clone();
-                async move {
+        futures::stream::iter(paths).chunks(batch_size).then(move |batch| {
+            let user_id = user_id.clone();
+            let workspace_id = workspace_id.clone();
+            let token = token.clone();
+            let infra = infra.clone();
+            async move {
+                let mut files = Vec::with_capacity(batch.len());
+                for file_path in &batch {
                     info!(workspace_id = %workspace_id, path = %file_path.display(), "File sync started");
-                    // Read content on-demand — keeps only one batch in memory at a time
                     let content = infra
-                        .read_utf8(&file_path)
+                        .read_utf8(file_path)
                         .await
                         .with_context(|| {
                             format!("Failed to read file '{}' for upload", file_path.display())
-                        })
-                        .map_err(|e| (file_path.clone(), e))?;
-                    let path_str = file_path.to_string_lossy().into_owned();
-                    let file = forge_domain::FileRead::new(path_str, content);
-                    let upload = forge_domain::CodeBase::new(
-                        user_id.clone(),
-                        workspace_id.clone(),
-                        vec![file],
-                    );
-                    infra
-                        .upload_files(&upload, &token)
-                        .await
-                        .context("Failed to upload files")
-                        .map_err(|e| (file_path.clone(), e))?;
-                    info!(workspace_id = %workspace_id, path = %file_path.display(), "File sync completed");
-                    Ok((1, file_path))
+                        })?;
+                    files.push(forge_domain::FileRead::new(
+                        file_path.to_string_lossy().into_owned(),
+                        content,
+                    ));
                 }
-            })
-            .buffer_unordered(batch_size)
+                let count = files.len();
+                let upload = forge_domain::CodeBase::new(
+                    user_id.clone(),
+                    workspace_id.clone(),
+                    files,
+                );
+                infra
+                    .upload_files(&upload, &token)
+                    .await
+                    .context("Failed to upload files")?;
+                for file_path in &batch {
+                    info!(workspace_id = %workspace_id, path = %file_path.display(), "File sync completed");
+                }
+                Ok::<_, anyhow::Error>(count)
+            }
+        })
     }
 
     /// Discovers workspace files and streams their hashes without retaining
