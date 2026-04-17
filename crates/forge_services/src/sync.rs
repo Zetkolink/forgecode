@@ -138,6 +138,7 @@ impl<F: 'static + WorkspaceIndexRepository + FileReaderInfra, D: FileDiscovery +
             .iter()
             .filter(|s| s.status == forge_domain::SyncStatus::Failed)
             .count();
+        let mut failed_details: Vec<forge_domain::SyncFailureDetail> = Vec::new();
 
         // Compute total number of affected files
         let total_file_changes = added + deleted + modified;
@@ -163,6 +164,10 @@ impl<F: 'static + WorkspaceIndexRepository + FileReaderInfra, D: FileDiscovery +
             }
             Err(e) => {
                 warn!(workspace_id = %self.workspace_id, error = ?e, "Failed to delete files during sync");
+                let reason = format!("{e:#}");
+                for path in &sync_paths.delete {
+                    failed_details.push(forge_domain::SyncFailureDetail::new(path.to_string_lossy(), reason.clone()));
+                }
                 failed_files += sync_paths.delete.len();
             }
         }
@@ -180,6 +185,7 @@ impl<F: 'static + WorkspaceIndexRepository + FileReaderInfra, D: FileDiscovery +
                 }
                 Err(e) => {
                     warn!(workspace_id = %self.workspace_id, error = ?e, "Failed to upload file during sync");
+                    failed_details.push(forge_domain::SyncFailureDetail::new("unknown", format!("{e:#}")));
                     failed_files += 1;
                     // Continue processing remaining uploads
                 }
@@ -196,6 +202,7 @@ impl<F: 'static + WorkspaceIndexRepository + FileReaderInfra, D: FileDiscovery +
             total_files: total_file_count,
             uploaded_files: total_file_changes,
             failed_files,
+            failed_details,
         })
         .await;
 
