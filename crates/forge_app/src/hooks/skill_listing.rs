@@ -118,10 +118,7 @@ impl From<&Skill> for SkillListing {
 ///
 /// Returns `None` when `skills` is empty (the caller should not inject a
 /// reminder at all in that case).
-pub fn format_skills_within_budget(
-    skills: &[SkillListing],
-    budget_tokens: u64,
-) -> Option<String> {
+pub fn format_skills_within_budget(skills: &[SkillListing], budget_tokens: u64) -> Option<String> {
     if skills.is_empty() {
         return None;
     }
@@ -446,10 +443,7 @@ impl<S: SkillFetchService + ?Sized + Send + Sync>
 /// Returns `true` if `tool_name` (in snake_case) is one of the filesystem
 /// mutation tools we care about.
 fn is_fs_mutation_tool(tool_name: &str) -> bool {
-    matches!(
-        tool_name,
-        "write" | "patch" | "multi_patch" | "remove"
-    )
+    matches!(tool_name, "write" | "patch" | "multi_patch" | "remove")
 }
 
 /// Extracts the file path that a filesystem mutation tool is targeting.
@@ -590,10 +584,7 @@ mod tests {
         let cache = DeltaCache::default();
         let conv = ConversationId::generate();
         let agent = AgentId::new("forge");
-        let skills = vec![
-            SkillListing::new("a", "A"),
-            SkillListing::new("b", "B"),
-        ];
+        let skills = vec![SkillListing::new("a", "A"), SkillListing::new("b", "B")];
 
         let actual = cache.delta(conv, agent, &skills).await;
 
@@ -622,10 +613,7 @@ mod tests {
         let first = vec![SkillListing::new("a", "A")];
         let _ = cache.delta(conv, agent.clone(), &first).await;
 
-        let second = vec![
-            SkillListing::new("a", "A"),
-            SkillListing::new("b", "B"),
-        ];
+        let second = vec![SkillListing::new("a", "A"), SkillListing::new("b", "B")];
         let actual = cache.delta(conv, agent, &second).await;
 
         let expected = vec![SkillListing::new("b", "B")];
@@ -638,12 +626,8 @@ mod tests {
         let conv = ConversationId::generate();
         let skills = vec![SkillListing::new("a", "A")];
 
-        let _ = cache
-            .delta(conv, AgentId::new("forge"), &skills)
-            .await;
-        let actual = cache
-            .delta(conv, AgentId::new("sage"), &skills)
-            .await;
+        let _ = cache.delta(conv, AgentId::new("forge"), &skills).await;
+        let actual = cache.delta(conv, AgentId::new("sage"), &skills).await;
 
         // sage has never seen the skill, so it gets the full list back.
         assert_eq!(actual, skills);
@@ -726,9 +710,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_handler_injects_reminder_on_first_request() {
-        let service = Arc::new(MockSkillService::new(vec![
-            Skill::new("pdf", "", "Handle PDF files"),
-        ]));
+        let service = Arc::new(MockSkillService::new(vec![Skill::new(
+            "pdf",
+            "",
+            "Handle PDF files",
+        )]));
         let handler = SkillListingHandler::new(service);
         let mut conv = fixture_conversation();
         let event = fixture_event("forge");
@@ -751,9 +737,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_handler_skips_on_second_request_if_unchanged() {
-        let service = Arc::new(MockSkillService::new(vec![
-            Skill::new("pdf", "", "Handle PDF files"),
-        ]));
+        let service = Arc::new(MockSkillService::new(vec![Skill::new(
+            "pdf",
+            "",
+            "Handle PDF files",
+        )]));
         let handler = SkillListingHandler::new(service);
         let mut conv = fixture_conversation();
         let event = fixture_event("forge");
@@ -781,9 +769,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_handler_noop_when_context_missing() {
-        let service = Arc::new(MockSkillService::new(vec![
-            Skill::new("pdf", "", "Handle PDF files"),
-        ]));
+        let service = Arc::new(MockSkillService::new(vec![Skill::new(
+            "pdf",
+            "",
+            "Handle PDF files",
+        )]));
         let handler = SkillListingHandler::new(service);
         let mut conv = Conversation::generate();
         // Deliberately leave `conv.context = None`.
@@ -797,14 +787,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_handler_independent_per_agent() {
-        let service = Arc::new(MockSkillService::new(vec![
-            Skill::new("pdf", "", "Handle PDF files"),
-        ]));
+        let service = Arc::new(MockSkillService::new(vec![Skill::new(
+            "pdf",
+            "",
+            "Handle PDF files",
+        )]));
         let handler = SkillListingHandler::new(service);
         let mut conv = fixture_conversation();
 
-        handler.handle(&fixture_event("forge"), &mut conv).await.unwrap();
-        handler.handle(&fixture_event("sage"), &mut conv).await.unwrap();
+        handler
+            .handle(&fixture_event("forge"), &mut conv)
+            .await
+            .unwrap();
+        handler
+            .handle(&fixture_event("sage"), &mut conv)
+            .await
+            .unwrap();
 
         let ctx = conv.context.as_ref().unwrap();
         // Each agent should have received its own reminder.
@@ -859,7 +857,9 @@ mod tests {
 
     #[test]
     fn test_is_skill_file_path_rejects_regular_markdown() {
-        assert!(!is_skill_file_path("crates/forge_repo/src/skills/README.md"));
+        assert!(!is_skill_file_path(
+            "crates/forge_repo/src/skills/README.md"
+        ));
     }
 
     #[test]
